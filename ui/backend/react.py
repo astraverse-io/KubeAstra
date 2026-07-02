@@ -3554,24 +3554,46 @@ def _truncate_observation(result: dict, tool: str) -> str:
     return sanitize_observation(text, max_chars)
 
 
+TRIMMED_OBS_CHARS = 600
+_TRIM_MARKER = "\n[... result truncated to fit context budget ...]"
+
+
 def _trim_observations(observations: list[str]) -> None:
-    """Trim oldest observations if total size exceeds budget."""
+    """Condense observation bodies, oldest first, when over the context budget.
+
+    Early findings usually anchor causal chains (pod → service → PVC), so
+    steps are never dropped entirely — older observations are shortened
+    to their head while the most recent observation stays intact whenever
+    possible. The head keeps ``Step N — Tool: ...`` plus the start of the
+    result, which is where statuses and error reasons usually appear.
+    """
     total = sum(len(o) for o in observations)
-    while total > MAX_CONTEXT_CHARS and len(observations) > 1:
-        # If there is a placeholder at index 0, pop the next oldest observation (index 1)
-        if observations[0].startswith("[Earlier investigation"):
-            if len(observations) <= 2:
-                break
-            removed = observations.pop(1)
-        else:
-            removed = observations.pop(0)
+    if total <= MAX_CONTEXT_CHARS:
+        return
 
-        total = sum(len(o) for o in observations)
+    # Condense from oldest forward, leaving the most recent observation alone.
+    # Skip observations already condensed (idempotent) and any that are
+    # already shorter than the condensed target.
+    for i in range(len(observations) - 1):
+        if total <= MAX_CONTEXT_CHARS:
+            return
+        obs = observations[i]
+        if len(obs) <= TRIMMED_OBS_CHARS + len(_TRIM_MARKER):
+            continue
+        if obs.endswith(_TRIM_MARKER):
+            continue
+        condensed = obs[:TRIMMED_OBS_CHARS] + _TRIM_MARKER
+        total -= len(obs) - len(condensed)
+        observations[i] = condensed
 
-        # Ensure the placeholder is at the beginning
-        if not observations[0].startswith("[Earlier investigation"):
-            observations.insert(0, "[Earlier investigation steps were trimmed for brevity]")
-            total = sum(len(o) for o in observations)
+    # Last resort: a single huge recent observation can still blow the budget.
+    # Trim it too, but keep at least TRIMMED_OBS_CHARS so the LLM sees the
+    # top of the latest tool result.
+    if total > MAX_CONTEXT_CHARS and observations:
+        last = observations[-1]
+        allowed = max(TRIMMED_OBS_CHARS, MAX_CONTEXT_CHARS - (total - len(last)))
+        if len(last) > allowed + len(_TRIM_MARKER):
+            observations[-1] = last[:allowed] + _TRIM_MARKER
 
 
 # ── Emergency fallback ───────────────────────────────────────────────────────

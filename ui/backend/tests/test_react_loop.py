@@ -891,30 +891,79 @@ def test_react_loop_recovery_malformed_json():
     assert calls == []
 
 
-def test_trim_observations_handles_placeholder_correctly():
-    from react import _trim_observations
-    
-    # Setup observations that total more than MAX_CONTEXT_CHARS (12000)
+def test_trim_observations_condenses_oldest_first_and_preserves_step_count():
+    """Observations must never be dropped — early findings anchor causal
+    chains (pod → service → PVC). Trim by condensing oldest bodies while
+    the most recent stays intact.
+    """
+    from react import _trim_observations, MAX_CONTEXT_CHARS, TRIMMED_OBS_CHARS, _TRIM_MARKER
+
+    # Total 15000 > MAX_CONTEXT_CHARS (12000). Oldest gets condensed.
     obs = ["a" * 5000, "b" * 5000, "c" * 5000]
     _trim_observations(obs)
-    
-    # The first trim should insert the placeholder and remove the oldest ("a" * 5000)
-    assert obs[0] == "[Earlier investigation steps were trimmed for brevity]"
-    # Total characters: len(placeholder) (55) + 5000 + 5000 = 10055 <= 12000, so it shouldn't trim "b" or "c"
-    assert "b" * 5000 in obs
-    assert "c" * 5000 in obs
-    assert len(obs) == 3
 
-    # Now let's test trimming further (e.g., total size still too large)
-    # Total size will be 55 + 7000 + 7000 = 14055 > 12000
-    obs = ["[Earlier investigation steps were trimmed for brevity]", "b" * 7000, "c" * 7000]
+    # No step was dropped — every one still gets a slot.
+    assert len(obs) == 3
+    # Oldest was condensed to head + marker.
+    assert obs[0] == "a" * TRIMMED_OBS_CHARS + _TRIM_MARKER
+    # Middle and newest are untouched.
+    assert obs[1] == "b" * 5000
+    assert obs[2] == "c" * 5000
+    # Total is now within the budget.
+    assert sum(len(o) for o in obs) <= MAX_CONTEXT_CHARS
+
+
+def test_trim_observations_no_op_when_under_budget():
+    from react import _trim_observations
+
+    obs = ["short a", "short b", "short c"]
+    original = list(obs)
     _trim_observations(obs)
-    
-    # It should keep the placeholder, pop "b" * 7000 (index 1), and keep "c" * 7000 (index 2 / now 1).
-    # Resulting list should be: [placeholder, "c" * 7000]
-    assert obs[0] == "[Earlier investigation steps were trimmed for brevity]"
-    assert obs[1] == "c" * 7000
-    assert len(obs) == 2
+    assert obs == original
+
+
+def test_trim_observations_condenses_multiple_oldest_when_needed():
+    """When a single condensation isn't enough, keep working forward."""
+    from react import _trim_observations, MAX_CONTEXT_CHARS, TRIMMED_OBS_CHARS, _TRIM_MARKER
+
+    # 4 x 5000 = 20000 > 12000; condense oldest two.
+    obs = ["a" * 5000, "b" * 5000, "c" * 5000, "d" * 5000]
+    _trim_observations(obs)
+
+    assert len(obs) == 4
+    assert obs[0].endswith(_TRIM_MARKER)
+    assert obs[1].endswith(_TRIM_MARKER)
+    # Most recent is still intact.
+    assert obs[-1] == "d" * 5000
+    assert sum(len(o) for o in obs) <= MAX_CONTEXT_CHARS
+
+
+def test_trim_observations_idempotent_on_already_condensed():
+    """Running trim twice must not further trim already-condensed entries."""
+    from react import _trim_observations
+
+    obs = ["a" * 5000, "b" * 5000, "c" * 5000]
+    _trim_observations(obs)
+    snapshot = list(obs)
+    _trim_observations(obs)
+    assert obs == snapshot
+
+
+def test_trim_observations_last_resort_trims_huge_recent_observation():
+    """A single oversized recent observation must also get trimmed — but
+    never below TRIMMED_OBS_CHARS so the LLM still sees the head of it."""
+    from react import _trim_observations, MAX_CONTEXT_CHARS, TRIMMED_OBS_CHARS, _TRIM_MARKER
+
+    obs = ["a" * 100, "b" * 100, "z" * 20000]
+    _trim_observations(obs)
+
+    assert len(obs) == 3
+    # Head is preserved with the trim marker at the end.
+    assert obs[-1].startswith("z")
+    assert obs[-1].endswith(_TRIM_MARKER)
+    # Never trimmed below the floor.
+    assert len(obs[-1]) >= TRIMMED_OBS_CHARS
+    assert sum(len(o) for o in obs) <= MAX_CONTEXT_CHARS + len(_TRIM_MARKER)
 
 
 def test_react_loop_finalize_cancellation():
