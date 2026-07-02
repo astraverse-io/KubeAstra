@@ -43,6 +43,11 @@ jobs:
       # var leaked from the runner image.
       EVAL_LIVE_LLM: "false"
       PYTHONPATH: ${{ github.workspace }}/mcp
+      # Contract tests use fixture namespaces (apps, jenkins, jenkins-legacy,
+      # infrastructure). Without this, k8s.validators rejects them under
+      # the default ALLOWED_NAMESPACES=default and every contract test
+      # goes red before its logic even runs.
+      ALLOWED_NAMESPACES: "*"
     steps:
       - uses: actions/checkout@v4
 
@@ -66,11 +71,14 @@ jobs:
           python -m pytest tests/ -v --tb=short
 
       # ── Per-feature evals (offline mode) ─────────────────────────────────
-      # Add new evals here as they ship. Each is a `python -m evals.X.run`
-      # call. They return 0 on pass, 1 on fail — the job fails on any 1.
-      - name: Eval § RAG router
-        working-directory: mcp
-        run: python -m evals.router.run
+      # The mcp/evals/ harness (offline runner + golden set) was part of a
+      # pre-rebrand milestone that was superseded by the internal fork's
+      # more mature features; it needs to be re-created against the current
+      # tree before these steps can fire. Uncomment as each ships.
+      #
+      # - name: Eval § RAG router
+      #   working-directory: mcp
+      #   run: python -m evals.router.run
 
       # - name: Eval § Tool summarization
       #   working-directory: mcp
@@ -127,10 +135,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r mcp/requirements.txt
 
-      - name: Eval § RAG router (LIVE)
-        working-directory: mcp
-        run: python -m evals.router.run
-
+      # The mcp/evals/ harness (LIVE runner + golden set) was part of a
+      # pre-rebrand milestone that was superseded by the internal fork's
+      # more mature features; it needs to be re-created against the current
+      # tree before these steps can fire. Uncomment as each ships.
+      #
+      # - name: Eval § RAG router (LIVE)
+      #   working-directory: mcp
+      #   run: python -m evals.router.run
+      #
       # - name: Eval § Tool summarization (LIVE)
       #   working-directory: mcp
       #   run: python -m evals.summarization.run
