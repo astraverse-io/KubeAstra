@@ -128,7 +128,7 @@ backend:
     auditLogPath: "/app/data/audit.log"
     auditLogMaxBytes: "10485760"
     auditLogWarningIntervalSeconds: "60"
-    # LLM provider: gemini or ollama
+    # LLM provider: gemini, ollama, anthropic, openai
     llmProvider: "gemini"
     # Gemini model to use. The chat UI no longer exposes a model selector.
     geminiModel: "gemini-3.1-flash-lite"
@@ -143,6 +143,16 @@ backend:
     ollamaAvailableModels: "llama3.1"
     # Optional: explicitly set Ollama's context window (e.g., "32768")
     ollamaNumCtx: ""
+    # Anthropic Claude (only used when llmProvider=anthropic; leave blank
+    # otherwise so no env vars are emitted). Sampling params are not
+    # forwarded — Claude Opus 4.7+ rejects them.
+    anthropicModel: ""
+    anthropicTimeoutSeconds: "120"
+    # OpenAI (only used when llmProvider=openai). Base URL can point at any
+    # OpenAI-compatible endpoint (Azure OpenAI gateway, vLLM, LiteLLM, ...).
+    openaiModel: ""
+    openaiBaseUrl: "https://api.openai.com/v1"
+    openaiTimeoutSeconds: "120"
     # Enable write/recovery operations (delete_pod, rollout_restart, scale, patch)
     enableRecoveryOperations: "false"
     # Qdrant connection (defaults to in-cluster service when qdrant.enabled=true).
@@ -472,6 +482,10 @@ deploymentRepo:
 # corresponding Secret key is omitted.
 secrets:
   geminiApiKey: ""
+  # Only required when backend.config.llmProvider=anthropic.
+  anthropicApiKey: ""
+  # Only required when backend.config.llmProvider=openai.
+  openaiApiKey: ""
   kubeconfig: ""
   mcpAuthToken: ""
   # Bearer token Alertmanager/Grafana must send to POST /api/v1/alerts/webhook.

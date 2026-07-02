@@ -68,7 +68,8 @@ class Settings(BaseSettings):
     github_token: Optional[str] = None
 
     # ── LLM provider selection ────────────────────────────────────────────────
-    # "gemini" (default) or "ollama". Add more providers under services/llm.
+    # "gemini" (default), "ollama", "anthropic", or "openai". Add more
+    # providers under services/llm.
     llm_provider: str = "gemini"
 
     # ── AI / Gemini settings ──────────────────────────────────────────────────
@@ -87,6 +88,21 @@ class Settings(BaseSettings):
     ollama_auth_token: str = ""
     ollama_timeout_seconds: int = 120
     ollama_num_ctx: Optional[int] = None
+
+    # ── Anthropic (Claude) settings ───────────────────────────────────────────
+    # Required when LLM_PROVIDER=anthropic. Sampling params are not
+    # forwarded — Claude Opus 4.7+ rejects them; prompting controls behavior.
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-opus-4-8"
+    anthropic_timeout_seconds: int = 120
+
+    # ── OpenAI settings ───────────────────────────────────────────────────────
+    # Required when LLM_PROVIDER=openai. OPENAI_BASE_URL lets you point at
+    # any OpenAI-compatible endpoint (Azure OpenAI, vLLM, LiteLLM, ...).
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o"
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_timeout_seconds: int = 120
 
     # ── Vector DB / RAG settings ──────────────────────────────────────────────
     # Qdrant replaces the prior Weaviate backend in Phase 1.1. The legacy
@@ -197,6 +213,10 @@ class Settings(BaseSettings):
         provider = (self.llm_provider or "").lower()
         if provider == "ollama":
             return bool(self.ollama_base_url and self.ollama_model)
+        if provider == "anthropic":
+            return bool(self.anthropic_api_key and self.anthropic_model)
+        if provider == "openai":
+            return bool(self.openai_api_key and self.openai_model)
         return bool(self.gemini_api_key)
 
     def validate_settings(self) -> None:
@@ -208,6 +228,10 @@ class Settings(BaseSettings):
             raise ValueError("OLLAMA_TIMEOUT_SECONDS must be positive")
         if self.gemini_timeout_seconds <= 0:
             raise ValueError("GEMINI_TIMEOUT_SECONDS must be positive")
+        if self.anthropic_timeout_seconds <= 0:
+            raise ValueError("ANTHROPIC_TIMEOUT_SECONDS must be positive")
+        if self.openai_timeout_seconds <= 0:
+            raise ValueError("OPENAI_TIMEOUT_SECONDS must be positive")
         if self.max_log_tail_lines <= 0 or self.max_log_tail_lines > 1000:
             raise ValueError("MAX_LOG_TAIL_LINES must be between 1 and 1000")
         if self.max_output_bytes <= 0:

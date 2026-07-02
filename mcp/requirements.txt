@@ -19,6 +19,10 @@ paramiko>=3.0.0
 # ── AI / Gemini ───────────────────────────────────────────────────────────────
 google-genai>=1.0.0
 
+# ── AI / Anthropic (installed by default so LLM_PROVIDER=anthropic works
+#      out of the box; OpenAI provider uses the already-listed httpx) ─────────
+anthropic>=0.34.0
+
 # ── Vector DB (RAG) — Qdrant since Phase 1.1; replaced weaviate-client ───────
 # Pin to the same minor as the deployed Qdrant server (currently 1.11.x).
 # The client emits a hard warning when major versions differ or minor diff

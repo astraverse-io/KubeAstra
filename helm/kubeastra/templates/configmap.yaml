@@ -32,6 +32,15 @@ data:
   OLLAMA_NUM_CTX: {{ .Values.backend.config.ollamaNumCtx | quote }}
   {{- end }}
   {{- end }}
+  {{- if .Values.backend.config.anthropicModel }}
+  ANTHROPIC_MODEL: {{ .Values.backend.config.anthropicModel | quote }}
+  ANTHROPIC_TIMEOUT_SECONDS: {{ .Values.backend.config.anthropicTimeoutSeconds | default "120" | quote }}
+  {{- end }}
+  {{- if .Values.backend.config.openaiModel }}
+  OPENAI_MODEL: {{ .Values.backend.config.openaiModel | quote }}
+  OPENAI_BASE_URL: {{ .Values.backend.config.openaiBaseUrl | default "https://api.openai.com/v1" | quote }}
+  OPENAI_TIMEOUT_SECONDS: {{ .Values.backend.config.openaiTimeoutSeconds | default "120" | quote }}
+  {{- end }}
 
   # ── Vector DB / RAG settings (Qdrant, Phase 1.1) ─────────────────────────────
   QDRANT_URL: {{ include "kubeastra.qdrantUrl" . | quote }}

@@ -191,7 +191,7 @@ For clusters where you can't ship the assistant into the cluster:
 
 ### 🔌 Pluggable LLM Providers
 
-Pick your LLM — **Google Gemini** (default, free tier available) or **Ollama** (fully local — your cluster data never leaves your network). OpenAI and Anthropic Claude adapters coming next.
+Pick your LLM — **Google Gemini** (default, free tier available), **Anthropic Claude** (Opus / Sonnet / Haiku), **OpenAI** (GPT-4o, or any OpenAI-compatible endpoint like Azure OpenAI / vLLM / LiteLLM), or **Ollama** (fully local — your cluster data never leaves your network). Set `LLM_PROVIDER` to `gemini`, `anthropic`, `openai`, or `ollama` and provide the matching API key.
 
 ### 🛡️ Safety First
 
@@ -434,9 +434,14 @@ All settings are read from environment variables (or `.env`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_PROVIDER` | `gemini` | `gemini` or `ollama` |
+| `LLM_PROVIDER` | `gemini` | `gemini`, `anthropic`, `openai`, or `ollama` |
 | `GEMINI_API_KEY` | — | Required when `LLM_PROVIDER=gemini`. [Get one free](https://aistudio.google.com/) |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model to use |
+| `ANTHROPIC_API_KEY` | — | Required when `LLM_PROVIDER=anthropic`. [Get one at console.anthropic.com](https://console.anthropic.com/) |
+| `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model to use (`claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`, ...) |
+| `OPENAI_API_KEY` | — | Required when `LLM_PROVIDER=openai` |
+| `OPENAI_MODEL` | `gpt-4o` | OpenAI model to use |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Override for OpenAI-compatible endpoints (Azure OpenAI, vLLM, LiteLLM, ...) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `llama3.1` | Ollama model name (must be pulled first) |
 | `ALLOWED_NAMESPACES` | `*` | Comma-separated list, or `*` for all |
@@ -533,7 +538,7 @@ kubeastra/
 - [x] Prometheus integration — `prom_query` for range/instant queries during investigations
 - [x] Remote diagnostics — SSH + Ansible playbook for air-gapped clusters
 - [x] Eval harness — deterministic offline + nightly LIVE regression tests for LLM decisions
-- [ ] OpenAI + Anthropic Claude adapters
+- [x] OpenAI + Anthropic Claude adapters (plus any OpenAI-compatible endpoint — Azure OpenAI, vLLM, LiteLLM)
 - [ ] Loki / Tempo observability integrations
 - [ ] "What changed?" view — recent deployments, ConfigMap/Secret mutations
 - [ ] Real-time collaborative sessions (WebSocket sync + presence indicators)

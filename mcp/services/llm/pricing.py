@@ -32,6 +32,16 @@ PRICE_PER_1K_TOKENS: dict[str, dict[str, float]] = {
     # Gemini 3.x family (currently configured default)
     "gemini-3.1-flash":      {"in": 0.000075, "out": 0.0003},
     "gemini-3.1-flash-lite": {"in": 0.000035, "out": 0.00014},
+    # Anthropic Claude family
+    "claude-opus-4-8":       {"in": 0.015,    "out": 0.075},
+    "claude-opus-4-7":       {"in": 0.015,    "out": 0.075},
+    "claude-sonnet-5":       {"in": 0.003,    "out": 0.015},
+    "claude-fable-5":        {"in": 0.003,    "out": 0.015},
+    "claude-haiku-4-5-20251001": {"in": 0.001, "out": 0.005},
+    # OpenAI family
+    "gpt-4o":                {"in": 0.0025,   "out": 0.01},
+    "gpt-4o-mini":           {"in": 0.00015,  "out": 0.0006},
+    "gpt-4-turbo":           {"in": 0.01,     "out": 0.03},
     # Local / OSS via Ollama — zero cost by definition.
     "llama3":                {"in": 0.0,      "out": 0.0},
     "llama3.1":              {"in": 0.0,      "out": 0.0},

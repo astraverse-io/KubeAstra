@@ -83,6 +83,18 @@ spec:
                   name: {{ include "kubeastra.fullname" . }}-secrets
                   key: GEMINI_API_KEY
                   optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubeastra.fullname" . }}-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubeastra.fullname" . }}-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
             - name: MCP_HTTP_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:
