@@ -1,0 +1,78 @@
+{{- if .Values.agentHarness.tracePersistence.retentionEnabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "kubeastra.fullname" . }}-retention
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "kubeastra.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.agentHarness.tracePersistence.retentionSchedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400  # Auto-clean the job pod after 24h
+      template:
+        metadata:
+          labels:
+            {{- include "kubeastra.labels" . | nindent 12 }}
+            app.kubernetes.io/component: retention
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: {{ include "kubeastra.serviceAccountName" . }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: retention
+              image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+              imagePullPolicy: {{ .Values.backend.image.pullPolicy | default "IfNotPresent" }}
+              command:
+                - "python"
+                - "-c"
+                - |
+                  import urllib.request, os, sys, json
+                  token = os.environ.get("PRUNE_TOKEN", "")
+                  days = os.environ.get("RETENTION_DAYS", "30")
+                  service = os.environ.get("BACKEND_SERVICE", "")
+                  url = f"http://{service}:8000/api/agent-runs/prune?days={days}"
+                  
+                  print(f"Triggering prune endpoint: {url}")
+                  req = urllib.request.Request(url, method="POST")
+                  req.add_header("X-Prune-Token", token)
+                  
+                  try:
+                      with urllib.request.urlopen(req) as response:
+                          res_body = json.loads(response.read().decode())
+                          deleted = res_body.get("deleted_runs", 0)
+                          print(f"Successfully pruned {deleted} runs.")
+                  except Exception as e:
+                      print(f"Error calling prune endpoint: {e}", file=sys.stderr)
+                      sys.exit(1)
+              env:
+                - name: BACKEND_SERVICE
+                  value: {{ include "kubeastra.fullname" . }}-backend
+                - name: RETENTION_DAYS
+                  value: {{ .Values.agentHarness.tracePersistence.retentionDays | quote }}
+                - name: PRUNE_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "kubeastra.fullname" . }}-secrets
+                      key: PRUNE_TOKEN
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+{{- end }}

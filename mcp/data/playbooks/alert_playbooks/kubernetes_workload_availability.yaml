@@ -1,0 +1,178 @@
+id: kubernetes_workload_availability
+version: "1.0"
+display_name: Kubernetes Workload Availability Investigation
+includes:
+  - branches/pod_health_baseline.yaml
+  - branches/pvc_mount_blockers.yaml
+  - branches/probe_failure.yaml
+supported_alerts:
+  - pattern: WORKLOAD_AVAILABILITY
+    fields: [classification.category]
+  - pattern: KubernetesStatefulsetDown, KubernetesStatefulsetReplicasMismatch, KubernetesDeploymentReplicasMismatch, KubernetesReplicassetMismatch, KubernetesPodNotHealthy
+    fields: [name, labels.alertname, annotations.summary, annotations.description]
+allowed_tools:
+  - describe_workload
+  - list_workload_pods
+  - describe_pod
+  - get_events
+  - get_pod_logs
+  - prom_query
+safety:
+  readonly: true
+  max_steps: 8
+  blocked_verbs: [create, update, patch, delete, scale, restart, exec]
+llm_policy:
+  mode: advisory_only
+  require_structured_output: true
+  may_select_tools_only_from_allowed_tools: true
+steps:
+  - id: describe_target_workload
+    tool: describe_workload
+    description: Inspect desired/current/ready replicas, selector, conditions, rollout state, and owning controller events.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      workload: "{{ alert.labels.deployment }}{{ alert.labels.statefulset }}{{ alert.labels.replicaset }}"
+      kind: "{{ alert.labels.kind }}"
+  - id: list_owned_pods
+    tool: list_workload_pods
+    description: List pods owned by the Deployment, StatefulSet, or ReplicaSet and identify Pending, Failed, Unknown, NotReady, or waiting containers.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      workload: "{{ alert.labels.deployment }}{{ alert.labels.statefulset }}{{ alert.labels.replicaset }}"
+      kind: "{{ alert.labels.kind }}"
+  - id: query_deployment_replica_gap
+    tool: prom_query
+    description: Compare desired and available Deployment replicas when alert labels identify a deployment.
+    args:
+      query: 'kube_deployment_spec_replicas{namespace="{{ alert.labels.namespace }}",deployment="{{ alert.labels.deployment }}"} - kube_deployment_status_replicas_available{namespace="{{ alert.labels.namespace }}",deployment="{{ alert.labels.deployment }}"}'
+  - id: query_statefulset_replica_gap
+    tool: prom_query
+    description: Compare desired and ready StatefulSet replicas when alert labels identify a statefulset.
+    args:
+      query: 'kube_statefulset_status_replicas{namespace="{{ alert.labels.namespace }}",statefulset="{{ alert.labels.statefulset }}"} - kube_statefulset_status_replicas_ready{namespace="{{ alert.labels.namespace }}",statefulset="{{ alert.labels.statefulset }}"}'
+  - id: query_replicaset_replica_gap
+    tool: prom_query
+    description: Compare desired and ready ReplicaSet replicas when alert labels identify a replicaset.
+    args:
+      query: 'kube_replicaset_spec_replicas{namespace="{{ alert.labels.namespace }}",replicaset="{{ alert.labels.replicaset }}"} - kube_replicaset_status_ready_replicas{namespace="{{ alert.labels.namespace }}",replicaset="{{ alert.labels.replicaset }}"}'
+  - id: query_unhealthy_pods
+    tool: prom_query
+    description: Identify unhealthy pods in the namespace by phase.
+    args:
+      query: 'sum by (namespace, pod, phase) (kube_pod_status_phase{namespace="{{ alert.labels.namespace }}",phase=~"Pending|Unknown|Failed"})'
+  - id: collect_workload_events
+    tool: get_events
+    description: Collect namespace/controller events for scheduling, image pull, probe, PVC mount, eviction, or rollout failures.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      involved_object: "{{ alert.labels.deployment }}{{ alert.labels.statefulset }}{{ alert.labels.replicaset }}{{ alert.labels.pod }}"
+  - id: describe_unhealthy_pod
+    tool: describe_pod
+    description: Inspect the unhealthy pod once list_owned_pods or alert labels identify it.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+  - id: collect_unhealthy_pod_logs
+    tool: get_pod_logs
+    description: Collect logs from the unhealthy pod when it is running or recently restarted.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+decision_rules:
+  - id: deployment_replica_mismatch
+    applies_to:
+      alert_categories: [workload_availability]
+      alert_names: [KubernetesDeploymentReplicasMismatch]
+    priority: 100
+    when:
+      any:
+        - alert.labels.deployment exists
+        - alert.name == "KubernetesDeploymentReplicasMismatch"
+    prefer_tools: [describe_workload, list_workload_pods, prom_query]
+    prefer_steps: [describe_target_workload, list_owned_pods, query_deployment_replica_gap]
+    focus: [desired_replicas, available_replicas, rollout_conditions, pod_readiness]
+    interpretation: Deployment has fewer available replicas than desired; drill down from controller state to owned pods.
+  - id: statefulset_down_or_mismatch
+    applies_to:
+      alert_categories: [workload_availability]
+      alert_names: [KubernetesStatefulsetDown, KubernetesStatefulsetReplicasMismatch]
+    priority: 100
+    when:
+      any:
+        - alert.labels.statefulset exists
+        - alert.name in ["KubernetesStatefulsetDown", "KubernetesStatefulsetReplicasMismatch"]
+    prefer_tools: [describe_workload, list_workload_pods, prom_query, get_events]
+    prefer_steps: [describe_target_workload, list_owned_pods, query_statefulset_replica_gap, collect_workload_events]
+    focus: [statefulset_ready_replicas, ordinal_pods, pvc_mounts, pod_readiness]
+    interpretation: StatefulSet availability is degraded; check ordinal pods, readiness, PVC attach/mount, and ordered startup blockers.
+  - id: replicaset_mismatch
+    applies_to:
+      alert_categories: [workload_availability]
+      alert_names: [KubernetesReplicassetMismatch]
+    priority: 95
+    when:
+      any:
+        - alert.labels.replicaset exists
+        - alert.name == "KubernetesReplicassetMismatch"
+    prefer_tools: [describe_workload, list_workload_pods, prom_query]
+    prefer_steps: [describe_target_workload, list_owned_pods, query_replicaset_replica_gap]
+    focus: [replicaset_ready_replicas, owner_deployment, pod_template, pod_readiness]
+    interpretation: ReplicaSet ready replicas differ from desired; inspect owned pods and parent rollout context.
+  - id: pod_not_healthy
+    applies_to:
+      alert_categories: [workload_availability]
+      alert_names: [KubernetesPodNotHealthy]
+    priority: 90
+    when:
+      any:
+        - alert.labels.pod exists
+        - alert.name == "KubernetesPodNotHealthy"
+    prefer_tools: [describe_pod, get_events, prom_query]
+    prefer_steps: [describe_unhealthy_pod, collect_workload_events, query_unhealthy_pods]
+    focus: [pod_phase, container_waiting_reason, readiness, node]
+    interpretation: A pod is Pending, Failed, Unknown, or not healthy; inspect pod state and events before controller-level assumptions.
+  - id: scheduling_or_capacity_blocker
+    applies_to:
+      alert_categories: [workload_availability]
+    priority: 85
+    when:
+      any:
+        - evidence.events.reason == "FailedScheduling"
+        - evidence.events.message contains "Insufficient"
+        - evidence.events.message contains "didn't match Pod's node affinity"
+        - evidence.events.message contains "taint"
+    prefer_tools: [get_events, describe_pod]
+    prefer_steps: [collect_workload_events, describe_unhealthy_pod]
+    focus: [scheduler_events, node_capacity, affinity, taints_tolerations]
+    interpretation: Workload availability is blocked by scheduling or cluster capacity constraints.
+  - id: crash_or_oom_under_workload
+    applies_to:
+      alert_categories: [workload_availability]
+    priority: 75
+    when:
+      any:
+        - evidence.kubernetes.pod.reason in ["CrashLoopBackOff", "OOMKilled"]
+        - evidence.kubernetes.pod.last_state.reason == "OOMKilled"
+        - evidence.events.reason == "BackOff"
+    prefer_tools: [describe_pod, get_pod_logs, prom_query]
+    prefer_steps: [describe_unhealthy_pod, collect_unhealthy_pod_logs]
+    focus: [crashloop, oomkilled, previous_logs, restart_count]
+    interpretation: Workload availability is degraded because one or more owned pods are crashing or OOMKilled.
+remediation_mappings:
+  KubernetesDeploymentReplicasMismatch:
+    - Compare desired and available replicas, then identify unavailable owned pods.
+    - Check rollout conditions, readiness failures, image pull errors, and scheduling events.
+  KubernetesStatefulsetDown:
+    - Inspect StatefulSet ordinal pods, PVC attach/mount events, and readiness failures.
+    - Check whether ordered startup is blocked by an earlier failed ordinal.
+  KubernetesStatefulsetReplicasMismatch:
+    - Compare desired and ready replicas, then inspect non-ready ordinal pods.
+    - Review PVC, init container, and application readiness blockers.
+  KubernetesReplicassetMismatch:
+    - Inspect ReplicaSet owner and pod template, then identify non-ready owned pods.
+  KubernetesPodNotHealthy:
+    - Inspect pod phase, container waiting reason, node, events, and recent logs.
+stop_conditions:
+  max_confidence: 0.85
+  max_steps_reached: true
+  root_cause_identified: true

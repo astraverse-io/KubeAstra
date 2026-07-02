@@ -1,0 +1,31 @@
+# Local-dev rag config — points at the locally cloned deployment repo.
+# Used by ``scripts/reindex.py`` when developing the Ansible KB feature
+# without needing to clone from GitHub each time.
+#
+# Run with:
+#   RAG_CONFIG=scripts/rag-config.local.yaml venv/bin/python3 scripts/reindex.py
+#
+# Requires a running Qdrant (default http://localhost:6333). For an
+# even faster in-memory smoke without Qdrant, use
+# ``scripts/smoke_deployment_repo.py`` instead.
+
+sources:
+  # Per-file ingestion: walks the local clone of the deployment repo.
+  - kind: local_path
+    path: /Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/deployment-provisioning/ansible
+    collection: deployment_repo
+
+  # Per-role aggregate pass (plan §11.3): one synthetic doc per role
+  # combining README + task names + default vars. ``repo_url`` /
+  # ``branch`` / ``path_prefix`` are used to compute GitHub blob URLs
+  # so citations match what the production CronJob produces.
+  - kind: role_aggregate
+    path: /Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/deployment-provisioning/ansible
+    repo_url: https://github.com/kubeastra/deployment-provisioning.git
+    branch: main
+    path_prefix: ansible
+    collection: deployment_repo
+
+chunking:
+  max_tokens: 400
+  overlap_tokens: 60

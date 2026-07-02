@@ -1,0 +1,10 @@
+{
+  "id": "inventory_verdict_na",
+  "prompt": "List all namespaces in the cluster.",
+  "expected_output": "The namespaces present in the cluster are default, kube-system, and prod-blue. No health diagnosis is performed on the cluster resources.",
+  "context": "Inventory scenario. Correct answer lists the namespaces but must NOT claim the cluster or its namespaces are 'healthy' or 'unhealthy' based solely on a listing. Tests verdict: 'n/a' handling.",
+  "expected_tools": ["get_namespaces"],
+  "must_not_call": [],
+  "tags": ["synthesis", "inventory", "verdict_na"],
+  "notes": "Verifies that n/a verdicts do not cause the LLM to assert health claims."
+}

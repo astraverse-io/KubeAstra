@@ -1,0 +1,10 @@
+{
+  "id": "log_severity_warnings",
+  "prompt": "Analyze the logs of the auth-server pod in prod-blue. Give me a summary of the warning and error counts, and show the most recent critical log line.",
+  "expected_output": "The logs contain 3 warnings and 2 errors. The most recent critical log line is 'CRITICAL: database connection lost' at 12:34:56.",
+  "context": "Scenario testing log severity summaries. Expects log analysis to identify counts of errors/warnings and locate the most recent critical log line.",
+  "expected_tools": ["get_pod_logs", "investigate_pod"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "tags": ["synthesis", "logs", "severity", "analysis"],
+  "notes": "Ensures the synthesis engine can parse and count log levels and extract the final critical event."
+}

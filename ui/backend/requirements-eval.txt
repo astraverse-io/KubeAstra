@@ -1,0 +1,13 @@
+# DeepEval Stage 1 runner — eval-only dependencies.
+#
+# This file is INTENTIONALLY SEPARATE from ui/backend/requirements.txt
+# and mcp/requirements.txt. Do NOT add these packages to either of
+# those — they are eval/CI tooling, not production runtime deps.
+#
+# See docs/AGENT_HARNESS_IMPLEMENTATION_PLAN.md §"Stage 1 Tooling".
+#
+# Install with:
+#   pip install -r ui/backend/requirements-eval.txt
+
+deepeval>=2.0.0
+google-genai>=1.0.0  # already in mcp/requirements.txt; restated here for the eval-only image

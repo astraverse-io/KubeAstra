@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "kubeastra.fullname" . }}-config
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "kubeastra.labels" . | nindent 4 }}
 data:
@@ -13,14 +13,93 @@ data:
   MAX_OUTPUT_BYTES: {{ .Values.backend.config.maxOutputBytes | quote }}
   ENABLE_RECOVERY_OPERATIONS: {{ .Values.backend.config.enableRecoveryOperations | quote }}
   ENABLE_K8SGPT: {{ .Values.backend.config.enableK8sgpt | quote }}
+  ENABLE_AUDIT_LOG: {{ .Values.backend.config.enableAuditLog | default "true" | quote }}
+  AUDIT_LOG_PATH: {{ .Values.backend.config.auditLogPath | default "/app/data/audit.log" | quote }}
+  AUDIT_LOG_MAX_BYTES: {{ .Values.backend.config.auditLogMaxBytes | default "10485760" | quote }}
+  AUDIT_LOG_WARNING_INTERVAL_SECONDS: {{ .Values.backend.config.auditLogWarningIntervalSeconds | default "60" | quote }}
 
-  # ── Gemini / AI settings ─────────────────────────────────────────────────────
+  # ── LLM / AI settings ────────────────────────────────────────────────────────
+  LLM_PROVIDER: {{ .Values.backend.config.llmProvider | quote }}
   GEMINI_MODEL: {{ .Values.backend.config.geminiModel | quote }}
+  GEMINI_TIMEOUT_SECONDS: {{ .Values.backend.config.geminiTimeoutSeconds | default "60" | quote }}
+  GEMINI_AVAILABLE_MODELS: {{ .Values.backend.config.geminiAvailableModels | default .Values.backend.config.geminiModel | quote }}
+  USE_REACT_CHAT: {{ .Values.backend.config.useReactChat | quote }}
+  OLLAMA_BASE_URL: {{ .Values.backend.config.ollamaBaseUrl | quote }}
+  OLLAMA_MODEL: {{ .Values.backend.config.ollamaModel | quote }}
+  OLLAMA_AVAILABLE_MODELS: {{ .Values.backend.config.ollamaAvailableModels | default .Values.backend.config.ollamaModel | quote }}
+  {{- if eq .Values.backend.config.llmProvider "ollama" }}
+  {{- if .Values.backend.config.ollamaNumCtx }}
+  OLLAMA_NUM_CTX: {{ .Values.backend.config.ollamaNumCtx | quote }}
+  {{- end }}
+  {{- end }}
 
-  # ── Vector DB / RAG settings (optional) ──────────────────────────────────────
-  WEAVIATE_URL: {{ .Values.backend.config.weaviateUrl | quote }}
-  WEAVIATE_COLLECTION: {{ .Values.backend.config.weaviateCollection | quote }}
+  # ── Vector DB / RAG settings (Qdrant, Phase 1.1) ─────────────────────────────
+  QDRANT_URL: {{ include "kubeastra.qdrantUrl" . | quote }}
+  QDRANT_COLLECTION: {{ .Values.backend.config.qdrantCollection | quote }}
+  QDRANT_TIMEOUT_SECONDS: {{ .Values.backend.config.qdrantTimeoutSeconds | quote }}
+
+  # ── Prometheus (for prom_query MCP tool, used by specialty alert playbooks) ──
+  # When empty the tool returns {"unavailable": True, ...} and investigations
+  # complete without metrics evidence — playbooks that need PromQL still run.
+  PROMETHEUS_URL: {{ .Values.backend.config.prometheusUrl | default "" | quote }}
+  PROMETHEUS_TIMEOUT_SECONDS: {{ .Values.backend.config.prometheusTimeoutSeconds | default "10" | quote }}
+
+  # ── Alerts orchestrator concurrency ──────────────────────────────────────────
+  # Cap on simultaneous LLM calls across all in-flight investigations. Without
+  # this, an Alertmanager burst fans out into 30+ concurrent generate() calls
+  # that exhaust the model's per-minute quota and saturate the threadpool the
+  # blocking SDK runs in. 8 is a conservative default for the gemini-3.1-flash
+  # tier; raise after a quota uplift if you observe LLM-queueing latency.
+  ALERTS_LLM_CONCURRENCY: {{ .Values.backend.config.alertsLlmConcurrency | default "8" | quote }}
   EMBEDDING_MODEL: {{ .Values.backend.config.embeddingModel | quote }}
+  EMBEDDING_DIM: {{ .Values.backend.config.embeddingDim | quote }}
+  HF_HOME: {{ .Values.backend.config.hfHome | default "/tmp/hf-cache" | quote }}
+  SENTENCE_TRANSFORMERS_HOME: {{ .Values.backend.config.sentenceTransformersHome | default "/tmp/hf-cache" | quote }}
+  HF_HUB_DISABLE_PROGRESS_BARS: {{ .Values.backend.config.hfHubDisableProgressBars | default "1" | quote }}
+  HF_HUB_VERBOSITY: {{ .Values.backend.config.hfHubVerbosity | default "error" | quote }}
+  TRANSFORMERS_VERBOSITY: {{ .Values.backend.config.transformersVerbosity | default "error" | quote }}
+  TOKENIZERS_PARALLELISM: {{ .Values.backend.config.tokenizersParallelism | default "false" | quote }}
+
+  # ── RAG retrieval router (Phase 1.4) ─────────────────────────────────────────
+  RAG_ROUTER_ENABLED: {{ .Values.backend.config.ragRouterEnabled | default "true" | quote }}
+  RAG_ROUTER_TOP_K: {{ .Values.backend.config.ragRouterTopK | default "5" | quote }}
+  RAG_ROUTER_CACHED_THRESHOLD: {{ .Values.backend.config.ragRouterCachedThreshold | default "0.92" | quote }}
+  RAG_ROUTER_GROUNDED_THRESHOLD: {{ .Values.backend.config.ragRouterGroundedThreshold | default "0.70" | quote }}
+  RAG_ROUTER_COLLECTIONS: {{ .Values.backend.config.ragRouterCollections | default "runbook,devops_doc" | quote }}
+
+  # ── Semantic prompt cache (Phase 2.3) ────────────────────────────────────────
+  PROMPT_CACHE_ENABLED: {{ .Values.backend.config.promptCacheEnabled | default "false" | quote }}
+  PROMPT_CACHE_THRESHOLD: {{ .Values.backend.config.promptCacheThreshold | default "0.95" | quote }}
+  PROMPT_CACHE_LOOKBACK_HOURS: {{ .Values.backend.config.promptCacheLookbackHours | default "24" | quote }}
+  PROMPT_CACHE_TOP_K: {{ .Values.backend.config.promptCacheTopK | default "5" | quote }}
+
+  # ── Proactive cluster triage (Phase 3.0) ─────────────────────────────────────
+  ENABLE_PROACTIVE_TRIAGE: {{ .Values.backend.config.enableProactiveTriage | default "false" | quote }}
+  PROACTIVE_TRIAGE_NAMESPACES: {{ .Values.backend.config.proactiveTriageNamespaces | default "*" | quote }}
+  PROACTIVE_TRIAGE_EVENT_LOOKBACK_MIN: {{ .Values.backend.config.proactiveTriageEventLookbackMin | default "10" | quote }}
+
+  # ── Session capture (Phase 1.3) ──────────────────────────────────────────────
+  SESSION_CAPTURE_ENABLED: {{ .Values.backend.config.sessionCaptureEnabled | default "false" | quote }}
+  SESSION_CAPTURE_TTL_DAYS: {{ .Values.backend.config.sessionCaptureTtlDays | default "90" | quote }}
+  SESSION_CAPTURE_TRANSCRIPT_CHARS: {{ .Values.backend.config.sessionCaptureTranscriptChars | default "4000" | quote }}
+  SESSION_CAPTURE_REDACT_SECRETS: {{ .Values.backend.config.sessionCaptureRedactSecrets | default "true" | quote }}
+
+  # ── Local account auth ─────────────────────────────────────────────────────
+  AUTH_ENABLED: {{ .Values.backend.config.authEnabled | default "false" | quote }}
+  AUTH_ALLOW_SIGNUP: {{ .Values.backend.config.authAllowSignup | default "false" | quote }}
+  AUTH_SESSION_TTL_DAYS: {{ .Values.backend.config.authSessionTtlDays | default "14" | quote }}
+  AUTH_COOKIE_NAME: {{ .Values.backend.config.authCookieName | default "k8s_devops_auth" | quote }}
+  AUTH_COOKIE_SECURE: {{ .Values.backend.config.authCookieSecure | default "false" | quote }}
+  AUTH_PASSWORD_MIN_LENGTH: {{ .Values.backend.config.authPasswordMinLength | default "12" | quote }}
+  AUTH_ALLOWED_ORIGINS: {{ .Values.backend.config.authAllowedOrigins | default "" | quote }}
+  APP_BASE_URL: {{ .Values.backend.config.appBaseUrl | default "http://localhost:3000" | quote }}
+
+  # ── Machine agent API ──────────────────────────────────────────────────────
+  AGENT_API_MAX_CONCURRENCY: {{ .Values.backend.agentApi.maxConcurrency | default "2" | quote }}
+  AGENT_API_QUEUE_TIMEOUT_SECONDS: {{ .Values.backend.agentApi.queueTimeoutSeconds | default "5" | quote }}
+  AGENT_API_MAX_INPUT_BYTES: {{ .Values.backend.agentApi.maxInputBytes | default "65536" | quote }}
+  AGENT_API_REQUESTS_PER_MINUTE: {{ .Values.backend.agentApi.requestsPerMinute | default "30" | quote }}
+  AGENT_API_EXECUTION_TIMEOUT_SECONDS: {{ .Values.backend.agentApi.executionTimeoutSeconds | default "90" | quote }}
 
   # ── Paths (set by Dockerfile, listed here for clarity) ───────────────────────
   MCP_PATH: "/app/mcp"
@@ -29,6 +108,7 @@ data:
 
   # ── SQLite database path ──────────────────────────────────────────────────────
   # Matches backend.persistence.mountPath. If persistence is disabled this path
-  # still works — SQLite creates the file in-memory on the container filesystem
-  # (lost on restart). Set backend.persistence.enabled=true to persist across restarts.
+  # still works — SQLite creates the file on the container filesystem (lost on
+  # restart). Set backend.persistence.enabled=true to persist chat history,
+  # session memory, cluster selections, SSH targets, and feedback audit rows.
   DB_PATH: {{ printf "%s/chat_history.db" .Values.backend.persistence.mountPath | quote }}

@@ -1,0 +1,10 @@
+{
+  "id": "team_vocabulary_unknown_pre_onboarding",
+  "prompt": "Pods on the WMI lane are flapping. Where do I start?",
+  "expected_output": null,
+  "context": "Tests team-vocabulary grounding. 'WMI lane' is example team-internal slang that doesn't exist in any RAG collection until TEAM_CONTEXT.md is ingested. Before onboarding: the agent has no idea what 'WMI lane' means and should either ask or hedge. After onboarding: the agent should know it's the Windows worker pool (or whatever your team's actual term maps to).",
+  "expected_tools": [],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "tags": ["team_vocabulary", "content_gap_baseline", "expected_to_improve_after_onboarding"],
+  "notes": "IMPORTANT: replace 'WMI lane' with an actual term your team uses. This scenario only works as a content-onboarding measurement if the term is real and undefined outside TEAM_CONTEXT.md. The score delta on this scenario is the single best signal for whether your content work moved the needle."
+}

@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "========================================"
-echo "  Kubeastra MCP Server — Setup"
+echo "  K8s DevOps MCP Server — Setup"
 echo "========================================"
 
 # ── Python version check ──────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ if [ ! -f "$MCP_CONFIG" ]; then
     cat > "$MCP_CONFIG" << EOF
 {
   "mcpServers": {
-    "kubeastra": {
+    "k8s-devops": {
       "command": "$SCRIPT_DIR/venv/bin/python",
       "args": ["$SCRIPT_DIR/mcp_server/server.py"],
       "env": {
@@ -69,7 +69,7 @@ if [ ! -f "$MCP_CONFIG" ]; then
 EOF
     echo "  ✓ Created $MCP_CONFIG"
 else
-    echo "  ✓ $MCP_CONFIG already exists — manually add the 'kubeastra' entry if needed:"
+    echo "  ✓ $MCP_CONFIG already exists — manually add the 'k8s-devops' entry if needed:"
     echo '    {'
     echo '      "command": "'"$SCRIPT_DIR"'/venv/bin/python",'
     echo '      "args": ["'"$SCRIPT_DIR"'/mcp_server/server.py"],'
@@ -99,7 +99,7 @@ echo "  3. Choose an MCP transport:"
 echo "     - Local stdio: restart Cursor to load the MCP server"
 echo "     - Local HTTP:  make run-http"
 echo ""
-echo "  4. In Cursor or another IDE, you now have the same Kubeastra tools available"
+echo "  4. In Cursor or another IDE, you now have the same K8s DevOps tools available"
 echo "     - stdio config is written to ~/.cursor/mcp.json"
 echo "     - HTTP endpoint defaults to http://127.0.0.1:8001/mcp/"
 echo ""

@@ -1,0 +1,10 @@
+{
+  "id": "ansible_dict_stdout_chocolatey",
+  "prompt": "My Ansible task install_chocolatey_output fails with 'dict object has no attribute stdout'. What's happening?",
+  "expected_output": null,
+  "context": "Real Ansible-error pattern. Hits the router's _looks_like_ansible_error path indirectly via the task name; should force-add deployment_repo to retrieval. Tests whether deployment_repo (4242 chunks) helps the agent understand a real playbook task.",
+  "expected_tools": [],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "tags": ["ansible", "deployment_repo_grounded", "real_error_from_screenshot"],
+  "notes": "This is the exact error from the screenshot the user shared while debugging mid-stream truncation. A good answer cites the actual win_shell task, names `ignore_errors`, and explains why `stdout` is absent when the task fails."
+}

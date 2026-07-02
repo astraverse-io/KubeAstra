@@ -1,0 +1,42 @@
+# Phase 6 render fixture: bastion-only remote diagnostics.
+# Exercises the alternate bastionEgress rule so the backend pod is confined
+# to a jump-host /32 rather than the target subnet. The bastion connection
+# metadata itself is server-managed (plan §12) — this scenario is only for
+# NetworkPolicy egress rendering.
+networkPolicy:
+  enabled: true
+  mode: enforce-all
+  ingressCidrs: [10.0.0.0/8]
+  kubernetesApiCidrs: [10.99.0.1/32]
+
+remoteDiagnostics:
+  enabled: true
+  targets:
+    qa17:
+      enabled: true
+      display_name: QA 17
+      environment_group: qa
+      connection:
+        type: ssh
+        host: 10.40.17.10
+        port: 22
+        username: k8s-diagnostics
+        known_hosts_alias: qa17-control-plane
+      expected_kube_system_uid: 1c43dff0-0000-0000-0000-000000000001
+      diagnostic_scopes_allowed: [kubernetes]
+      allowed_caller_scopes: [qa-ansible]
+      credentialSecretRef:
+        name: agent-target-qa17-credentials
+  callerScopes:
+    qa-ansible:
+      allowed_target_ids: [qa17]
+      tokenSecretRef:
+        name: agent-caller-token-qa-ansible
+      currentTokenKey: current
+  knownHostsEntries:
+    - "qa17-control-plane ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI-example-key-do-not-use"
+    - "qa17-bastion ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI-example-bastion-key"
+  network:
+    bastionEgress:
+      - cidr: 10.99.0.5/32
+        ports: [22]

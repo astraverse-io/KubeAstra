@@ -1,0 +1,28 @@
+allowed_tools:
+  - describe_pod
+  - describe_pod_pvcs
+  - get_events
+
+steps:
+  - id: describe_pod_pvcs
+    tool: describe_pod_pvcs
+    description: Discover PVCs mounted by the pod and summarize PVC/PV binding, storage class, and mount details.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+
+decision_rules:
+  - id: pvc_mount_or_attach_blocker
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure, workload_availability]
+    priority: 78
+    when:
+      any:
+        - evidence.events.message contains "MountVolume"
+        - evidence.events.message contains "AttachVolume"
+        - evidence.events.message contains "persistentvolumeclaim"
+        - evidence.events.message contains "volume"
+    prefer_tools: [get_events, describe_pod, describe_pod_pvcs]
+    prefer_steps: [collect_recent_events, describe_target_pod, describe_pod_pvcs, collect_workload_events, describe_unhealthy_pod]
+    focus: [pvc_binding, volume_attach, storage_class, node_volume_limits]
+    interpretation: Pod or workload availability may be blocked by PVC binding, volume attach, or mount failures.

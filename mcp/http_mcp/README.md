@@ -14,11 +14,14 @@ This transport is intended for:
 
 The HTTP server uses **the exact same shared registrations** as the stdio server:
 
-- Same 32 tool schemas
+- Same 48 tool schemas (33 live kubectl + 5 helm + 6 AI analysis + 3 multi-step plan + 1 knowledge base)
 - Same kubectl + SSH runner logic
 - Same Gemini / Weaviate integrations
 - Same namespace and recovery-operation safeguards
+- Same dry-run + confirmation-token safety on destructive ops (see [mcp/README.md](../README.md))
 - Same `runtime.py` bootstrap (tool count is auto-discovered at startup)
+
+The `/tools/catalog` page groups tools into categories: Discovery, Details, Context, Repository, Analysis, **Helm** (read-only release inspection), Recovery (WRITE), **Plans (WRITE)** — for the multi-step remediation tools — and AI Analysis.
 
 There is no second tool implementation for HTTP mode.
 
@@ -39,7 +42,7 @@ There is no second tool implementation for HTTP mode.
 ## Quick Start
 
 ```bash
-cd kubeastra/mcp
+cd k8s-devops-ai-assistant/mcp
 ./setup.sh          # first time only
 make run-http       # starts on 127.0.0.1:8001/mcp/
 ```
@@ -69,7 +72,7 @@ Edit `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "kubeastra-http": {
+    "k8s-devops-http": {
       "type": "http",
       "url": "http://127.0.0.1:8001/mcp/"
     }
@@ -84,11 +87,11 @@ You can run both stdio and HTTP at the same time (Cursor will deduplicate tools 
 ```json
 {
   "mcpServers": {
-    "kubeastra": {
+    "k8s-devops": {
       "command": "/path/to/venv/bin/python",
       "args": ["/path/to/mcp_server/server.py"]
     },
-    "kubeastra-http": {
+    "k8s-devops-http": {
       "type": "http",
       "url": "http://127.0.0.1:8001/mcp/"
     }
@@ -106,7 +109,7 @@ make run-http
 ```json
 {
   "mcpServers": {
-    "kubeastra-http": {
+    "k8s-devops-http": {
       "type": "http",
       "url": "http://127.0.0.1:8001/mcp/",
       "headers": {
@@ -167,6 +170,9 @@ Environment variable equivalents: `MCP_HTTP_HOST`, `MCP_HTTP_PORT`, `MCP_HTTP_PA
 | `http_server.py` | MCP Streamable HTTP server (March 2025 protocol) |
 | `http_client.py` | Example Python client for the HTTP transport |
 | `README.md` | This file |
+| `CURSOR_ROUTING.md` | How Cursor routes queries across stdio and HTTP MCP servers |
+| `STREAMABLE_HTTP_SETUP.md` | Quick setup reference |
+| `INVOKE_FROM_PROJECTS.md` | How to use from other repositories |
 | `__init__.py` | Package marker |
 
 ---
@@ -175,5 +181,5 @@ Environment variable equivalents: `MCP_HTTP_HOST`, `MCP_HTTP_PORT`, `MCP_HTTP_PA
 
 - `make run-http` binds to `127.0.0.1` by default — safe for local testing.
 - `make run-http-external` binds to `0.0.0.0` — for team/shared deployments, add TLS and a reverse proxy (nginx/Traefik) in front.
-- The HTTP transport runs independently from the `ui` web backend (port 8800). They don't conflict.
+- The HTTP transport runs independently from the `ui` web backend (port 8000). They don't conflict.
 - Session state is maintained by `StreamableHTTPSessionManager` — each client gets a stable session across multiple requests.

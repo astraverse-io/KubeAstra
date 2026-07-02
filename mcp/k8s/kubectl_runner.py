@@ -1,9 +1,13 @@
 """Safe kubectl command runner with timeout and output limits."""
 
 import contextvars
+import errno
 import json
 import logging
+import os
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +16,163 @@ from typing import List, Optional
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+_AUDIT_ENTRY_MAX_BYTES = 4095
+_audit_warning_lock = threading.Lock()
+_audit_warning_state: dict[str, dict[str, float | int | None]] = {}
+_audit_config_logged: set[str] = set()
+
+
+def _audit_metric_failure(category: str) -> None:
+    try:
+        from metrics import audit_write_failures_total
+        audit_write_failures_total.labels(category=category).inc()
+    except Exception:
+        pass
+
+
+def _audit_metric_rotation() -> None:
+    try:
+        from metrics import audit_rotations_total
+        audit_rotations_total.inc()
+    except Exception:
+        pass
+
+
+def _audit_failure_category(exc: BaseException) -> str:
+    code = getattr(exc, "errno", None)
+    if code in (errno.EACCES, errno.EPERM, errno.EROFS):
+        return "permission"
+    if code in (errno.ENOSPC, errno.EDQUOT):
+        return "disk_full"
+    if code in (errno.ENOENT, errno.ENOTDIR):
+        return "path_missing"
+    return "other"
+
+
+def _warn_audit_failure(
+    category: str,
+    exc: BaseException,
+    *,
+    interval_seconds: float,
+) -> None:
+    """Emit immediately, then at most once per interval with suppression count."""
+    now = time.monotonic()
+    with _audit_warning_lock:
+        state = _audit_warning_state.setdefault(
+            category, {"last": None, "suppressed": 0}
+        )
+        last = state["last"]
+        if last is not None and now - last < interval_seconds:
+            state["suppressed"] = int(state["suppressed"]) + 1
+            return
+        suppressed = int(state["suppressed"])
+        state["last"] = now
+        state["suppressed"] = 0
+    logger.warning(
+        "audit_write_failed category=%s suppressed=%d error=%s",
+        category,
+        suppressed,
+        exc,
+    )
+
+
+def _bounded_audit_entry(entry: str) -> bytes:
+    raw = (entry.rstrip("\n") + "\n").encode("utf-8", errors="replace")
+    if len(raw) <= _AUDIT_ENTRY_MAX_BYTES:
+        return raw
+    suffix = b"...[audit entry truncated]\n"
+    return raw[: _AUDIT_ENTRY_MAX_BYTES - len(suffix)] + suffix
+
+
+def _rotate_audit_file(path: Path, max_bytes: int) -> None:
+    """Rotate by atomic rename. Appenders remain lock-free and open per entry."""
+    try:
+        if path.stat().st_size < max_bytes:
+            return
+    except FileNotFoundError:
+        return
+
+    lock_path = path.with_name(path.name + ".rotate.lock")
+    lock_fd: Optional[int] = None
+    try:
+        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o640)
+        try:
+            import fcntl
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (ImportError, BlockingIOError):
+            return
+
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            return
+        if size < max_bytes:
+            return
+
+        rotated = path.with_name(path.name + ".1")
+        os.replace(path, rotated)
+        marker = _bounded_audit_entry(
+            f"{datetime.now().isoformat()} | AUDIT_LOG_ROTATED | previous_size={size}"
+        )
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+        try:
+            os.write(fd, marker)
+        finally:
+            os.close(fd)
+        _audit_metric_rotation()
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+
+
+def _append_audit_entry(path: Path, entry: str, max_bytes: int) -> None:
+    """Append one bounded entry with one O_APPEND write and retry ENOENT once."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_audit_file(path, max_bytes)
+    payload = _bounded_audit_entry(entry)
+    for attempt in range(2):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+            try:
+                os.write(fd, payload)
+            finally:
+                os.close(fd)
+            return
+        except FileNotFoundError:
+            if attempt == 0:
+                time.sleep(0.005)
+                continue
+            raise
+
+
+def _log_audit_configuration(path: Path) -> None:
+    path_key = str(path.absolute())
+    with _audit_warning_lock:
+        if path_key in _audit_config_logged:
+            return
+        _audit_config_logged.add(path_key)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        parent_stat = path.parent.stat()
+        parent_mode = oct(parent_stat.st_mode & 0o777)
+        writable = os.access(path.parent, os.W_OK)
+        logger.info(
+            "audit_log resolved=%s uid=%s gid=%s parent_mode=%s writable=%s",
+            path.resolve(),
+            os.geteuid(),
+            os.getegid(),
+            parent_mode,
+            str(writable).lower(),
+        )
+    except Exception as exc:
+        logger.warning(
+            "audit_log resolved=%s uid=%s gid=%s parent_unavailable=true error=%s",
+            path.absolute(),
+            os.geteuid(),
+            os.getegid(),
+            exc,
+        )
 
 
 class KubectlError(Exception):
@@ -56,7 +217,7 @@ class KubectlResult:
 
 class KubectlRunner:
     """Safe kubectl command runner."""
-
+    
     def __init__(
         self,
         kubeconfig_path: Optional[str] = None,
@@ -64,10 +225,14 @@ class KubectlRunner:
     ):
         self.timeout = settings.kubectl_timeout_seconds
         self.max_output_bytes = settings.max_output_bytes
-        self.kubeconfig_path = kubeconfig_path or settings.kubeconfig_path_resolved
+        self.kubeconfig_path = Path(kubeconfig_path).expanduser().resolve() if kubeconfig_path else settings.kubeconfig_path_resolved
         self.context = context
         self.audit_enabled = settings.enable_audit_log
         self.audit_log_path = Path(settings.audit_log_path)
+        self.audit_log_max_bytes = settings.audit_log_max_bytes
+        self.audit_warning_interval_seconds = settings.audit_log_warning_interval_seconds
+        if self.audit_enabled:
+            _log_audit_configuration(self.audit_log_path)
     
     def run(
         self,
@@ -75,6 +240,7 @@ class KubectlRunner:
         namespace: Optional[str] = None,
         capture_output: bool = True,
         max_output: Optional[int] = None,
+        stdin_data: Optional[str] = None,
     ) -> KubectlResult:
         """
         Run kubectl command safely.
@@ -83,6 +249,7 @@ class KubectlRunner:
             args: Command arguments (e.g., ["get", "pods"])
             namespace: Optional namespace to inject
             capture_output: Whether to capture stdout/stderr
+            stdin_data: Optional string to pass to standard input
             
         Returns:
             KubectlResult with command output
@@ -96,15 +263,15 @@ class KubectlRunner:
         
         # Build command
         cmd = ["kubectl"]
-
+        
         # Add kubeconfig if configured
         if self.kubeconfig_path:
             cmd.extend(["--kubeconfig", str(self.kubeconfig_path)])
 
-        # Add context if configured (for multi-context kubeconfigs)
+        # Add context if configured
         if self.context:
             cmd.extend(["--context", self.context])
-
+        
         # Add namespace if provided
         if namespace:
             cmd.extend(["--namespace", namespace])
@@ -123,6 +290,7 @@ class KubectlRunner:
             # NEVER use shell=True for security
             result = subprocess.run(
                 cmd,
+                input=stdin_data,
                 capture_output=capture_output,
                 text=True,
                 timeout=self.timeout,
@@ -283,15 +451,20 @@ class KubectlRunner:
             if error:
                 log_entry += f" | error={error}"
             
-            # Ensure log directory exists
-            self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Append to audit log
-            with open(self.audit_log_path, "a") as f:
-                f.write(log_entry + "\n")
+            _append_audit_entry(
+                self.audit_log_path,
+                log_entry,
+                self.audit_log_max_bytes,
+            )
                 
         except Exception as e:
-            logger.warning(f"Failed to write audit log: {e}")
+            category = _audit_failure_category(e)
+            _audit_metric_failure(category)
+            _warn_audit_failure(
+                category,
+                e,
+                interval_seconds=self.audit_warning_interval_seconds,
+            )
 
 
 # Global runner instance (used when no SSH session is active)

@@ -1,16 +1,19 @@
-// ── Kubeastra — Jenkins Pipeline ──────────────────────────────────
+// ── KubeAstra — Jenkins Pipeline ─────────────────────────────────────────────
 //
-// Builds and pushes two Docker images to your container registry:
-//   <REGISTRY>/<FEED>/kubeastra-backend:<tag>
-//   <REGISTRY>/<FEED>/kubeastra-frontend:<tag>
+// Builds and pushes two Docker images to GitHub Container Registry (ghcr.io):
+//   ghcr.io/kubeastra/kubeastra-backend:<tag>
+//   ghcr.io/kubeastra/kubeastra-frontend:<tag>
 //
 // Required Jenkins credentials (Manage Jenkins → Credentials):
-//   docker-registry-credentials  — Username/Password or Secret Text (registry API key)
+//   ghcr-token  — Secret Text (GH PAT with write:packages scope)
 //
-// Optional parameters (can be set as build parameters or left as defaults):
-//   REGISTRY   — Docker registry host  (e.g. ghcr.io/your-org, docker.io/your-org)
-//   FEED       — Image namespace / feed name
+// Optional parameters:
+//   REGISTRY   — Docker registry host (default: ghcr.io/kubeastra)
 //   IMAGE_TAG  — Override the auto-generated tag (git SHA + branch)
+//
+// GitHub Actions (`.github/workflows/ci.yml` + `evals.yml`) are the primary
+// CI path for this repo. This Jenkinsfile is provided for self-hosted /
+// air-gapped deployments where GHA isn't available.
 
 pipeline {
     agent {
@@ -18,10 +21,9 @@ pipeline {
     }
 
     environment {
-        REGISTRY      = 'ghcr.io/your-org'
-        FEED          = 'kubeastra'
-        BACKEND_IMAGE = "${REGISTRY}/${FEED}/kubeastra-backend"
-        FRONTEND_IMAGE = "${REGISTRY}/${FEED}/kubeastra-frontend"
+        REGISTRY       = 'ghcr.io/kubeastra'
+        BACKEND_IMAGE  = "${REGISTRY}/kubeastra-backend"
+        FRONTEND_IMAGE = "${REGISTRY}/kubeastra-frontend"
     }
 
     parameters {
@@ -36,9 +38,6 @@ pipeline {
                 checkout scm
                 script {
                     def shortSha = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    // BRANCH_NAME is set by Jenkins for multibranch pipelines.
-                    // GIT_BRANCH is the fallback (classic pipeline). Strip the
-                    // "origin/" prefix if present and sanitise special characters.
                     def rawBranch = (env.BRANCH_NAME ?: env.GIT_BRANCH ?: 'unknown')
                                         .replaceAll('^origin/', '')
                                         .replaceAll('[^a-zA-Z0-9._-]', '-')
@@ -49,23 +48,23 @@ pipeline {
         }
 
         // ── 2. Build & push backend ──────────────────────────────────────────
-        // Workspace root IS the repo root — no dir() wrapper needed.
-        // "." gives Docker access to both mcp/ and ui/backend/
+        // Workspace root IS the repo root — "." gives Docker access to both mcp/ and ui/backend/
         stage('Build & Push Backend') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'docker-registry-credentials',
-                    usernameVariable: 'REGISTRY_USER',
-                    passwordVariable: 'REGISTRY_PASSWORD'
-                )]) {
-                    sh 'echo "$REGISTRY_PASSWORD" | docker login ${REGISTRY} -u "$REGISTRY_USER" --password-stdin'
-                    sh """
-                        docker build \\
-                          -f ui/backend/Dockerfile \\
-                          -t ${BACKEND_IMAGE}:${IMAGE_TAG} \\
-                          .
-                        docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
-                    """
+                container('dotnet') {
+                    withCredentials([string(
+                        credentialsId: 'ghcr-token',
+                        variable: 'GHCR_TOKEN'
+                    )]) {
+                        sh 'echo "$GHCR_TOKEN" | docker login ghcr.io -u kubeastra --password-stdin'
+                        sh """
+                            docker build \\
+                              -f ui/backend/Dockerfile \\
+                              -t ${BACKEND_IMAGE}:${IMAGE_TAG} \\
+                              .
+                            docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
+                        """
+                    }
                 }
             }
         }
@@ -73,19 +72,20 @@ pipeline {
         // ── 3. Build & push frontend ─────────────────────────────────────────
         stage('Build & Push Frontend') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'docker-registry-credentials',
-                    usernameVariable: 'REGISTRY_USER',
-                    passwordVariable: 'REGISTRY_PASSWORD'
-                )]) {
-                    dir('ui/frontend') {
-                        sh 'echo "$REGISTRY_PASSWORD" | docker login ${REGISTRY} -u "$REGISTRY_USER" --password-stdin'
-                        sh """
-                            docker build \\
-                              -t ${FRONTEND_IMAGE}:${IMAGE_TAG} \\
-                              .
-                            docker push ${FRONTEND_IMAGE}:${IMAGE_TAG}
-                        """
+                container('dotnet') {
+                    withCredentials([string(
+                        credentialsId: 'ghcr-token',
+                        variable: 'GHCR_TOKEN'
+                    )]) {
+                        dir('ui/frontend') {
+                            sh 'echo "$GHCR_TOKEN" | docker login ghcr.io -u kubeastra --password-stdin'
+                            sh """
+                                docker build \\
+                                  -t ${FRONTEND_IMAGE}:${IMAGE_TAG} \\
+                                  .
+                                docker push ${FRONTEND_IMAGE}:${IMAGE_TAG}
+                            """
+                        }
                     }
                 }
             }
@@ -96,7 +96,7 @@ pipeline {
             steps {
                 echo """
 ╔══════════════════════════════════════════════════════════════╗
-║  Images pushed                                               ║
+║  Images pushed to ghcr.io                                    ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  ${BACKEND_IMAGE}:${IMAGE_TAG}
 ║  ${FRONTEND_IMAGE}:${IMAGE_TAG}
@@ -115,13 +115,12 @@ To deploy with Helm:
         }
     }
 
-    // ── Post actions ─────────────────────────────────────────────────────────
     post {
         success {
-            echo "Build and push succeeded — tag: ${IMAGE_TAG}"
+            echo "✅ Build and push succeeded — tag: ${IMAGE_TAG}"
         }
         failure {
-            echo "Pipeline failed — check logs above"
+            echo "❌ Pipeline failed — check logs above"
         }
     }
 }

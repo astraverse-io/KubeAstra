@@ -1,13 +1,23 @@
+{{- $serviceType := include "kubeastra.backendServiceType" . }}
+{{- $annotations := include "kubeastra.backendServiceAnnotations" . | trim }}
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "kubeastra.backendServiceName" . }}
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "kubeastra.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend
+  {{- if $annotations }}
+  annotations:
+    {{- $annotations | nindent 4 }}
+  {{- end }}
 spec:
-  type: {{ .Values.backend.service.type }}
+  type: {{ $serviceType }}
+  {{- $lbIp := include "kubeastra.loadBalancerIP" (dict "ctx" . "perService" .Values.backend.service.loadBalancerIP) }}
+  {{- with $lbIp }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
   ports:
     - port: {{ .Values.backend.service.port }}
       targetPort: http

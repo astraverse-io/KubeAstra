@@ -1,0 +1,177 @@
+id: loki_logs_health
+version: "1.0"
+display_name: Loki Logs Health Investigation
+supported_alerts:
+  - pattern: LOKI_LOGS_HEALTH
+    fields: [classification.category]
+  - pattern: LokiRequestErrors, LokiRequestLatency, LokiIngestionRateLimit, LokiDiscardedSamples, LokiIngesterUnhealthy, LokiDistributorUnhealthy, LokiQuerierUnhealthy, LokiCompactorUnhealthy
+    fields: [name, labels.alertname, annotations.summary, annotations.description]
+allowed_tools:
+  - describe_pod
+  - get_events
+  - get_pod_logs
+  - prom_query
+  - logql_query
+safety:
+  readonly: true
+  max_steps: 9
+  blocked_verbs: [create, update, patch, delete, scale, restart, exec]
+llm_policy:
+  mode: advisory_only
+  require_structured_output: true
+  may_select_tools_only_from_allowed_tools: true
+steps:
+  - id: query_loki_component_health
+    tool: prom_query
+    description: Check Loki component availability by namespace, job, and pod.
+    args:
+      query: 'sum by (job, namespace, pod) (up{job=~".*loki.*", namespace="{{ alert.labels.namespace }}"})'
+  - id: query_loki_request_errors
+    tool: prom_query
+    description: Detect distributor, ingester, querier, or gateway 5xx request errors.
+    args:
+      query: '100 * sum by (namespace, job, route) (rate(loki_request_duration_seconds_count{status_code=~"5..", namespace="{{ alert.labels.namespace }}"}[2m])) / sum by (namespace, job, route) (rate(loki_request_duration_seconds_count{namespace="{{ alert.labels.namespace }}"}[2m]))'
+  - id: query_loki_distributor_push_errors
+    tool: prom_query
+    description: Check whether distributor push route is returning errors while sending batches toward ingesters.
+    args:
+      source_alert_rule: LokiRequestErrors
+      query: '100 * sum by (namespace, job, route) (rate(loki_request_duration_seconds_count{namespace="{{ alert.labels.namespace }}", job=~".*loki-distributor.*", route="loki_api_v1_push", status_code=~"5.."}[2m])) / sum by (namespace, job, route) (rate(loki_request_duration_seconds_count{namespace="{{ alert.labels.namespace }}", job=~".*loki-distributor.*", route="loki_api_v1_push"}[2m]))'
+  - id: query_loki_discarded_samples
+    tool: prom_query
+    description: Check if Loki is dropping samples due to rate limits, labels, timestamps, or validation failures.
+    args:
+      query: 'sum by (namespace, reason) (rate(loki_discarded_samples_total{namespace="{{ alert.labels.namespace }}"}[5m]))'
+  - id: query_loki_ingestion_rate_limits
+    tool: prom_query
+    description: Check tenant or stream ingestion rate limiting through discarded bytes.
+    args:
+      query: 'sum by (namespace, tenant, reason) (rate(loki_discarded_bytes_total{namespace="{{ alert.labels.namespace }}"}[5m]))'
+  - id: query_loki_distributor_logs
+    tool: logql_query
+    description: Find distributor errors while pushing log batches to ingesters.
+    args:
+      query: '{namespace="{{ alert.labels.namespace }}", app=~"loki-distributor|loki"} |~ "failed pushing to ingester|context deadline exceeded|no healthy ingesters|empty ring|rpc error|Unavailable|rate limit"'
+      limit: 100
+  - id: query_loki_ingester_logs
+    tool: logql_query
+    description: Find ingester ring, WAL, chunk flush, object store, or timeout errors.
+    args:
+      query: '{namespace="{{ alert.labels.namespace }}", app=~"loki-ingester|loki"} |~ "WAL|flush|chunk|replay|ring|object store|timeout|deadline|not ready|unhealthy"'
+      limit: 100
+  - id: describe_loki_pod
+    tool: describe_pod
+    description: Inspect Loki pod state, restarts, readiness, OOMKilled status, and container status.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+  - id: collect_loki_events
+    tool: get_events
+    description: Collect Kubernetes events for scheduling, probe, PVC, restart, or image pull issues.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      involved_object: "{{ alert.labels.pod }}"
+decision_rules:
+  - id: distributor_push_to_ingester_failure
+    applies_to:
+      alert_categories: [loki_logs_health]
+      alert_names: [LokiRequestErrors, LokiDistributorUnhealthy, LokiIngestionRateLimit]
+    priority: 100
+    when:
+      any:
+        - evidence.logs contains "failed pushing to ingester"
+        - evidence.logs contains "context deadline exceeded"
+        - evidence.logs contains "no healthy ingesters"
+        - evidence.logs contains "empty ring"
+        - evidence.logs contains "rpc error"
+        - evidence.prometheus.route == "loki_api_v1_push"
+    prefer_tools: [logql_query, prom_query, describe_pod]
+    prefer_steps:
+      - query_loki_distributor_push_errors
+      - query_loki_distributor_logs
+      - query_loki_ingester_logs
+      - describe_loki_pod
+    focus:
+      - distributor_push_path
+      - ingester_ring
+      - ingester_readiness
+      - grpc_errors
+      - object_storage_backpressure
+    interpretation: Distributor is failing to push log batches to ingesters; inspect ingester health, ring membership, and downstream storage pressure.
+  - id: loki_component_down
+    applies_to:
+      alert_categories: [loki_logs_health]
+      alert_names: [LokiIngesterUnhealthy, LokiDistributorUnhealthy, LokiQuerierUnhealthy, LokiCompactorUnhealthy]
+    priority: 95
+    when:
+      any:
+        - evidence.prometheus.up == 0
+        - evidence.kubernetes.pod.phase != "Running"
+        - evidence.kubernetes.pod.ready == false
+    prefer_tools: [prom_query, describe_pod, get_events]
+    prefer_steps: [query_loki_component_health, describe_loki_pod, collect_loki_events]
+    focus: [component_availability, pod_status, restarts, readiness]
+    interpretation: One or more Loki components are unavailable or unhealthy.
+  - id: loki_ingestion_dropping_logs
+    applies_to:
+      alert_categories: [loki_logs_health]
+      alert_names: [LokiDiscardedSamples, LokiIngestionRateLimit]
+    priority: 90
+    when:
+      any:
+        - evidence.prometheus.loki_discarded_samples_total > 0
+        - evidence.prometheus.loki_discarded_bytes_total > 0
+        - evidence.logs contains "rate limit"
+        - evidence.logs contains "entry too far behind"
+        - evidence.logs contains "out of order"
+    prefer_tools: [prom_query, logql_query]
+    prefer_steps: [query_loki_discarded_samples, query_loki_ingestion_rate_limits, query_loki_distributor_logs]
+    focus: [discarded_samples, rate_limits, label_validation, timestamp_validation]
+    interpretation: Loki is receiving logs but dropping or rejecting entries before they become queryable.
+  - id: loki_ingester_storage_or_wal_issue
+    applies_to:
+      alert_categories: [loki_logs_health]
+      alert_names: [LokiIngesterUnhealthy, LokiRequestLatency, LokiRequestErrors]
+    priority: 85
+    when:
+      any:
+        - evidence.logs contains "WAL"
+        - evidence.logs contains "flush"
+        - evidence.logs contains "chunk"
+        - evidence.logs contains "object store"
+        - evidence.logs contains "timeout"
+    prefer_tools: [logql_query, prom_query, describe_pod]
+    prefer_steps: [query_loki_ingester_logs, describe_loki_pod]
+    focus: [wal_replay, chunk_flush, object_storage, longhorn_or_ceph_latency]
+    interpretation: Loki ingester may be blocked by WAL, chunk flush, or object storage problems.
+  - id: loki_query_path_failure
+    applies_to:
+      alert_categories: [loki_logs_health]
+      alert_names: [LokiRequestErrors, LokiRequestLatency, LokiQuerierUnhealthy]
+    priority: 80
+    when:
+      any:
+        - evidence.prometheus.loki_5xx_errors > 0
+        - evidence.logs contains "querier"
+        - evidence.logs contains "query timeout"
+        - evidence.logs contains "context deadline exceeded"
+    prefer_tools: [prom_query, logql_query]
+    prefer_steps: [query_loki_request_errors, query_loki_distributor_logs]
+    focus: [querier, query_frontend, gateway, request_errors, latency]
+    interpretation: Loki query path is failing or timing out.
+remediation_mappings:
+  LokiRequestErrors:
+    - Identify failing Loki route/component and inspect component logs.
+    - For push route failures, inspect distributor logs, ingester ring health, and ingester readiness.
+  LokiDiscardedSamples:
+    - Review discard reason, tenant limits, label cardinality, timestamp skew, and rate limits.
+  LokiIngestionRateLimit:
+    - Check tenant ingestion limits, noisy log streams, and distributor rejection logs.
+  LokiIngesterUnhealthy:
+    - Inspect ingester pod, WAL replay, chunk flush errors, object storage latency, and restarts.
+  LokiDistributorUnhealthy:
+    - Inspect distributor pod, push route errors, DNS/service reachability, and ingester ring membership.
+stop_conditions:
+  max_confidence: 0.85
+  max_steps_reached: true
+  root_cause_identified: true

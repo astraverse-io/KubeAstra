@@ -5,7 +5,7 @@ type RouteContext = {
 };
 
 function resolveApiBaseUrl(): string {
-  return (process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800").replace(/\/$/, "");
+  return (process.env.API_BASE_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
 }
 
 async function proxyRequest(request: Request, context: RouteContext): Promise<Response> {

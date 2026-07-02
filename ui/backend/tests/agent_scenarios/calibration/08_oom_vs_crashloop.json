@@ -1,0 +1,10 @@
+{
+  "id": "oom_vs_crashloop",
+  "prompt": "Why is the backend-app pod crashing in prod-blue?",
+  "expected_output": "The backend-app pod crashed due to an OOMKilled (Exit Code 137) state where it exceeded its memory limit, not a application-level code crash or failed readiness probe.",
+  "context": "Tests that the agent distinguishes OOMKilled from application level crash. Evidenced by last state and exit code 137.",
+  "expected_tools": ["investigate_pod"],
+  "must_not_call": [],
+  "tags": ["synthesis", "oom", "crashloop"],
+  "notes": "Checks specific error diagnosis accuracy."
+}

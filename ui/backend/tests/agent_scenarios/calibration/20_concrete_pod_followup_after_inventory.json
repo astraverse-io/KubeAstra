@@ -1,0 +1,14 @@
+{
+  "id": "concrete_pod_followup_after_inventory",
+  "prompt": "Can you help me identify why jenkins-legacy pod is in crashloop?",
+  "expected_output": "The agent should resolve the concrete pod name and namespace from inventory, then investigate that pod before answering. It should not stop after a failed default-namespace probe or tell the user to run basic logs/events commands that the agent can collect itself.",
+  "context": "Regression coverage for a synthesis-era ReAct loop bug where an initial investigate_pod call for jenkins-legacy/default returned empty, get_pods returned the real pod under items, and the agent answered from partial inventory instead of forcing investigate_pod on jenkins-legacy-0 in the jenkins-legacy namespace.",
+  "expected_tools": ["investigate_pod", "find_workload", "get_pods"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "expected_answer_contains": ["jenkins-legacy-0", "jenkins-legacy"],
+  "must_not_contain": ["jenkins-legacy in the default namespace", "kubectl get events", "kubectl logs jenkins-legacy-0", "verify the namespace"],
+  "expect_root_cause_summary": true,
+  "expect_eval_retrieval_context": true,
+  "tags": ["synthesis", "remediation", "crashloop", "pod_discovery", "root_cause"],
+  "notes": "Catches regressions where get_pods inventory uses an items array and the loop fails to promote the concrete failing pod into a follow-up investigation."
+}

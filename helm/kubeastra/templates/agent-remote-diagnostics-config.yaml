@@ -1,0 +1,122 @@
+{{- if .Values.remoteDiagnostics.enabled }}
+{{- $fullname := include "kubeastra.fullname" . -}}
+{{- $paths := .Values.remoteDiagnostics.paths -}}
+{{- $credentialRoot := $paths.credentialRoot -}}
+{{- $tokenRoot := $paths.tokenMountRoot -}}
+{{- $configRoot := $paths.configRoot -}}
+{{- /*
+   Sanity-check operator inputs early so an empty registry, an unrestricted
+   SSH egress CIDR, or a scope with an empty allowed_target_ids never lands
+   in a rendered manifest. Fail-closed at ``helm template`` time rather than
+   at pod startup.
+*/ -}}
+{{- if not (kindIs "map" .Values.remoteDiagnostics.targets) }}
+{{- fail "remoteDiagnostics.targets must be a map (target_id -> config)" -}}
+{{- end }}
+{{- if not (kindIs "map" .Values.remoteDiagnostics.callerScopes) }}
+{{- fail "remoteDiagnostics.callerScopes must be a map (scope name -> config)" -}}
+{{- end }}
+{{- if eq (len .Values.remoteDiagnostics.targets) 0 }}
+{{- fail "remoteDiagnostics.enabled=true but remoteDiagnostics.targets is empty — startup would fail closed" -}}
+{{- end }}
+{{- if eq (len .Values.remoteDiagnostics.callerScopes) 0 }}
+{{- fail "remoteDiagnostics.enabled=true but remoteDiagnostics.callerScopes is empty" -}}
+{{- end }}
+{{- if eq (len .Values.remoteDiagnostics.knownHostsEntries) 0 }}
+{{- fail "remoteDiagnostics.enabled=true but knownHostsEntries is empty — no host key can be verified" -}}
+{{- end }}
+{{- /*
+   Rebuild the target and caller_scopes YAML shapes the Python loaders
+   expect. Values.yaml carries deployment metadata (Secret refs, key names)
+   that the loader must not see; strip it here.
+*/ -}}
+{{- /*
+   Volume names on the backend Deployment are ``target-credentials-<id>``
+   (prefix 19 chars) and ``caller-token-<name>`` (prefix 13 chars). K8s
+   caps volume names at 63 chars per DNS-1123 label, so we bound the
+   composed value here at template time. Registry regexes allow up to 63
+   chars for both id and scope name; without this check a maximally-long
+   name would only fail at ``kubectl apply``.
+*/ -}}
+{{- $targetsOut := dict -}}
+{{- range $id, $t := .Values.remoteDiagnostics.targets -}}
+  {{- if not (kindIs "map" $t) -}}
+    {{- fail (printf "remoteDiagnostics.targets.%s must be a map" $id) -}}
+  {{- end -}}
+  {{- if not (hasKey $t "connection") -}}
+    {{- fail (printf "remoteDiagnostics.targets.%s.connection is required" $id) -}}
+  {{- end -}}
+  {{- if not (hasKey $t "credentialSecretRef") -}}
+    {{- fail (printf "remoteDiagnostics.targets.%s.credentialSecretRef.name is required" $id) -}}
+  {{- end -}}
+  {{- if gt (len (printf "target-credentials-%s" $id)) 63 -}}
+    {{- fail (printf "remoteDiagnostics.targets.%s: target_id too long — combined volume name %q exceeds K8s 63-char label limit" $id (printf "target-credentials-%s" $id)) -}}
+  {{- end -}}
+  {{- $conn := deepCopy $t.connection -}}
+  {{- $_ := set $conn "credential_path" (printf "%s/%s" $credentialRoot $id) -}}
+  {{- $entry := deepCopy $t -}}
+  {{- $_ := unset $entry "credentialSecretRef" -}}
+  {{- $_ := set $entry "connection" $conn -}}
+  {{- $_ := set $targetsOut $id $entry -}}
+{{- end -}}
+{{- $scopesOut := dict -}}
+{{- range $name, $s := .Values.remoteDiagnostics.callerScopes -}}
+  {{- if not (kindIs "map" $s) -}}
+    {{- fail (printf "remoteDiagnostics.callerScopes.%s must be a map" $name) -}}
+  {{- end -}}
+  {{- if not (hasKey $s "tokenSecretRef") -}}
+    {{- fail (printf "remoteDiagnostics.callerScopes.%s.tokenSecretRef.name is required" $name) -}}
+  {{- end -}}
+  {{- if gt (len (printf "caller-token-%s" $name)) 63 -}}
+    {{- fail (printf "remoteDiagnostics.callerScopes.%s: scope name too long — combined volume name %q exceeds K8s 63-char label limit" $name (printf "caller-token-%s" $name)) -}}
+  {{- end -}}
+  {{- $currentKey := default "current" $s.currentTokenKey -}}
+  {{- $entry := dict "allowed_target_ids" $s.allowed_target_ids "current_token_path" (printf "%s/%s/%s" $tokenRoot $name $currentKey) -}}
+  {{- if $s.previousTokenKey -}}
+    {{- $_ := set $entry "previous_token_path" (printf "%s/%s/%s" $tokenRoot $name $s.previousTokenKey) -}}
+  {{- end -}}
+  {{- $_ := set $scopesOut $name $entry -}}
+{{- end -}}
+{{- range .Values.remoteDiagnostics.network.targetEgress -}}
+  {{- if or (eq .cidr "0.0.0.0/0") (eq .cidr "::/0") -}}
+    {{- fail (printf "remoteDiagnostics.network.targetEgress must not include unrestricted CIDR %q" .cidr) -}}
+  {{- end -}}
+{{- end -}}
+{{- range .Values.remoteDiagnostics.network.bastionEgress -}}
+  {{- if or (eq .cidr "0.0.0.0/0") (eq .cidr "::/0") -}}
+    {{- fail (printf "remoteDiagnostics.network.bastionEgress must not include unrestricted CIDR %q" .cidr) -}}
+  {{- end -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-agent-remote-diagnostics
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "kubeastra.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+data:
+  # ── targets.yaml ────────────────────────────────────────────────────────
+  # Consumed by target_registry.load_registry(). credential_path is derived
+  # server-side from remoteDiagnostics.paths.credentialRoot and the target_id
+  # so operators cannot accidentally point one target at another's Secret.
+  targets.yaml: |
+    targets:
+{{ (dict "targets" $targetsOut).targets | toYaml | indent 6 }}
+
+  # ── caller-scopes.yaml ──────────────────────────────────────────────────
+  # Consumed by caller_scopes.load_registry(). current_token_path /
+  # previous_token_path are derived from remoteDiagnostics.paths.tokenMountRoot
+  # and the caller scope name.
+  caller-scopes.yaml: |
+    callerScopes:
+{{ (dict "callerScopes" $scopesOut).callerScopes | toYaml | indent 6 }}
+
+  # ── ssh_known_hosts ─────────────────────────────────────────────────────
+  # Pinned host keys, one line per entry. Consumed by paramiko via
+  # SSH_KNOWN_HOSTS_PATH. Never includes secret material.
+  ssh_known_hosts: |
+{{- range .Values.remoteDiagnostics.knownHostsEntries }}
+    {{ . }}
+{{- end }}
+{{- end }}

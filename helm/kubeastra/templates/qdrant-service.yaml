@@ -1,0 +1,20 @@
+{{- if .Values.qdrant.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kubeastra.qdrantServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeastra.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "kubeastra.qdrant.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 6333
+      targetPort: http
+    - name: grpc
+      port: 6334
+      targetPort: grpc
+{{- end }}

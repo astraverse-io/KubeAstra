@@ -1,16 +1,22 @@
+# Local Qdrant for RAG development.
+#
+#   make docker-up   → starts Qdrant on http://localhost:6333
+#   make seed        → loads ~60 sample errors via data/seed.py
+#
+# Production deployment lives in helm/kubeastra/templates/qdrant-*.yaml
+# (StatefulSet with PVC + ClusterIP service).
 services:
-  weaviate:
-    image: semitechnologies/weaviate:1.28.4
+  qdrant:
+    image: qdrant/qdrant:v1.11.0
     ports:
-      - "8080:8080"
+      - "6333:6333"   # HTTP API (used by qdrant-client by default)
+      - "6334:6334"   # gRPC API (optional)
     environment:
-      QUERY_DEFAULTS_LIMIT: 20
-      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
-      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
-      DEFAULT_VECTORIZER_MODULE: "none"
-      CLUSTER_HOSTNAME: "node1"
+      QDRANT__LOG_LEVEL: INFO
+      # Keep dev frictionless: anonymous access OK. Production sets
+      # QDRANT__SERVICE__API_KEY (see Helm chart).
     volumes:
-      - weaviate_data:/var/lib/weaviate
+      - qdrant_data:/qdrant/storage
 
 volumes:
-  weaviate_data:
+  qdrant_data:

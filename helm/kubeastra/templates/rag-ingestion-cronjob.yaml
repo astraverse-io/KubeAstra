@@ -1,0 +1,150 @@
+{{- if and .Values.rag.enabled .Values.rag.ingestion.schedule }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "kubeastra.fullname" . }}-rag-ingestion
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeastra.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.rag.ingestion.schedule | quote }}
+  # Don't pile up jobs if one is slow — skip the next tick instead.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400  # auto-clean a day after completion
+      template:
+        metadata:
+          labels:
+            {{- include "kubeastra.labels" . | nindent 12 }}
+            app.kubernetes.io/component: rag-ingestion
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: {{ include "kubeastra.serviceAccountName" . }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: rag-ingestion
+              image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+              imagePullPolicy: {{ .Values.backend.image.pullPolicy | default "IfNotPresent" }}
+              command: ["python", "/app/mcp/scripts/reindex.py"]
+              env:
+                - name: RAG_CONFIG
+                  value: /etc/rag/config.yaml
+                # sentence-transformers wants to cache the embedding model.
+                # The pod has readOnlyRootFilesystem so ~/.cache (the default)
+                # is unwritable. Redirect to /tmp which is an emptyDir.
+                - name: HF_HOME
+                  value: /tmp/hf-cache
+                - name: TRANSFORMERS_CACHE
+                  value: /tmp/hf-cache
+                - name: SENTENCE_TRANSFORMERS_HOME
+                  value: /tmp/hf-cache
+                - name: QDRANT_URL
+                  value: {{ include "kubeastra.qdrantUrl" . | quote }}
+                - name: QDRANT_COLLECTION
+                  value: {{ .Values.backend.config.qdrantCollection | quote }}
+                - name: EMBEDDING_MODEL
+                  value: {{ .Values.backend.config.embeddingModel | quote }}
+                - name: EMBEDDING_DIM
+                  value: {{ .Values.backend.config.embeddingDim | quote }}
+                {{- if .Values.qdrant.auth.apiKeySecretRef }}
+                - name: QDRANT_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.qdrant.auth.apiKeySecretRef }}
+                      key: {{ .Values.qdrant.auth.apiKeySecretKey | default "apiKey" }}
+                {{- end }}
+                {{- range $name, $val := .Values.rag.ingestion.extraEnv }}
+                - name: {{ $name }}
+                  value: {{ $val | quote }}
+                {{- end }}
+                {{- range $name, $ref := .Values.rag.ingestion.extraEnvFromSecrets }}
+                - name: {{ $name }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $ref.secretName }}
+                      key: {{ $ref.key }}
+                {{- end }}
+                {{- if .Values.deploymentRepo.enabled }}
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.deploymentRepo.tokenSecretName }}
+                      key: {{ .Values.deploymentRepo.tokenSecretKey | default "token" }}
+                {{- end }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: rag-config
+                  mountPath: /etc/rag
+                  readOnly: true
+                # /tmp scratch for git clones + scratch files; readOnlyRoot
+                # makes everything else immutable.
+                - name: tmp
+                  mountPath: /tmp
+                {{- if .Values.rag.ingestion.knowledgeVolume.enabled }}
+                - name: knowledge
+                  mountPath: {{ .Values.rag.ingestion.knowledgeVolume.mountPath | default "/knowledge" }}
+                  readOnly: true
+                {{- end }}
+              resources:
+                {{- toYaml .Values.rag.ingestion.resources | nindent 16 }}
+          volumes:
+            - name: rag-config
+              configMap:
+                name: {{ include "kubeastra.fullname" . }}-rag-config
+            - name: tmp
+              emptyDir: {}
+            {{- if .Values.rag.ingestion.knowledgeVolume.enabled }}
+            - name: knowledge
+              {{- if .Values.rag.ingestion.knowledgeVolume.configMapName }}
+              configMap:
+                name: {{ .Values.rag.ingestion.knowledgeVolume.configMapName }}
+              {{- else if .Values.rag.ingestion.knowledgeVolume.pvcName }}
+              persistentVolumeClaim:
+                claimName: {{ .Values.rag.ingestion.knowledgeVolume.pvcName }}
+              {{- else }}
+              emptyDir: {}
+              {{- end }}
+            {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubeastra.fullname" . }}-rag-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeastra.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # NOTE: rendered by Helm from values. To change ingestion sources,
+    # edit values.yaml — do not edit this ConfigMap in-cluster.
+{{- $sources := .Values.rag.ingestion.config.sources | default list }}
+{{- if .Values.deploymentRepo.enabled }}
+{{- $deploy := dict "kind" "git_repo" "url" .Values.deploymentRepo.url "branch" .Values.deploymentRepo.branch "token_env" "GITHUB_TOKEN" "emit_role_aggregates" true "collection" "deployment_repo" }}
+{{- if .Values.deploymentRepo.subdir }}
+{{- $_ := set $deploy "subdir" .Values.deploymentRepo.subdir }}
+{{- end }}
+{{- $sources = concat $sources (list $deploy) }}
+{{- end }}
+    sources:
+{{ toYaml $sources | indent 6 }}
+    chunking:
+{{ toYaml .Values.rag.ingestion.config.chunking | indent 6 }}
+{{- end }}

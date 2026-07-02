@@ -60,3 +60,13 @@ yarn-error.log*
 coverage/
 scripts/demo-recorder/output/
 helm/kubeastra/values-dev.yaml
+
+# ── Helm secrets ──────────────────────────────────────────────────────────────
+# Never commit values-secrets.yaml — it contains real API keys / tokens.
+helm/**/values-secrets.yaml
+values-secrets.yaml
+
+# ── Virtual envs (any variant) ────────────────────────────────────────────────
+.venv-eval/
+.venv-*/
+venv-*/

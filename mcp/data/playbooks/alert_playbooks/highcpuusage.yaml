@@ -1,0 +1,111 @@
+id: highcpuusage
+extends: bases/cpu_resource_base.yaml
+includes:
+  - rca_scoring/highcpuusage_rca.yaml
+version: "1.0"
+display_name: High CPU Usage Investigation
+supported_alerts:
+  - pattern: CPU_RESOURCE_PRESSURE
+    fields: [classification.category]
+  - pattern: CPU saturation, throttling, high load, or CPU steal
+    fields: [name, labels.alertname, annotations.summary, annotations.description]
+steps:
+  - id: query_cpu_usage
+    tool: prom_query
+    description: Uses the pod_cpu_usage template from app/investigation/prometheus/queries/query_templates.yaml.
+    args:
+      template: pod_cpu_usage
+      query: 'rate(container_cpu_usage_seconds_total{namespace="{{ alert.labels.namespace }}", pod="{{ alert.labels.pod }}"}[5m])'
+  - id: collect_recent_events
+    tool: get_events
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      involved_object: "{{ alert.labels.pod }}"
+  - id: collect_recent_logs
+    tool: get_pod_logs
+    description: Optional application log check when CPU alert appears secondary to pod health issues.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+  - id: query_node_cpu_usage
+    tool: prom_query
+    description: Uses the node_cpu_usage template for node-level CPU alerts from real Prometheus rules.
+    args:
+      template: node_cpu_usage
+      query: '100 - (avg(rate(node_cpu_seconds_total{mode="idle", instance="{{ alert.labels.instance }}"}[5m])) * 100)'
+  - id: query_cpu_steal
+    tool: prom_query
+    description: Mirrors the HostCpuStealNoisyNeighbor rule retrieved from Prometheus.
+    args:
+      source_alert_rule: HostCpuStealNoisyNeighbor
+      query: 'avg by (instance) (rate(node_cpu_seconds_total{mode="steal", instance="{{ alert.labels.instance }}"}[5m])) * 100'
+  - id: query_cpu_throttling
+    tool: prom_query
+    description: Checks whether the container is being CPU-throttled by CFS quota.
+    args:
+      template: container_cpu_throttling
+      query: 'sum(rate(container_cpu_cfs_throttled_seconds_total{namespace="{{ alert.labels.namespace }}", pod="{{ alert.labels.pod }}"}[5m])) by (pod) / sum(rate(container_cpu_cfs_periods_total{namespace="{{ alert.labels.namespace }}", pod="{{ alert.labels.pod }}"}[5m])) by (pod)'
+decision_rules:
+  - id: pod_cpu_saturation_confirmed
+    applies_to:
+      alert_categories: [cpu_resource_pressure]
+      alert_names: [HighCPUUsage, ContainerCPUThrottling]
+    priority: 100
+    when:
+      all:
+        - evidence.prometheus.pod_cpu_usage_percent >= 85
+        - evidence.kubernetes.pod.phase == "Running"
+    prefer_tools: [prom_query, describe_pod]
+    focus: [cpu_usage, cpu_limit, cpu_request]
+    interpretation: Workload is CPU saturated while still running.
+  - id: cpu_throttling_suspected
+    applies_to:
+      alert_categories: [cpu_resource_pressure]
+      alert_names: [ContainerCPUThrottling]
+    priority: 95
+    when:
+      any:
+        - evidence.prometheus.cpu_throttling_ratio > 0.2
+        - evidence.annotations.summary contains "throttling"
+    prefer_tools: [prom_query, describe_pod]
+    prefer_steps: [query_cpu_throttling, describe_target_pod]
+    focus: [cpu_cfs_throttled_seconds, cpu_limit, cpu_request]
+    interpretation: Container may be CPU throttled by configured limits.
+  - id: node_cpu_pressure
+    applies_to:
+      alert_categories: [cpu_resource_pressure]
+      alert_names: [HostHighCpuLoad, NodeCPUHigh, HighNodeCPU]
+    priority: 90
+    when:
+      any:
+        - evidence.prometheus.node_cpu_usage_percent >= 85
+        - alert.labels.instance exists
+    prefer_tools: [prom_query, get_events]
+    focus: [node_cpu_usage, noisy_neighbor, affected_workloads]
+    interpretation: CPU pressure appears node-level rather than pod-local.
+  - id: cpu_steal_noisy_neighbor
+    applies_to:
+      alert_categories: [cpu_resource_pressure]
+      alert_names: [HostCpuStealNoisyNeighbor]
+    priority: 85
+    when:
+      any:
+        - evidence.prometheus.cpu_steal_percent > 5
+        - alert.name == "HostCpuStealNoisyNeighbor"
+    prefer_tools: [prom_query]
+    focus: [cpu_steal, hypervisor_contention, noisy_neighbor]
+    interpretation: Node may be affected by CPU steal or noisy-neighbor contention.
+remediation_mappings:
+  HighCPUUsage:
+    - Compare usage to request and limit values.
+    - Review traffic spikes, hot loops, and dependency latency.
+  HostHighCpuLoad:
+    - Identify top CPU-consuming workloads on the node.
+    - Check whether recent traffic or batch jobs increased node load.
+  HostCpuStealNoisyNeighbor:
+    - Check node CPU steal and noisy-neighbor indicators.
+    - Consider moving workload away from the affected node if CPU steal remains high.
+stop_conditions:
+  max_confidence: 0.8
+  max_steps_reached: true
+  root_cause_identified: true

@@ -5,23 +5,50 @@ Works with pasted errors from logs, CI/CD pipelines, or any source (no live clus
 
 import json
 
-from services.error_parser import extract_context
+from services.error_parser import extract_context, reconcile_category
 from services.llm_service import llm_service
 from services.vector_db import vector_db
 from services.embeddings import embeddings
 
 
-def run(error_text: str, tool: str = "kubernetes", environment: str = "production") -> str:
-    context = extract_context(error_text, tool)
+def run(
+    error_text: str,
+    tool: str = "kubernetes",
+    environment: str = "production",
+    *,
+    structured_payload=None,
+    diagnostic_mode: str | None = None,
+) -> str:
+    context = extract_context(
+        error_text,
+        tool,
+        structured_payload=structured_payload,
+    )
     context["environment"] = environment
+    if diagnostic_mode:
+        context["diagnostic_mode"] = diagnostic_mode
 
     query_vector = embeddings.embed(error_text)
     similar = vector_db.search(query_vector, tool=tool, limit=5)
 
     result = llm_service.analyze(error_text, context, similar)
+    llm_category = result.get("category")
+    category, reconciled_source = reconcile_category(
+        context["category"], llm_category
+    )
+    category_source = (
+        context.get("category_source", reconciled_source)
+        if category == context["category"]
+        else reconciled_source
+    )
 
     output = {
-        "category":   result.get("category", context["category"]),
+        "category":   category,
+        "classification": {
+            "source": category_source,
+            "deterministic_category": context["category"],
+            "llm_category": llm_category,
+        },
         "severity":   result.get("severity", "unknown"),
         "confidence": result.get("confidence", 0.0),
         "root_cause": result.get("root_cause", ""),
@@ -40,6 +67,8 @@ def run(error_text: str, tool: str = "kubernetes", environment: str = "productio
         ],
         "context": {k: v for k, v in context.items() if k not in ("error_hash",)},
     }
+    if context.get("request_evidence"):
+        output["request_evidence"] = context["request_evidence"]
 
     # Pass through corrected code fields when Gemini provides them
     if result.get("corrected_snippet"):

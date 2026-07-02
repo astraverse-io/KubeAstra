@@ -1,0 +1,148 @@
+name: Evals
+
+# Quality-regression tests for LLM-decision features (blueprint Appendix E).
+# Complements the compile + import smoke checks in `ci.yml` with end-to-end
+# checks that the router / classifier / summarizer return CORRECT results,
+# not just runnable code.
+#
+# Two cadences:
+#   evals-offline  — every PR, uses fake embedder + mocked LLM (deterministic, free)
+#   evals-live     — push to main + nightly, uses real sentence-transformers
+#                    and (when secrets are configured) real provider calls
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # 06:00 UTC daily — runs the LIVE eval suite against the current main.
+    # Pick something off-hours for the team so CI minutes overlap minimally
+    # with PR traffic.
+    - cron: "0 6 * * *"
+  # Allow manual runs for testing the workflow itself.
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same PR/branch when a new push arrives.
+# Reduces wasted CI minutes on rapid-fire pushes; nightly schedule still
+# always runs because it uses a different concurrency group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # OFFLINE — runs on every PR. Mocked + fake-embedder. Free. Deterministic.
+  # ─────────────────────────────────────────────────────────────────────────
+  evals-offline:
+    name: Evals — offline (mocked)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Belt-and-braces: ensure no LIVE branch fires even if a stray env
+      # var leaked from the runner image.
+      EVAL_LIVE_LLM: "false"
+      PYTHONPATH: ${{ github.workspace }}/mcp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: mcp/requirements.txt
+
+      - name: Install MCP dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r mcp/requirements.txt
+
+      # Smoke tests run first — if these fail, evals would just amplify
+      # the noise. Fail fast.
+      - name: pytest (smoke + acceptance tests)
+        working-directory: mcp
+        run: |
+          python -m pytest tests/ -v --tb=short
+
+      # ── Per-feature evals (offline mode) ─────────────────────────────────
+      # Add new evals here as they ship. Each is a `python -m evals.X.run`
+      # call. They return 0 on pass, 1 on fail — the job fails on any 1.
+      - name: Eval § RAG router
+        working-directory: mcp
+        run: python -m evals.router.run
+
+      # - name: Eval § Tool summarization
+      #   working-directory: mcp
+      #   run: python -m evals.summarization.run
+      #
+      # - name: Eval § Capture classifier
+      #   working-directory: mcp
+      #   run: python -m evals.classifier.run
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # LIVE — main branch + nightly. Uses real sentence-transformers, and
+  # (when configured) real LLM provider calls. Catches drift in provider
+  # behavior that the mocked PR job can't detect.
+  # ─────────────────────────────────────────────────────────────────────────
+  evals-live:
+    name: Evals — LIVE (real embeddings + LLM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Don't run on PRs from forks — they can't access secrets, and we don't
+    # want PR authors to be able to consume eval-API credits.
+    if: github.event_name != 'pull_request'
+    env:
+      EVAL_LIVE_LLM: "true"
+      PYTHONPATH: ${{ github.workspace }}/mcp
+      # Cache HuggingFace model downloads between runs (~90MB for the default
+      # sentence-transformers model). HF_HOME is the canonical override.
+      HF_HOME: ${{ github.workspace }}/.cache/huggingface
+      # Provider creds — only available when the secret is configured.
+      # When unset, evals that need LLM calls will skip via provider.enabled=false.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_EVAL_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: mcp/requirements.txt
+
+      # Cache the HF model dir so the ~90MB sentence-transformers download
+      # only happens on the FIRST run after a model change. Cache key
+      # includes the embedding model name so model swaps invalidate cleanly.
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/huggingface
+          key: hf-models-MiniLM-L6-v2
+          restore-keys: |
+            hf-models-
+
+      - name: Install MCP dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r mcp/requirements.txt
+
+      - name: Eval § RAG router (LIVE)
+        working-directory: mcp
+        run: python -m evals.router.run
+
+      # - name: Eval § Tool summarization (LIVE)
+      #   working-directory: mcp
+      #   run: python -m evals.summarization.run
+      #
+      # - name: Eval § Capture classifier (LIVE)
+      #   working-directory: mcp
+      #   run: python -m evals.classifier.run
+
+      # If we add expensive evals, gate them on a separate label / schedule.
+      # Per Appendix C: each Gemini Flash classifier call is ~$0.0002, so
+      # nightly cost is bounded. Sonnet calls would dominate — flag if added.
+
+      # Optional: report nightly results to a Slack channel via
+      # rtCamp/action-slack-notify or similar. Skipped here to keep the
+      # workflow dependency-free.

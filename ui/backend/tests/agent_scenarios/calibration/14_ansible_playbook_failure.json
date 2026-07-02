@@ -1,0 +1,10 @@
+{
+  "id": "ansible_playbook_failure",
+  "prompt": "The deployment playbook site.yml failed on host web-server-01. Which task failed and why?",
+  "expected_output": "The playbook failed on task 'Install Nginx' because the package manager yum was locked by another process.",
+  "context": "Scenario testing Ansible task failure diagnosis. Expects the diagnostic evidence to extract the failed task name and reason.",
+  "expected_tools": ["kb_search"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "tags": ["ansible", "synthesis", "playbook", "failure"],
+  "notes": "Ensures the agent can trace back through deployment repo files or logs to locate the failed Ansible task."
+}

@@ -1,8 +1,8 @@
-# Kubeastra — Kubernetes Deployment Guide
+# K8s DevOps Assistant — Kubernetes Deployment Guide
 
-This guide covers everything needed to build Docker images, push them to your local Artifactory registry, and deploy the full Kubeastra stack onto a Kubernetes cluster using the Helm chart at `helm/kubeastra/`.
+This guide covers everything needed to build Docker images, push them to your local Artifactory registry, and deploy the full AI DevOps Assistant stack onto a Kubernetes cluster using the Helm chart at `helm/kubeastra/`.
 
-> **Workspace root:** All paths in this guide are relative to `kubeastra/` unless stated otherwise.
+> **Workspace root:** All paths in this guide are relative to `AI_DevOps_Assistant/k8s-devops-ai-assistant/` unless stated otherwise.
 
 ---
 
@@ -10,33 +10,45 @@ This guide covers everything needed to build Docker images, push them to your lo
 
 ```
 Artifactory (your registry)
-  ├── kubeastra-backend:1.0.0    ← FastAPI + mcp (one image)
-  └── kubeastra-frontend:1.0.0  ← Next.js standalone
+  ├── k8s-devops-backend:main-<SHA>   ← FastAPI :8000 + HTTP MCP :8001 + mcp
+  └── k8s-devops-frontend:main-<SHA>  ← Next.js standalone
 
-Kubernetes namespace: kubeastra
-  ├── Deployment/backend         (1 pod — FastAPI on :8800 + MCP on :8001)
-  ├── Deployment/frontend        (1 pod — Next.js on :3300)
-  ├── Service/backend            (ClusterIP :8800 — internal, frontend proxies to it)
-  ├── Service/frontend           (LoadBalancer :3300 — browser access)
-  ├── Service/mcp                (ILB :8001 — IDE access for Cursor/Claude Desktop)
-  ├── ConfigMap/app-config       (env vars — timeouts, namespaces, model names)
-  ├── Secret/app-secrets         (GEMINI_API_KEY + kubeconfig file + MCP auth token)
-  ├── ServiceAccount             (pod identity)
-  ├── ClusterRole + Binding      (kubectl read/write permissions)
-  ├── PersistentVolumeClaim      (SQLite chat_history.db — optional but recommended)
-  └── Ingress                    (optional — disabled by default)
+Kubernetes namespace: k8s-devops
+  ├── Deployment/backend                       (FastAPI :8000 + HTTP MCP :8001)
+  ├── Deployment/frontend                      (Next.js :3000, server-side proxy)
+  ├── Service/backend                          (ClusterIP :8000)
+  ├── Service/mcp                              (ClusterIP :8001 — external MCP surface)
+  ├── Service/frontend                         (ClusterIP :3000)
+  ├── StatefulSet/qdrant + Service             (Qdrant v1.11.x for RAG)
+  ├── PVC/qdrant-data                          (Qdrant vector storage)
+  ├── PVC/chat-history                         (SQLite — optional but recommended)
+  ├── NetworkPolicy/qdrant                     (backend → qdrant ingress)
+  ├── Job/rag-bootstrap                        (post-install/upgrade hook — first reindex)
+  ├── CronJob/rag-ingestion                    (periodic reindex from configured sources)
+  ├── ConfigMap/app-config                     (RAG flags, triage flags, capture knobs)
+  ├── ConfigMap/kb-config                      (KB_CONFIG_YAML — ingestion source list)
+  ├── Secret/app-secrets                       (GEMINI_API_KEY + kubeconfig)
+  ├── Secret/deployment-repo-token             (PAT for the deployment repo, Phase 1.5)
+  ├── ServiceAccount + ClusterRole + Binding   (pod identity, kubectl perms)
+  └── Ingress                                  (optional — disabled by default)
 ```
 
 ### Key features in the deployed stack
 
 | Feature | How it works in K8s |
 |---|---|
-| Chat UI | Next.js frontend proxies `/api/*` → FastAPI backend |
-| Gemini AI analysis | Needs `GEMINI_API_KEY` in the secrets |
+| Chat UI | Next.js frontend proxies `/api/*` → FastAPI backend. SSE streaming via `/api/chat/stream` |
+| Gemini AI | `GEMINI_API_KEY` from Secret; dynamic model discovery via google-genai SDK |
 | Local kubectl | kubeconfig Secret mounted at `/app/kubeconfig/config` |
-| SSH remote cluster | Users provide SSH creds in the UI at runtime — no extra config needed |
-| SQLite persistence | `chat_history.db` at `/app/data/` — mount a PVC to survive pod restarts |
-| HTTP MCP server | Internal LoadBalancer on `:8001` — IDE clients connect via ILB IP |
+| SSH remote cluster | Users provide SSH creds in the UI at runtime — no extra K8s config |
+| RAG (Phase 1.x) | Qdrant StatefulSet ships with the chart; collections bootstrapped at pod startup; ingestion runs on Helm hooks + a CronJob |
+| Deployment-repo KB (Phase 1.5) | Ansible-aware chunking; auth via `deploymentRepo.token` (PAT). See [BEST_FEATURES_QUICKSTART.md](BEST_FEATURES_QUICKSTART.md) |
+| Proactive cluster triage (Phase 3.0) | First chat of a session emits a `triage_greet` SSE event surfacing CrashLoop/Pending/Warning state. Flag: `enableProactiveTriage` |
+| Conversation memory (Phase 2.2) | Per-session "you've been working on X" prefix injected into prompts. SQLite-backed |
+| Semantic prompt cache (Phase 2.3) | Tight-threshold match against recent `session_memory` → instant cached answer, zero LLM calls |
+| Session capture flywheel (Phase 1.3 + 1.4) | Worthy chats → `session_memory` (90d TTL). User 👍 → promoted to `runbook` (verified, no TTL) |
+| HTTP MCP server | Started by the same entrypoint as FastAPI; reachable at `Service/mcp:8001/mcp/` for external MCP clients |
+| SQLite persistence | `chat_history.db` at `/app/data/` — PVC required for durable chat history, session memory, cluster selections, and feedback audit records |
 
 ---
 
@@ -54,32 +66,38 @@ Kubernetes namespace: kubeastra
 
 ## Step 1 — Build the backend Docker image
 
-The backend image bundles both `ui/backend` and `mcp` into a single image. The build context **must be `kubeastra/`** so Docker can COPY both subdirectories.
+The backend image bundles both `ui/backend` and `mcp` into a single image. The build context **must be `k8s-devops-ai-assistant/`** so Docker can COPY both subdirectories.
 
 ```bash
-# Navigate to the repo root (kubeastra/)
-cd /path/to/kubeastra
+# Navigate to the repo root (k8s-devops-ai-assistant/)
+cd /path/to/AI_DevOps_Assistant/k8s-devops-ai-assistant
 
-# Build the backend image
+# Build the backend image — convention is to tag with main-<short-SHA>
 # Replace 'your-artifactory.example.com' with your actual Artifactory hostname
+SHA=$(git rev-parse --short HEAD)
 docker build \
   -f ui/backend/Dockerfile \
-  -t your-artifactory.example.com/kubeastra-backend:1.0.0 \
+  -t your-artifactory.example.com/k8s-devops-backend:main-${SHA} \
   .
 ```
+
+> **Note:** Jenkins (or whatever CI you use) is expected to do this automatically on every push to `main`. The manual command above is for one-off rebuilds.
 
 **What this image contains:**
 - Python 3.11-slim base
 - `kubectl` binary (downloaded at build time)
-- All Python dependencies from both `mcp/requirements.txt` and `ui/backend/requirements.txt` (including `paramiko` for SSH)
+- All Python dependencies from both `mcp/requirements.txt` and `ui/backend/requirements.txt` (paramiko for SSH, qdrant-client pinned to match server, sentence-transformers + torch CPU for embeddings, google-genai for Gemini)
 - `mcp/` source at `/app/mcp/`
 - `ui/backend/` source at `/app/`
-- `KUBECONFIG=/app/kubeconfig/config` (the kubeconfig is mounted as a Secret at runtime)
+- `entrypoint.sh` starts **two processes**: FastAPI on `:8000` (chat) and the HTTP MCP server on `:8001` (external MCP clients)
+- `KUBECONFIG=/app/kubeconfig/config` (mounted as a Secret at runtime)
+- `HF_HOME=/tmp/hf-cache` so the sentence-transformer model survives across requests on a read-only rootfs
 - SQLite database written to `/app/data/chat_history.db` at runtime
+- Import-time smoke tests run as part of the build (see `tests/test_module_imports.py`) — a missing import in `react.py` / `triage.py` / `chat.py` fails the image build, not production
 
 **Verify the build:**
 ```bash
-docker run --rm your-artifactory.example.com/kubeastra-backend:1.0.0 python -c "import fastapi, paramiko; print('OK')"
+docker run --rm your-artifactory.example.com/k8s-devops-backend:main-${SHA} python -c "import fastapi, paramiko, qdrant_client, sentence_transformers; print('OK')"
 ```
 
 ---
@@ -95,26 +113,27 @@ The frontend includes a **server-side proxy** at `app/api/[...path]/route.ts`.
 
 ```bash
 # Navigate to the frontend directory
-cd /path/to/kubeastra/ui/frontend
+cd /path/to/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/frontend
 
-# Build the frontend image
+# Build the frontend image — same SHA convention as the backend
+SHA=$(git rev-parse --short HEAD)
 docker build \
-  -t your-artifactory.example.com/kubeastra-frontend:1.0.0 \
+  -t your-artifactory.example.com/k8s-devops-frontend:main-${SHA} \
   .
 ```
 
 At runtime, the frontend container reads:
 
 ```bash
-API_BASE_URL=http://<backend-host>:8800
+API_BASE_URL=http://<backend-host>:8000
 ```
 
 from its environment.
 
 **Verify the build:**
 ```bash
-docker run --rm -p 3300:3300 your-artifactory.example.com/kubeastra-frontend:1.0.0
-# Open http://localhost:3300 — you should see the chat UI
+docker run --rm -p 3000:3000 your-artifactory.example.com/k8s-devops-frontend:main-${SHA}
+# Open http://localhost:3000 — you should see the chat UI
 ```
 
 ---
@@ -125,18 +144,16 @@ docker run --rm -p 3300:3300 your-artifactory.example.com/kubeastra-frontend:1.0
 # Login to Artifactory (if not already logged in)
 docker login your-artifactory.example.com
 
-# Push backend image
-docker push your-artifactory.example.com/kubeastra-backend:1.0.0
-
-# Push frontend image
-docker push your-artifactory.example.com/kubeastra-frontend:1.0.0
+# Push backend + frontend images (whatever SHA tag you built)
+docker push your-artifactory.example.com/k8s-devops-backend:main-${SHA}
+docker push your-artifactory.example.com/k8s-devops-frontend:main-${SHA}
 ```
 
 If your cluster needs an image pull secret to access Artifactory:
 
 ```bash
 kubectl create secret docker-registry artifactory-pull-secret \
-  --namespace kubeastra \
+  --namespace k8s-devops \
   --docker-server=your-artifactory.example.com \
   --docker-username=YOUR_USERNAME \
   --docker-password=YOUR_PASSWORD \
@@ -170,22 +187,22 @@ This creates a minimal kubeconfig with only the permissions the app needs:
 
 ```bash
 # 1. Create a service account in the TARGET cluster the app will query
-kubectl create serviceaccount kubeastra-app -n kube-system
+kubectl create serviceaccount k8s-devops-app -n kube-system
 
 # 2. Create a ClusterRoleBinding for it (reuse the role from the Helm chart)
-kubectl create clusterrolebinding kubeastra-app \
+kubectl create clusterrolebinding k8s-devops-app \
   --clusterrole=cluster-reader \
-  --serviceaccount=kube-system:kubeastra-app
+  --serviceaccount=kube-system:k8s-devops-app
 
 # 3. Create a long-lived token (K8s 1.24+)
-kubectl create token kubeastra-app -n kube-system --duration=8760h > /tmp/kubeastra-token.txt
+kubectl create token k8s-devops-app -n kube-system --duration=8760h > /tmp/k8s-devops-token.txt
 
 # 4. Build a minimal kubeconfig using the token
 CLUSTER_SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 CLUSTER_CA=$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
-TOKEN=$(cat /tmp/kubeastra-token.txt)
+TOKEN=$(cat /tmp/k8s-devops-token.txt)
 
-cat > /tmp/kubeastra-kubeconfig.yaml << EOF
+cat > /tmp/k8s-devops-kubeconfig.yaml << EOF
 apiVersion: v1
 kind: Config
 clusters:
@@ -196,17 +213,17 @@ clusters:
 contexts:
 - context:
     cluster: target-cluster
-    user: kubeastra-app
-  name: kubeastra
-current-context: kubeastra
+    user: k8s-devops-app
+  name: k8s-devops
+current-context: k8s-devops
 users:
-- name: kubeastra-app
+- name: k8s-devops-app
   user:
     token: ${TOKEN}
 EOF
 
 # 5. Base64-encode it
-cat /tmp/kubeastra-kubeconfig.yaml | base64 | tr -d '\n'
+cat /tmp/k8s-devops-kubeconfig.yaml | base64 | tr -d '\n'
 ```
 
 ---
@@ -215,16 +232,16 @@ cat /tmp/kubeastra-kubeconfig.yaml | base64 | tr -d '\n'
 
 ```bash
 # Navigate to the Helm chart directory
-cd /path/to/kubeastra/helm/kubeastra
+cd /path/to/AI_DevOps_Assistant/k8s-devops-ai-assistant/helm/kubeastra
 
 # Dry-run first to check everything renders correctly
-helm install kubeastra . \
-  --namespace kubeastra \
+helm install k8s-devops . \
+  --namespace k8s-devops \
   --create-namespace \
   --dry-run \
-  --set backend.image.repository=your-artifactory.example.com/kubeastra-backend \
+  --set backend.image.repository=your-artifactory.example.com/k8s-devops-backend \
   --set backend.image.tag=1.0.0 \
-  --set frontend.image.repository=your-artifactory.example.com/kubeastra-frontend \
+  --set frontend.image.repository=your-artifactory.example.com/k8s-devops-frontend \
   --set frontend.image.tag=1.0.0 \
   --set secrets.geminiApiKey="YOUR_GEMINI_API_KEY" \
   --set secrets.kubeconfig="PASTE_BASE64_KUBECONFIG_HERE"
@@ -233,13 +250,13 @@ helm install kubeastra . \
 If the dry-run output looks correct, install for real:
 
 ```bash
-helm install kubeastra . \
-  --namespace kubeastra \
+helm install k8s-devops . \
+  --namespace k8s-devops \
   --create-namespace \
-  --set backend.image.repository=your-artifactory.example.com/kubeastra-backend \
-  --set backend.image.tag=1.0.0 \
-  --set frontend.image.repository=your-artifactory.example.com/kubeastra-frontend \
-  --set frontend.image.tag=1.0.0 \
+  --set backend.image.repository=your-artifactory.example.com/k8s-devops-backend \
+  --set backend.image.tag=main-${SHA} \
+  --set frontend.image.repository=your-artifactory.example.com/k8s-devops-frontend \
+  --set frontend.image.tag=main-${SHA} \
   --set secrets.geminiApiKey="YOUR_GEMINI_API_KEY" \
   --set secrets.kubeconfig="PASTE_BASE64_KUBECONFIG_HERE"
 ```
@@ -251,26 +268,131 @@ Create `my-values.yaml` (do not commit this file):
 ```yaml
 backend:
   image:
-    repository: your-artifactory.example.com/kubeastra-backend
-    tag: "1.0.0"
+    repository: your-artifactory.example.com/k8s-devops-backend
+    tag: "main-abcdef0"      # set to the SHA you actually built
 
 frontend:
   image:
-    repository: your-artifactory.example.com/kubeastra-frontend
-    tag: "1.0.0"
+    repository: your-artifactory.example.com/k8s-devops-frontend
+    tag: "main-abcdef0"
 
 secrets:
   geminiApiKey: "YOUR_GEMINI_API_KEY"
   kubeconfig: "PASTE_BASE64_KUBECONFIG_HERE"
+
+# Phase 1.x — RAG (Qdrant ships with the chart by default; nothing to flip on)
+# Phase 1.5 — deployment-repo KB (optional; needs a fine-grained PAT)
+deploymentRepo:
+  enabled: true
+  url: "https://github.com/your-org/your-deployment-repo.git"
+  branch: "main"
+  token: "ghp_xxxxxxxxxxxxxxxxxxxx"   # or omit and create the Secret separately
+
+# Phase 3.0 — proactive cluster triage on first chat
+enableProactiveTriage: true
+proactiveTriageNamespaces: "*"
+proactiveTriageEventLookbackMin: 10
+
+# Phase 1.3 — session capture flywheel (enabled by default)
+sessionCaptureEnabled: true
+sessionCaptureTtlDays: 90
+sessionCaptureRedactSecrets: true
+
+# Feature flags
+useReactChat: false          # set true to make /api/chat (sync) default to ReAct
 ```
+
+For the full operator playbook (every knob, hardening, the deployment-repo KB walk-through), see [BEST_FEATURES_QUICKSTART.md](BEST_FEATURES_QUICKSTART.md).
 
 Then install with:
 
 ```bash
-helm install kubeastra . \
-  --namespace kubeastra \
+helm install k8s-devops . \
+  --namespace k8s-devops \
   -f my-values.yaml
 ```
+
+---
+
+## Step 5b — Multi-environment deployment (DEV/PROD)
+
+If you deploy to **multiple environments** (e.g. `k8s-ai-test` for DEV and
+`k8s-devops` for PROD), the chart resolves several per-env knobs
+automatically from `.Release.Namespace`, so you don't need a
+`values-dev.yaml`/`values-prod.yaml` pair. Just change `--namespace`.
+
+### What auto-resolves by namespace
+
+These three template helpers in `helm/kubeastra/templates/_helpers.tpl`
+each accept overrides but default-pick by namespace:
+
+| Helper | What it picks | Configured in `values.yaml` as |
+|---|---|---|
+| `loadBalancerIP` | The pre-reserved static internal IP for both frontend (`:3000`) and backend (`:8000`) Services | `networking.loadBalancerIPByNamespace` map |
+| `backendServiceType` | `LoadBalancer` (with the GCP Internal LB annotation merged in) when the namespace is in the IP map; `ClusterIP` otherwise | `backend.service.type` (leave empty to infer) |
+| `alertWebhookToken` | The Alertmanager bearer token | `secrets.alertWebhookToken_Dev`, `secrets.alertWebhookToken_Prod`, or `secrets.alertWebhookTokensByNamespace` map |
+
+### Example: dev/prod with one `values-secrets.yaml`
+
+```yaml
+# values.yaml (committed)
+networking:
+  loadBalancerIPByNamespace:
+    k8s-ai-test: "10.0.0.100"   # DEV — kubeastra-dev.example.com
+    k8s-devops:  "10.0.0.101"   # PROD — kubeastra-prod.example.com
+
+backend:
+  service:
+    type: ""   # empty = inferred from namespace; set to "ClusterIP" to opt out
+
+# values-secrets.yaml (gitignored)
+secrets:
+  geminiApiKey:           "<...>"
+  alertWebhookToken_Dev:  "<DEV TOKEN, see docs/alert_manager_deploy.md>"
+  alertWebhookToken_Prod: "<PROD TOKEN>"
+```
+
+Then the install command is identical between environments — only the
+namespace changes:
+
+```bash
+# DEV
+helm upgrade --install kubeastra . \
+  --namespace k8s-ai-test \
+  -f values.yaml -f values-secrets.yaml
+
+# PROD
+helm upgrade --install kubeastra . \
+  --namespace k8s-devops \
+  -f values.yaml -f values-secrets.yaml
+```
+
+After install, `kubectl get svc -n <ns>` shows both frontend and backend
+sharing the same EXTERNAL-IP. The webhook is reachable at e.g.
+`http://kubeastra-dev.example.com:8000/api/v1/alerts/webhook`.
+
+### Shared-ILB prerequisite (GCP)
+
+For two Services to share one internal IP, the address must be reserved
+with `--purpose=SHARED_LOADBALANCER_VIP`:
+
+```bash
+gcloud compute addresses create cortex-dev \
+  --region=<region> --subnet=<subnet> \
+  --addresses=10.0.0.100 \
+  --purpose=SHARED_LOADBALANCER_VIP
+```
+
+If reserved with the default `GCE_ENDPOINT` purpose, the first Service
+(frontend) claims the IP and the second (backend) stays in `<pending>`.
+
+### Alertmanager wiring + ops
+
+For the Alertmanager webhook setup (token rotation, AM-side Secret
+mounting, RCA depth tuning, threading/concurrency knobs), see
+[alert_manager_deploy.md](alert_manager_deploy.md). It's the canonical
+reference for the alerts/RCA subsystem; this guide covers only the
+helm-install side.
 
 ---
 
@@ -278,22 +400,22 @@ helm install kubeastra . \
 
 ```bash
 # Check all pods are Running
-kubectl get pods -n kubeastra
+kubectl get pods -n k8s-devops
 
 # Expected output:
 # NAME                                         READY   STATUS    RESTARTS   AGE
-# kubeastra-backend-...  1/1     Running   0          60s
-# kubeastra-frontend-... 1/1     Running   0          60s
+# k8s-devops-kubeastra-backend-...  1/1     Running   0          60s
+# k8s-devops-kubeastra-frontend-... 1/1     Running   0          60s
 
 # Check services
-kubectl get services -n kubeastra
+kubectl get services -n k8s-devops
 
 # Check backend logs
-kubectl logs -n kubeastra deployment/kubeastra-backend --follow
+kubectl logs -n k8s-devops deployment/k8s-devops-kubeastra-backend --follow
 
 # Verify kubectl works inside the backend pod
-kubectl exec -n kubeastra \
-  deployment/kubeastra-backend \
+kubectl exec -n k8s-devops \
+  deployment/k8s-devops-kubeastra-backend \
   -- kubectl get nodes
 ```
 
@@ -307,27 +429,27 @@ Open two terminal windows:
 
 ```bash
 # Terminal 1 — backend
-kubectl port-forward -n kubeastra service/kubeastra-backend 8800:8800
+kubectl port-forward -n k8s-devops service/k8s-devops-kubeastra-backend 8000:8000
 
 # Terminal 2 — frontend
-kubectl port-forward -n kubeastra service/kubeastra-frontend 3300:3300
+kubectl port-forward -n k8s-devops service/k8s-devops-kubeastra-frontend 3000:3000
 ```
 
-Open `http://localhost:3300` in your browser.
+Open `http://localhost:3000` in your browser.
 
-The browser talks to the frontend on port `3300`, and the frontend server proxies `/api/*` to the backend on port `8800`.
+The browser talks to the frontend on port `3000`, and the frontend server proxies `/api/*` to the backend on port `8000`.
 
 ### Option B — Ingress (for team access)
 
 Enable Ingress in your values and upgrade:
 
 ```bash
-helm upgrade kubeastra . \
-  --namespace kubeastra \
+helm upgrade k8s-devops . \
+  --namespace k8s-devops \
   -f my-values.yaml \
   --set ingress.enabled=true \
-  --set ingress.frontendHost=kubeastra.your-company.com \
-  --set ingress.backendHost=kubeastra-api.your-company.com \
+  --set ingress.frontendHost=k8s-devops.your-company.com \
+  --set ingress.backendHost=k8s-devops-api.your-company.com \
   --set ingress.className=nginx
 ```
 
@@ -335,87 +457,18 @@ helm upgrade kubeastra . \
 
 ---
 
-## Connecting IDEs via MCP (Cursor, Claude Desktop, VS Code)
-
-The MCP service is exposed as an Internal Load Balancer by default. After deploying, get the ILB IP:
-
-```bash
-kubectl get service kubeastra-mcp -n kubeastra
-# NAME             TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)
-# kubeastra-mcp    LoadBalancer   10.x.x.x       10.y.y.y       8001:xxxxx/TCP
-```
-
-Use the `EXTERNAL-IP` in your IDE's MCP config.
-
-### Cursor / Claude Desktop / VS Code — `.mcp.json`
-
-```json
-{
-  "mcpServers": {
-    "kubeastra": {
-      "type": "http",
-      "url": "http://<EXTERNAL-IP>:8001/mcp/",
-      "headers": {
-        "Authorization": "Bearer <your-mcp-auth-token>"
-      }
-    }
-  }
-}
-```
-
-Replace `<EXTERNAL-IP>` with the ILB IP from `kubectl get service` above, and `<your-mcp-auth-token>` with the value you set in `secrets.mcpAuthToken`.
-
-### Cloud provider ILB annotations
-
-The default annotation targets GKE. Override for your provider in `my-values.yaml`:
-
-```yaml
-# AWS
-mcp:
-  service:
-    annotations:
-      service.beta.kubernetes.io/aws-load-balancer-internal: "true"
-
-# Azure
-mcp:
-  service:
-    annotations:
-      service.beta.kubernetes.io/azure-load-balancer-internal: "true"
-
-# GKE (default)
-mcp:
-  service:
-    annotations:
-      networking.gke.io/load-balancer-type: "Internal"
-```
-
-### Securing MCP access
-
-Set `secrets.mcpAuthToken` during install so all MCP requests require a bearer token:
-
-```bash
-helm install kubeastra . \
-  --namespace kubeastra \
-  -f my-values.yaml \
-  --set secrets.mcpAuthToken="your-secure-token-here"
-```
-
-Without this token, the MCP server accepts unauthenticated requests.
-
----
-
 ## Step 8 — Upgrading after a code change
 
 ```bash
-# Run from kubeastra/
+# Run from k8s-devops-ai-assistant/
 # 1. Rebuild and push images with a new tag
-docker build -f ui/backend/Dockerfile -t your-artifactory.example.com/kubeastra-backend:1.0.1 .
-docker push your-artifactory.example.com/kubeastra-backend:1.0.1
+docker build -f ui/backend/Dockerfile -t your-artifactory.example.com/k8s-devops-backend:1.0.1 .
+docker push your-artifactory.example.com/k8s-devops-backend:1.0.1
 
 # 2. Upgrade the Helm release with the new image tag
 cd helm/kubeastra
-helm upgrade kubeastra . \
-  --namespace kubeastra \
+helm upgrade k8s-devops . \
+  --namespace k8s-devops \
   -f my-values.yaml \
   --set backend.image.tag=1.0.1
 ```
@@ -427,13 +480,13 @@ helm upgrade kubeastra . \
 For local development, use the provided `start.sh` script (no Docker or Helm needed):
 
 ```bash
-cd kubeastra/ui
+cd k8s-devops-ai-assistant/ui
 ./start.sh
 ```
 
 This starts:
-- **Backend** — `uvicorn main:app --port 8800` (with `MCP_PATH` and `PYTHONPATH` set to `mcp/`)
-- **Frontend** — `npm run dev` on port 3300 with `API_BASE_URL=http://localhost:8800`
+- **Backend** — `uvicorn main:app --port 8000` (with `MCP_PATH` and `PYTHONPATH` set to `mcp/`)
+- **Frontend** — `npm run dev` on port 3000 with `API_BASE_URL=http://localhost:8000`
 
 Press `Ctrl+C` to stop both.
 
@@ -443,9 +496,9 @@ Press `Ctrl+C` to stop both.
 
 ## SQLite persistence in Kubernetes
 
-The backend automatically creates `chat_history.db` at startup (path: `/app/data/chat_history.db` inside the container). Without a persistent volume this file is lost when the pod restarts — all chat histories are cleared.
+The backend automatically creates `chat_history.db` at startup (path: `/app/data/chat_history.db` inside the container). This SQLite file stores chat history, per-session memory, selected cluster connections, remembered SSH targets, and feedback audit records. Without a persistent volume this file is lost when the pod restarts.
 
-**To persist chat history across pod restarts**, add a PVC to your `my-values.yaml`:
+**To persist chat history and feedback audit records across pod restarts**, add a PVC to your `my-values.yaml`:
 
 ```yaml
 backend:
@@ -456,49 +509,82 @@ backend:
     mountPath: /app/data
 ```
 
-If `persistence.enabled` is false (default), the backend still works — users just lose history on pod restart.
+If `persistence.enabled` is false (default), the backend still works — users lose history, session memory, cluster selections, and feedback audit rows on pod restart. `values-production.yaml` enables this PVC by default.
 
 ---
 
 ## Complete file structure
 
 ```
-kubeastra/
+k8s-devops-ai-assistant/
 ├── docs/
-│   └── K8S_DEPLOYMENT_GUIDE.md         ← This file
+│   ├── ARCHITECTURE_DIAGRAM.md          ← Repo-level mermaid diagrams + component table
+│   ├── K8S_DEPLOYMENT_GUIDE.md          ← This file
+│   ├── BEST_FEATURES_QUICKSTART.md      ← End-to-end operator playbook
+│   └── internal_docs/                   ← Internal planning, gitignored
 ├── ui/
 │   ├── start.sh                         ← Local dev launcher (backend + frontend)
 │   ├── backend/
-│   │   ├── Dockerfile                   ← Bundles mcp + backend
-│   │   ├── main.py                      ← FastAPI app + SQLite init
-│   │   ├── routers/
-│   │   │   ├── chat.py                  ← Gemini router + tool dispatcher + SSH
-│   │   │   └── sessions.py              ← Chat history + SSH target REST API
-│   │   └── db.py                        ← SQLite schema + CRUD
+│   │   ├── Dockerfile                   ← Bundles mcp + backend + entrypoint.sh
+│   │   ├── entrypoint.sh                ← Starts FastAPI :8000 AND HTTP MCP :8001
+│   │   ├── main.py                      ← FastAPI app + lifespan (DB init + RAG bootstrap + embed warmup)
+│   │   ├── react.py                     ← ReAct loop (think → act → observe, SSE-streamed)
+│   │   ├── triage.py                    ← Phase 3.0 proactive cluster greeting
+│   │   ├── memory.py                    ← Phase 2.2 per-user conversation memory
+│   │   ├── db.py                        ← SQLite schema + CRUD
+│   │   ├── tests/test_module_imports.py ← Import smoke tests (run at docker build)
+│   │   └── routers/
+│   │       ├── chat.py                  ← /api/chat (sync) + /api/chat/stream (SSE)
+│   │       ├── sessions.py              ← History, SSH target, post-mortem generator
+│   │       ├── models.py                ← LLM model catalog (dynamic discovery)
+│   │       ├── feedback.py              ← Thumbs-up → promotion to runbook
+│   │       ├── cluster.py               ← Cluster health + context
+│   │       ├── ai_tools.py / kubectl.py / recovery.py / health.py
 │   └── frontend/
 │       ├── Dockerfile                   ← Next.js standalone build
-│       ├── next.config.ts               ← output: 'standalone'
-│       └── app/api/[...path]/route.ts   ← Server-side proxy → backend
+│       ├── next.config.ts               ← output: 'standalone' + memory optimizations
+│       ├── app/api/[...path]/route.ts   ← Server-side proxy → backend
+│       └── components/                  ← IntentBar (Stop button), ResultView, etc.
 ├── mcp/
+│   ├── tool_registry.py                 ← Single source of truth for all 48 tools
+│   ├── http_server.py                   ← HTTP MCP server (port :8001)
 │   ├── k8s/
+│   │   ├── wrappers.py                  ← 41 high-level kubectl workflows
 │   │   ├── kubectl_runner.py            ← Local kubectl (kubeconfig)
-│   │   └── ssh_runner.py                ← Remote kubectl via SSH (paramiko)
-│   ├── ai_tools/                        ← Gemini-powered tools
-│   └── services/llm_service.py          ← Gemini API client + SYSTEM_PROMPT
+│   │   ├── ssh_runner.py                ← Remote kubectl via SSH (paramiko)
+│   │   ├── parsers.py / validators.py
+│   ├── ai_tools/                        ← analyze, fix, runbook, report
+│   └── services/
+│       ├── llm/                         ← base + gemini_provider + ollama_provider
+│       ├── rag/                         ← router, prompt_cache, capture, promotion,
+│       │                                  ingestion, chunking, chunking_ansible,
+│       │                                  schema, sources/{local_path,git_repo}.py
+│       ├── vector_db.py                 ← Qdrant client
+│       ├── embeddings.py                ← sentence-transformers (all-MiniLM-L6-v2)
+│       ├── summarizer/ / plans.py / confirmation.py
 └── helm/
     └── kubeastra/
         ├── Chart.yaml
         ├── values.yaml                  ← All configurable parameters
+        ├── values-production.yaml       ← Production overrides
         └── templates/
-            ├── _helpers.tpl             ← Name helpers, label helpers
-            ├── configmap.yaml           ← Non-secret env vars
-            ├── secret.yaml              ← GEMINI_API_KEY + kubeconfig
-            ├── serviceaccount.yaml      ← Pod identity
-            ├── rbac.yaml                ← ClusterRole + ClusterRoleBinding
-            ├── backend-deployment.yaml  ← Mounts kubeconfig Secret, reads ConfigMap
-            ├── backend-service.yaml     ← ClusterIP :8800
+            ├── _helpers.tpl
+            ├── backend-deployment.yaml  ← Backend + HTTP MCP in one pod
+            ├── backend-service.yaml     ← ClusterIP :8000
+            ├── mcp-service.yaml         ← ClusterIP :8001 (external MCP surface)
             ├── frontend-deployment.yaml ← Passes API_BASE_URL at runtime
-            ├── frontend-service.yaml    ← ClusterIP :3300
+            ├── frontend-service.yaml    ← ClusterIP :3000
+            ├── qdrant-statefulset.yaml  ← Qdrant v1.11.x + PVC
+            ├── qdrant-service.yaml
+            ├── qdrant-networkpolicy.yaml ← backend → qdrant ingress
+            ├── rag-bootstrap-job.yaml   ← Post-install/upgrade hook (first reindex)
+            ├── rag-ingestion-cronjob.yaml ← Periodic reindex
+            ├── deployment-repo-token-secret.yaml ← PAT for Phase 1.5
+            ├── configmap.yaml           ← Non-secret env (incl. KB_CONFIG_YAML)
+            ├── secret.yaml              ← GEMINI_API_KEY + kubeconfig
+            ├── serviceaccount.yaml
+            ├── rbac.yaml
+            ├── pvc.yaml                 ← Optional chat_history.db PVC
             └── ingress.yaml             ← Optional, disabled by default
 ```
 
@@ -512,12 +598,12 @@ The init container runs `kubectl config view` to verify the kubeconfig is readab
 
 ```bash
 # Check init container logs
-kubectl logs -n kubeastra \
-  $(kubectl get pod -n kubeastra -l app.kubernetes.io/component=backend -o name) \
+kubectl logs -n k8s-devops \
+  $(kubectl get pod -n k8s-devops -l app.kubernetes.io/component=backend -o name) \
   -c kubeconfig-check
 
 # Verify the Secret was created with the kubeconfig key
-kubectl get secret -n kubeastra kubeastra-secrets -o yaml
+kubectl get secret -n k8s-devops k8s-devops-kubeastra-secrets -o yaml
 ```
 
 Common causes:
@@ -529,8 +615,8 @@ Common causes:
 
 ```bash
 # Shell into the backend pod
-kubectl exec -it -n kubeastra \
-  deployment/kubeastra-backend \
+kubectl exec -it -n k8s-devops \
+  deployment/k8s-devops-kubeastra-backend \
   -- bash
 
 # Inside the pod:
@@ -544,18 +630,18 @@ kubectl get pods -A       # Test namespace access
 
 ```bash
 # Check the secret is set
-kubectl exec -n kubeastra \
-  deployment/kubeastra-backend \
+kubectl exec -n k8s-devops \
+  deployment/k8s-devops-kubeastra-backend \
   -- env | grep GEMINI
 
 # If empty, update the secret
-kubectl patch secret kubeastra-secrets \
-  -n kubeastra \
+kubectl patch secret k8s-devops-kubeastra-secrets \
+  -n k8s-devops \
   --type='json' \
   -p='[{"op":"replace","path":"/data/GEMINI_API_KEY","value":"'$(echo -n "YOUR_KEY" | base64)'"}]'
 
 # Restart the backend pod to pick up the new secret
-kubectl rollout restart deployment/kubeastra-backend -n kubeastra
+kubectl rollout restart deployment/k8s-devops-kubeastra-backend -n k8s-devops
 ```
 
 ### SSH cluster connection fails
@@ -564,12 +650,12 @@ SSH remote cluster support uses `paramiko` (already in `backend/requirements.txt
 
 ```bash
 # Verify paramiko is installed inside the backend pod
-kubectl exec -n kubeastra \
-  deployment/kubeastra-backend \
+kubectl exec -n k8s-devops \
+  deployment/k8s-devops-kubeastra-backend \
   -- python -c "import paramiko; print(paramiko.__version__)"
 
 # Check backend logs for SSH errors
-kubectl logs -n kubeastra deployment/kubeastra-backend | grep -i ssh
+kubectl logs -n k8s-devops deployment/k8s-devops-kubeastra-backend | grep -i ssh
 ```
 
 Common causes:
@@ -585,12 +671,12 @@ This means the frontend server cannot reach the backend target or the browser ca
 
 ```bash
 # Check the runtime backend target inside the frontend container
-kubectl exec -n kubeastra \
-  deployment/kubeastra-frontend \
+kubectl exec -n k8s-devops \
+  deployment/k8s-devops-kubeastra-frontend \
   -- env | grep API_BASE_URL
 
 # Check frontend logs
-kubectl logs -n kubeastra deployment/kubeastra-frontend --follow
+kubectl logs -n k8s-devops deployment/k8s-devops-kubeastra-frontend --follow
 ```
 
 Common causes:
@@ -599,78 +685,176 @@ Common causes:
 - frontend is reachable but backend pod is failing readiness/liveness
 - Ingress or port-forward only exposes frontend, while backend is unavailable behind the proxy
 
+### Qdrant client/server version mismatch in backend logs
+
+```
+UserWarning: Qdrant client version 1.18.0 is incompatible with server version 1.11.0.
+```
+
+The Python client is pinned to match the Qdrant server's minor version in `mcp/requirements.txt` (currently `qdrant-client>=1.11.0,<1.12.0`). If you see this warning, your image was built before the pin landed. Rebuild and redeploy.
+
+If you intentionally want to bump Qdrant: update the StatefulSet image tag AND the `requirements.txt` pin in the same commit, then rebuild.
+
+### `Vector search in <collection> failed: 404 Not Found`
+
+The collection was queried before it existed. Fixed by the lifespan bootstrap in `main.py:_bootstrap_rag_collections` which calls `ensure_collection_for` on every known collection at pod startup. If you see this anyway:
+
+```bash
+# Confirm bootstrap ran (line should appear once near pod start)
+kubectl logs -n k8s-devops -l app.kubernetes.io/component=backend | grep "RAG bootstrap"
+
+# Check Qdrant directly from inside the backend pod
+kubectl exec -n k8s-devops -l app.kubernetes.io/component=backend -c backend -- \
+  python3 -c "import httpx,os; r=httpx.get(os.environ['QDRANT_URL']+'/collections', timeout=5); print(r.json())"
+```
+
+If the bootstrap log line is missing, the backend either failed to import the RAG modules at startup or Qdrant was unreachable. Both surface as `RAG bootstrap: ...` warning lines.
+
+### Chat response cuts off mid-sentence
+
+The `max_tokens` cap on the chat finalize stream was raised from 2500 → 8000 (Gemini 2.5 Flash output ceiling). If you're still seeing chops:
+
+1. Check the `finish_reason` on the SSE `done` event — if it says `MAX_TOKENS`, you're hitting the cap. Bump again or trim context.
+2. If `finish_reason` says `STOP` but the text still looks chopped, the cap isn't the issue — check the TCP/load-balancer idle timeout.
+3. Make sure `GEMINI_MODEL` resolves to the fixed chat model (`gemini-3.1-flash-lite`) and that your API key has access to it.
+
+### GKE NetworkPolicy blocks backend → Qdrant on Dataplane V2
+
+GKE's Dataplane V2 enforces NetworkPolicy stricter than the typical Calico setup. If `backend` can't reach `qdrant` even though the policy looks right:
+
+```bash
+# Confirm both pods are running and have the expected labels
+kubectl get pods -n k8s-devops --show-labels | grep -E "backend|qdrant"
+
+# Check the policy
+kubectl describe networkpolicy -n k8s-devops qdrant
+```
+
+If a namespaceSelector fix doesn't work on your cluster, disable the policy temporarily and rely on Service-level controls until you can debug Dataplane V2 specifics:
+```bash
+helm upgrade k8s-devops . -f my-values.yaml --set qdrant.networkPolicy.enabled=false
+```
+
+### HuggingFace unauthenticated warning
+
+```
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN ...
+```
+
+Cosmetic. The sentence-transformer model is cached in `/tmp/hf-cache` after the first download, so this only fires on a cold pod and only matters if you actually hit HF's anonymous rate limit (1 download per IP per hour for popular models). To silence: create a free HF account, generate a read-only token, add it to the secret as `HF_TOKEN`.
+
 ### Checking the Helm release status
 
 ```bash
-helm status kubeastra -n kubeastra
-helm get values kubeastra -n kubeastra
+helm status k8s-devops -n k8s-devops
+helm get values k8s-devops -n k8s-devops
 ```
 
 ### Uninstalling
 
 ```bash
-helm uninstall kubeastra -n kubeastra
-kubectl delete namespace kubeastra
+helm uninstall k8s-devops -n k8s-devops
+kubectl delete namespace k8s-devops
 ```
 
 ---
 
-## Optional: Enable Weaviate RAG
+## RAG / Qdrant
 
-Weaviate is not included in the Helm chart by default (it requires persistent storage and a separate deployment). If you want RAG (similar past errors in `analyze_error`):
+The chart ships a **Qdrant StatefulSet** by default (Phase 1.1+). No extra step needed — it's installed alongside the backend. The backend's `QDRANT_URL` is auto-derived from the in-cluster service name.
+
+> **Earlier docs referenced Weaviate.** Weaviate was used pre-Phase-1.1 and is no longer supported anywhere in the codebase. The Helm chart, the backend, and the ingestion jobs all assume Qdrant.
+
+**Disabling the chart-managed Qdrant** (e.g. you have a shared Qdrant elsewhere):
 
 ```bash
-# Apply a minimal Weaviate deployment
-kubectl apply -n kubeastra -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: weaviate
-  namespace: kubeastra
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: weaviate
-  template:
-    metadata:
-      labels:
-        app: weaviate
-    spec:
-      containers:
-        - name: weaviate
-          image: semitechnologies/weaviate:1.28.4
-          ports:
-            - containerPort: 8080
-          env:
-            - name: QUERY_DEFAULTS_LIMIT
-              value: "20"
-            - name: AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED
-              value: "true"
-            - name: DEFAULT_VECTORIZER_MODULE
-              value: "none"
-          resources:
-            requests:
-              memory: "512Mi"
-            limits:
-              memory: "1Gi"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: weaviate
-  namespace: kubeastra
-spec:
-  selector:
-    app: weaviate
-  ports:
-    - port: 8080
-      targetPort: 8080
-EOF
-
-# Then upgrade Helm to point the backend at in-cluster Weaviate
-helm upgrade kubeastra helm/kubeastra \
-  --namespace kubeastra \
+helm upgrade k8s-devops helm/kubeastra \
+  --namespace k8s-devops \
   -f my-values.yaml \
-  --set backend.config.weaviateUrl=http://weaviate:8080
+  --set qdrant.enabled=false \
+  --set qdrant.externalUrl=http://your-qdrant.example:6333
 ```
+
+**Version pinning matters.** The Python `qdrant-client` is pinned to match the deployed server's minor version (currently `>=1.11.0,<1.12.0` against Qdrant `v1.11.x`). The client emits a hard warning and risks silent API drift when minors diverge by more than 1. When bumping Qdrant's image tag in the StatefulSet, bump `mcp/requirements.txt` in the same commit.
+
+**Bootstrap is automatic.** On every backend pod start, the FastAPI lifespan hook calls `ensure_collection_for` on `runbook`, `devops_doc`, `deployment_repo`, and `session_memory`, then runs one throwaway `embeddings.embed("warmup")` so the first chat doesn't pay the 5-10s sentence-transformer load. All wrapped in try/except — the pod still boots if Qdrant is unreachable.
+
+For the full ingestion walk-through, deployment-repo KB enablement, and tuning knobs, see [BEST_FEATURES_QUICKSTART.md](BEST_FEATURES_QUICKSTART.md).
+## Security rollout notes
+
+### Pre-deployment parity checklist
+
+Before deploying any of the security-related phases (cookies, NetworkPolicies),
+capture and compare the following values between staging and production. The
+chart cannot detect a mismatch — wrong values here will surface as 503s,
+broken probes, or blocked traffic after enforcement.
+
+| Item | Where to check | Why it matters |
+|---|---|---|
+| Backend pod UID/GID | `kubectl exec backend -- id` | Audit log writes require UID 1000 with `fsGroup: 1000`. |
+| `/app/data` volume mount | `kubectl describe pod backend` → Volumes | Must be writable; PVC if `persistence.enabled=true`, else `emptyDir`. |
+| `persistence.enabled` | Helm release values | Off in staging + on in prod is a common drift source for SQLite state. |
+| Ingress controller namespace and pod labels | `kubectl get pods -n <ingress-ns> -L app.kubernetes.io/name` | Required so the frontend ingress NetworkPolicy actually matches; mismatches silently drop traffic. |
+| Load-balancer health-check source ranges | Cloud-provider docs (GCP/AWS/Azure) | Add to `networkPolicy.ingressCidrs` or readiness probes will fail. |
+| Kubernetes API endpoint IP/CIDR | `kubectl get endpoints kubernetes -n default -o yaml` | Goes into `networkPolicy.kubernetesApiCidrs`; without it the in-cluster `kubectl version` health check fails. |
+| DNS resolver namespace/labels | `kubectl get pods -n kube-system -l k8s-app=kube-dns` | `networkPolicy.dns` must match or all egress breaks once default-deny is on. |
+| Qdrant and RAG-ingestion pod labels | `kubectl get pods -l app.kubernetes.io/component=qdrant` | Backend → Qdrant egress rule keys off these. |
+| Egress path to Google APIs | `kubectl exec backend -- curl -v https://generativelanguage.googleapis.com` | Direct, Private Google Access, or corporate proxy — each requires a different egress rule. |
+
+Record the results once per environment and store with your Helm value
+overrides; revisit on cluster upgrades.
+
+### HTTPS and secure authentication cookies
+
+Do not set `backend.config.authCookieSecure=true` until HTTPS works end to
+end. The safe manual rollout is:
+
+1. Provision DNS, TLS termination, and the certificate.
+2. Verify HTTPS while cookies are still non-secure.
+3. Set `authAllowedOrigins` and `appBaseUrl` to the HTTPS frontend origin.
+4. Set `authCookieSecure=true` and verify login/logout/session refresh.
+5. Add HSTS in a later deployment after HTTPS has proven stable.
+
+Rolling back from HTTPS to HTTP can leave browsers holding a Secure cookie
+that they will not send over HTTP; affected users must return to HTTPS or
+clear that cookie.
+
+### NetworkPolicy staging
+
+`networkPolicy.enabled` is deliberately false by default. Before enabling it,
+record the environment's ingress-controller labels, internal load-balancer
+source ranges, DNS labels, and Kubernetes API endpoint CIDRs. Apply and verify
+explicit allow rules before default-deny enforcement.
+
+The chart exposes a staged rollout via `networkPolicy.mode`. Advance one
+step at a time, validating connectivity between steps:
+
+1. **`mode: allow-only`** — explicit allow rules render but no default-deny is
+   applied. Use this to confirm rule selectors and CIDRs match real traffic
+   without risk of blocking anything.
+2. **`mode: enforce-ingress`** — adds default-deny for ingress only. Catches
+   inbound surprises while egress remains open.
+3. **`mode: enforce-all`** — adds default-deny for egress. Fully locked down;
+   only the explicit egress rules apply (Qdrant, DNS, Kubernetes API,
+   configured external HTTPS).
+
+Stop the rollout at the highest mode that passes connectivity validation in
+your environment. Downgrade by editing the value and re-applying — the
+default-deny policy is removed cleanly on `helm upgrade`.
+
+Stock Kubernetes NetworkPolicy is L3/L4 only and cannot restrict Gemini by
+hostname. The supplied policy allows public TCP/443 while excluding private,
+link-local, and metadata ranges. For hostname filtering, route egress through
+an Envoy/HAProxy allow-list proxy or use a Cilium/Calico FQDN policy.
+
+### Agent invoke API rate limiting
+
+`AGENT_API_REQUESTS_PER_MINUTE` (default 30) is enforced in-process per token
+fingerprint. The limiter is **not shared across Gunicorn/Uvicorn workers**, so
+the effective ceiling is `AGENT_API_REQUESTS_PER_MINUTE × replicas × workers`.
+Size the chart value accordingly, and treat the limit as a per-pod first line
+of defense rather than a global cap. Back with Redis or another shared store
+if a strict global cap is required.
+
+`AGENT_API_MAX_CONCURRENCY` is similarly per-process. Total in-flight ReAct
+executions across the deployment are `concurrency × replicas × workers`.

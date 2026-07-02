@@ -1,0 +1,10 @@
+{
+  "id": "rollout_replica_drift",
+  "prompt": "Check the rollout status of the frontend deployment in prod-blue. Are all replicas ready?",
+  "expected_output": "No. The frontend deployment has 1 out of 3 desired replicas ready. There is a drift of 2 replicas that are pending readiness.",
+  "context": "Status check scenario. Correct answer specifies the replica mismatch (1 ready vs 3 desired) and details the replica drift. Tests StatusCheckEvidence logic.",
+  "expected_tools": ["get_rollout_status"],
+  "must_not_call": [],
+  "tags": ["synthesis", "status_check", "rollout", "drift"],
+  "notes": "Ensures drift information is surfaced correctly in final answers."
+}

@@ -2,12 +2,16 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "kubeastra.fullname" . }}-backend
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "kubeastra.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend
 spec:
   replicas: {{ .Values.backend.replicaCount }}
+  {{- if .Values.backend.persistence.enabled }}
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "kubeastra.backend.selectorLabels" . | nindent 6 }}
@@ -19,8 +23,19 @@ spec:
         # Force pod restart when ConfigMap or Secret changes
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- if .Values.remoteDiagnostics.enabled }}
+        # Rolling-restart trigger for the remote-diagnostics ConfigMap.
+        # Without this, editing targets, caller scopes, or knownHostsEntries
+        # (say, rotating a pinned host key or removing a decommissioned
+        # target) would leave running pods on the stale registry until the
+        # next unrelated deploy or manual restart.
+        checksum/agent-remote-diagnostics: {{ include (print $.Template.BasePath "/agent-remote-diagnostics-config.yaml") . | sha256sum }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "kubeastra.serviceAccountName" . }}
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -49,7 +64,7 @@ spec:
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
           ports:
             - name: http
-              containerPort: 8800
+              containerPort: 8000
               protocol: TCP
             - name: mcp
               containerPort: 8001
@@ -74,6 +89,55 @@ spec:
                   name: {{ include "kubeastra.fullname" . }}-secrets
                   key: MCP_AUTH_TOKEN
                   optional: true  # MCP server runs without auth when not set
+            - name: ALERT_WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubeastra.fullname" . }}-secrets
+                  key: ALERT_WEBHOOK_TOKEN
+                  optional: true  # webhook stays open when not set
+            - name: AGENT_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubeastra.fullname" . }}-secrets
+                  key: AGENT_API_TOKEN
+                  optional: true
+            - name: AGENT_API_TOKEN_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubeastra.fullname" . }}-secrets
+                  key: AGENT_API_TOKEN_PREVIOUS
+                  optional: true
+            - name: PRUNE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubeastra.fullname" . }}-secrets
+                  key: PRUNE_TOKEN
+                  optional: true
+            - name: MCP_HTTP_JSON_RESPONSE
+              value: {{ .Values.mcp.jsonResponse | quote }}
+            - name: MCP_HTTP_STATELESS
+              value: {{ .Values.mcp.stateless | quote }}
+            {{- if .Values.remoteDiagnostics.enabled }}
+            # ── Phase 6 remote-diagnostics env ─────────────────────────────
+            # Startup fails closed if the referenced files are missing —
+            # see routers/agent.router_from_environment().
+            - name: AGENT_API_REMOTE_DIAGNOSTICS_ENABLED
+              value: "true"
+            - name: AGENT_API_TARGETS_PATH
+              value: {{ printf "%s/targets.yaml" .Values.remoteDiagnostics.paths.configRoot | quote }}
+            - name: AGENT_API_CALLER_SCOPES_PATH
+              value: {{ printf "%s/caller-scopes.yaml" .Values.remoteDiagnostics.paths.configRoot | quote }}
+            - name: SSH_KNOWN_HOSTS_PATH
+              value: {{ printf "%s/ssh_known_hosts" .Values.remoteDiagnostics.paths.configRoot | quote }}
+            - name: AGENT_API_TARGET_CREDENTIAL_ROOT
+              value: {{ .Values.remoteDiagnostics.paths.credentialRoot | quote }}
+            - name: AGENT_API_TOKEN_MOUNT_ROOT
+              value: {{ .Values.remoteDiagnostics.paths.tokenMountRoot | quote }}
+            - name: AGENT_API_CONNECTION_TIMEOUT_SECONDS
+              value: {{ .Values.remoteDiagnostics.timeouts.connectionSeconds | quote }}
+            - name: AGENT_API_DIAGNOSTIC_PHASE_TIMEOUT_SECONDS
+              value: {{ .Values.remoteDiagnostics.timeouts.diagnosticPhaseSeconds | quote }}
+            {{- end }}
 
           # ── Volume mounts ──────────────────────────────────────────────────
           volumeMounts:
@@ -86,6 +150,26 @@ spec:
             # SQLite data directory — persistent if backend.persistence.enabled=true
             - name: data
               mountPath: {{ .Values.backend.persistence.mountPath }}
+            {{- if .Values.remoteDiagnostics.enabled }}
+            # ── Remote diagnostics mounts (Phase 6) ────────────────────────
+            # Non-secret registries + pinned known_hosts live in a single
+            # ConfigMap. Per-target credentials and per-scope tokens come
+            # from externally managed Secrets — one Secret per target /
+            # scope so RBAC surface stays minimal.
+            - name: remote-diagnostics-config
+              mountPath: {{ .Values.remoteDiagnostics.paths.configRoot | quote }}
+              readOnly: true
+            {{- range $id, $t := .Values.remoteDiagnostics.targets }}
+            - name: {{ printf "target-credentials-%s" $id | quote }}
+              mountPath: {{ printf "%s/%s" $.Values.remoteDiagnostics.paths.credentialRoot $id | quote }}
+              readOnly: true
+            {{- end }}
+            {{- range $name, $s := .Values.remoteDiagnostics.callerScopes }}
+            - name: {{ printf "caller-token-%s" $name | quote }}
+              mountPath: {{ printf "%s/%s" $.Values.remoteDiagnostics.paths.tokenMountRoot $name | quote }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
 
           # ── Probes ─────────────────────────────────────────────────────────
           livenessProbe:
@@ -123,6 +207,34 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- if .Values.remoteDiagnostics.enabled }}
+        - name: remote-diagnostics-config
+          configMap:
+            name: {{ include "kubeastra.fullname" . }}-agent-remote-diagnostics
+            # defaultMode 0444 — owner+group+other readable. Files are
+            # non-secret; permission is documented so audits can distinguish
+            # them from the credential Secret mounts below.
+            defaultMode: 0444
+        {{- range $id, $t := .Values.remoteDiagnostics.targets }}
+        - name: {{ printf "target-credentials-%s" $id | quote }}
+          secret:
+            # ``required`` renders a readable error if credentialSecretRef is
+            # missing from the target entry. The ConfigMap template also
+            # rejects this shape; the guard here just fails cleanly if
+            # rendering order surfaces the Deployment first.
+            secretName: {{ required (printf "remoteDiagnostics.targets.%s.credentialSecretRef.name is required" $id) ((default (dict) $t.credentialSecretRef).name) | quote }}
+            # 0400 — owner-only. The SSH runner also enforces this permission
+            # in _read_secret_text; a looser Secret projection would fail at
+            # runtime.
+            defaultMode: 0400
+        {{- end }}
+        {{- range $name, $s := .Values.remoteDiagnostics.callerScopes }}
+        - name: {{ printf "caller-token-%s" $name | quote }}
+          secret:
+            secretName: {{ required (printf "remoteDiagnostics.callerScopes.%s.tokenSecretRef.name is required" $name) ((default (dict) $s.tokenSecretRef).name) | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- end }}
 
       {{- with .Values.backend.nodeSelector }}
       nodeSelector:

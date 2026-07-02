@@ -8,7 +8,7 @@ SERVER := mcp_server/server.py
 HTTP_SERVER := http_mcp/http_server.py
 
 help:
-	@echo "mcp — Unified Kubeastra MCP Server"
+	@echo "mcp — Unified K8s DevOps MCP Server"
 	@echo ""
 	@echo "  make setup       Full first-time setup (venv + install + .env)"
 	@echo "  make install     Install Python dependencies"

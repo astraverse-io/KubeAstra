@@ -14,6 +14,7 @@ duration of that request are transparently routed via SSH to the remote
 cluster master node — no other code changes required.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -21,31 +22,219 @@ import re
 import time
 from typing import Optional
 
-from fastapi import APIRouter
-from pydantic import BaseModel
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
+import auth as auth_utils
 import db
+import memory
+
+
+def _maybe_capture_chat(
+    *,
+    question: str,
+    answer: str,
+    tool_used: str,
+    react_steps: list,
+    session_id: Optional[str] = None,
+    user: Optional[str] = None,
+) -> Optional[str]:
+    """Best-effort Phase 1.3 capture. Returns the new point_id or None.
+
+    Pulls cluster/namespace context from the session's per-user memory
+    so captured entries are scoped to where the user was working.
+    """
+    try:
+        cluster = namespace = None
+        if session_id:
+            try:
+                mem = memory.db.get_user_memory(session_id) or {}
+                # First entry per category is the most-recent.
+                clusters = mem.get("clusters") or []
+                namespaces = mem.get("namespaces") or []
+                if clusters:
+                    cluster = clusters[0].get("value")
+                if namespaces:
+                    namespace = namespaces[0].get("value")
+            except Exception:
+                pass
+
+        from services.rag.capture import maybe_capture
+        return maybe_capture(
+            question=question,
+            answer=answer,
+            tool_used=tool_used,
+            react_steps=react_steps,
+            session_id=session_id,
+            user=user,
+            cluster=cluster,
+            namespace=namespace,
+        )
+    except Exception as exc:
+        logger.warning("session capture raised (ignored): %s", exc)
+        return None
+
+
+def _make_memory_capturing_dispatch(session_id: Optional[str]):
+    """Return a dispatch closure that wraps _dispatch and records
+    successful tool calls into per-session memory (Phase 2.2).
+
+    No-op for anonymous sessions (session_id None) — the wrapped function
+    behaves identically to _dispatch.
+    """
+    if not session_id:
+        return lambda tool, params: _dispatch(tool, params, surface="react")
+
+    def _capturing(tool: str, params: dict) -> dict:
+        result = _dispatch(tool, params, surface="react", session_id=session_id)
+        # Only record when the tool succeeded enough to give us trustworthy
+        # entities. A bare {"error": ...} response means the params may
+        # have been wrong, so don't memorize them as "recent context".
+        if isinstance(result, dict) and "error" in result and len(result) <= 2:
+            return result
+        if isinstance(result, dict) and result.get("success") is False:
+            return result
+        memory.record_tool_call(session_id, tool, params)
+        return result
+
+    return _capturing
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-_cached_llm_provider = None
+_cached_llm_providers = {}
+HARDCODED_GEMINI_MODEL = "gemini-3.1-flash-lite"
+
+_SENSITIVE_PARAM_RE = re.compile(r"(password|token|secret|key|credential|auth)", re.IGNORECASE)
+_FALLBACK_SECRET_TEXT_RE = re.compile(
+    r"(?i)(authorization\s*[:=]\s*bearer\s+)[A-Za-z0-9_\-.=]+|"
+    r"\b(token|password|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+"
+)
 
 
-def _llm_provider():
+def _redact_log_text(message: str) -> str:
+    text = str(message or "")
+    try:
+        from services.rag.redaction import redact
+        return redact(text)
+    except Exception:
+        return _FALLBACK_SECRET_TEXT_RE.sub(lambda m: f"{m.group(1)}<REDACTED>" if m.group(1) else "<REDACTED>", text)
+
+
+def _prompt_preview(message: str, limit: int = 160) -> str:
+    text = " ".join(_redact_log_text(message).split())
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def _compact_params(params: Optional[dict], *, limit: int = 8) -> dict:
+    if not isinstance(params, dict):
+        return {"_type": type(params).__name__}
+    compact: dict = {}
+    for key, value in list(params.items())[:limit]:
+        if _SENSITIVE_PARAM_RE.search(str(key)):
+            compact[key] = "<redacted>"
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            text = str(value) if value is not None else None
+            compact[key] = text[:120] + "..." if isinstance(text, str) and len(text) > 120 else value
+        elif isinstance(value, list):
+            compact[key] = f"list[{len(value)}]"
+        elif isinstance(value, dict):
+            compact[key] = f"dict[{len(value)}]"
+        else:
+            compact[key] = type(value).__name__
+    return compact
+
+
+def _compact_react_steps(steps: list[dict]) -> list[dict]:
+    compact = []
+    for step in steps or []:
+        action = step.get("action")
+        if action == "answer":
+            continue
+        compact.append({
+            "tool": action,
+            "params": _compact_params(step.get("params") or {}),
+            "duration_ms": step.get("duration_ms"),
+        })
+    return compact
+
+
+def _log_chat_turn(
+    *,
+    session_tag: str,
+    route: str,
+    message: str,
+    tool_used: str,
+    tool_params: Optional[dict] = None,
+    capture_id: Optional[str] = None,
+    rag_decision: Optional[dict] = None,
+    error: Optional[str] = None,
+    answer: str = "",
+) -> None:
+    payload = {
+        "event": "chat_turn",
+        "session": session_tag,
+        "route": route,
+        "prompt": _prompt_preview(message),
+        "tool_used": tool_used,
+        "tool_params": _compact_params(tool_params or {}),
+        "capture_id": capture_id,
+        "error": error,
+        "answer_preview": _prompt_preview(answer, limit=220),
+    }
+    if rag_decision:
+        payload["rag"] = {
+            "mode": rag_decision.get("mode"),
+            "top_score": rag_decision.get("top_score"),
+            "top_collection": rag_decision.get("top_collection"),
+            "ansible_detected": rag_decision.get("ansible_detected"),
+        }
+    logger.info("chat_turn %s", json.dumps(payload, default=str))
+
+
+def _log_react_trace(
+    *,
+    session_tag: str,
+    message: str,
+    steps_meta: list[dict],
+    final_tool_used: str,
+    rag_decision: Optional[dict] = None,
+) -> None:
+    payload = {
+        "event": "react_trace",
+        "session": session_tag,
+        "prompt": _prompt_preview(message),
+        "steps": _compact_react_steps(steps_meta),
+        "final_tool_used": final_tool_used,
+    }
+    if rag_decision:
+        payload["rag_mode"] = rag_decision.get("mode")
+    logger.info("react_trace %s", json.dumps(payload, default=str))
+
+
+def _llm_provider(model: Optional[str] = None):
     """Lazily resolve and cache the configured LLM provider.
 
     Imported from `services.llm` in mcp (added to sys.path in main.py).
     Returns None on any import / config failure so callers can fall back cleanly.
     """
-    global _cached_llm_provider
-    if _cached_llm_provider is not None:
-        return _cached_llm_provider
     try:
+        from config.settings import get_settings
+        settings = get_settings()
+        provider_name = (settings.llm_provider or "gemini").lower()
+        selected_model = HARDCODED_GEMINI_MODEL if provider_name == "gemini" else ""
+        key = (provider_name, selected_model)
+        if key in _cached_llm_providers:
+            return _cached_llm_providers[key]
         from services.llm import get_provider
-        _cached_llm_provider = get_provider()
-        return _cached_llm_provider
+        provider = get_provider(model=selected_model or None)
+        _cached_llm_providers[key] = provider
+        return provider
     except Exception as e:
         logger.warning(f"LLM provider unavailable: {e}")
         return None
@@ -55,6 +244,287 @@ def _short_session_id(session_id: Optional[str]) -> str:
     if not session_id:
         return "-"
     return session_id[:8]
+
+
+_K8S_PROMPT_KEYWORDS = {
+    "k8s", "kubernetes", "kubectl", "cluster", "namespace", "namespaces",
+    "pod", "pods", "deployment", "deployments", "statefulset", "daemonset",
+    "service", "services", "endpoint", "endpoints", "ingress", "node", "nodes",
+    "cpu", "memory", "allocated", "allocatable", "capacity", "requests", "limits",
+    "crashloopbackoff", "imagepullbackoff", "pending", "evicted", "restarts",
+    "events", "rollout", "replicas", "argocd", "helm",
+}
+
+
+_K8S_LIVE_STATE_TERMS = {
+    "get", "show", "list", "check", "status", "describe", "inspect", "investigate",
+    "find", "current", "now", "running", "ready", "allocated", "allocatable",
+    "capacity", "usage", "utilization", "cpu", "memory", "requests", "limits",
+    "events", "warnings", "errors", "restarts", "rollout", "replicas",
+}
+
+
+_K8S_RESOURCE_TERMS = {
+    "cluster", "namespace", "namespaces", "node", "nodes", "pod", "pods",
+    "deployment", "deployments", "statefulset", "daemonset", "service",
+    "services", "endpoint", "endpoints", "ingress", "argocd", "helm",
+}
+
+
+_IGNORE_EXTENSIONS = {
+    "py", "md", "txt", "js", "json", "yaml", "yml", "conf", "urls", "ini", "cfg",
+    "sh", "go", "java", "cpp", "c", "h", "ts", "html", "css", "xml", "toml", "lock",
+    "png", "jpg", "jpeg", "gif", "svg", "tar", "gz", "zip", "class", "exe", "dll",
+    "so", "append", "split", "join", "read", "write", "print"
+}
+
+
+def _looks_like_kubernetes_prompt(message: str) -> bool:
+    """Deterministic guard so cluster questions never skip tool execution."""
+    msg = (message or "").lower()
+    tokens = set(re.findall(r"[a-z0-9_.-]+", msg))
+    if tokens & _K8S_PROMPT_KEYWORDS:
+        return True
+
+    # Check for dotted hostnames/FQDNs conservatively
+    for token in tokens:
+        if "." in token:
+            if re.fullmatch(r"v?\d+(\.\d+){1,3}([-.]?(alpha|beta|rc)\d*)?", token):
+                continue
+            parts = [p for p in token.split(".") if p]
+            if len(parts) >= 2:
+                # Extension/action denylist
+                if parts[-1] in _IGNORE_EXTENSIONS:
+                    continue
+                # Host-like signals: contains a digit or a hyphen
+                has_host_signals = any(c.isdigit() or c == "-" for c in token)
+                if len(parts) >= 3:
+                    # Require at least one alphabetic character and a host-like signal to look like hostname/node
+                    if has_host_signals and any(any(c.isalpha() for c in part) for part in parts):
+                        return True
+                elif len(parts) == 2:
+                    # If 2 segments, trigger only for standard internal domains
+                    if parts[1] in ("corp", "local", "internal", "lan"):
+                        return True
+                    # Or known TLDs with host-like signals
+                    if has_host_signals and parts[1] in ("com", "net", "org", "io"):
+                        return True
+
+    if re.search(r"\b[a-z0-9]+-[a-z0-9-]*k8s[a-z0-9-]*\b", msg):
+        return True
+    return False
+
+
+def _looks_like_cluster_context_prompt(message: str) -> bool:
+    """True for prompts about configured/selected kubeconfig contexts."""
+    msg = (message or "").lower()
+    tokens = set(re.findall(r"[a-z0-9_.-]+", msg))
+    subject = {"cluster", "clusters", "context", "contexts", "kubeconfig", "kubeconfigs"}
+    intent = {
+        "configured", "available", "connected", "selected", "current",
+        "active", "using", "have", "list", "show", "what", "which",
+    }
+    return bool(tokens & subject and tokens & intent)
+
+
+def _looks_like_live_kubernetes_prompt(message: str) -> bool:
+    """True when a Kubernetes prompt asks for current cluster state."""
+    msg = (message or "").lower()
+    tokens = set(re.findall(r"[a-z0-9_.-]+", msg))
+    if _looks_like_cluster_context_prompt(message):
+        return True
+    if not _looks_like_kubernetes_prompt(message):
+        return False
+    if re.search(r"\b[a-z0-9]+-[a-z0-9-]*k8s[a-z0-9-]*\b", msg):
+        return True
+    if any("." in token and ("k8s" in token or "node" in token or "-" in token) for token in tokens):
+        return True
+    return bool((tokens & _K8S_RESOURCE_TERMS) and (tokens & _K8S_LIVE_STATE_TERMS))
+
+
+def _should_skip_rag_for_prompt(message: str) -> bool:
+    """Prompts about local/session configuration should not be KB-grounded."""
+    return _looks_like_cluster_context_prompt(message)
+
+
+def _looks_like_static_kb_lookup(message: str) -> bool:
+    """True when the user is asking for repository/runbook knowledge, not live cluster state."""
+    msg = (message or "").lower()
+    if not msg.strip() or _looks_like_live_kubernetes_prompt(message):
+        return False
+
+    tokens = set(re.findall(r"[a-z0-9_.-]+", msg))
+    kb_subjects = {
+        "ansible", "playbook", "playbooks", "role", "roles", "runbook",
+        "repo", "repository", "deployment-provisioning", "helm", "chart",
+        "pipeline", "jenkinsfile", "inventory", "group_vars", "host_vars",
+        "handlers", "handler", "templates", "template", "vars", "defaults",
+        "meta",
+    }
+    lookup_intents = {
+        "what", "which", "where", "show", "list", "find", "used", "use",
+        "uses", "deploy", "deploys", "deployed", "deployment", "name",
+        "file", "files",
+    }
+    return bool(tokens & kb_subjects and tokens & lookup_intents)
+
+
+def _should_protect_from_fast_path(message: str) -> bool:
+    """Prompts that must run deterministic routing before generic LLM fast path."""
+    return _looks_like_kubernetes_prompt(message) or _looks_like_static_kb_lookup(message)
+
+
+def _should_run_proactive_triage(message: str, history: list, enabled: bool) -> bool:
+    """Run startup triage only when it won't obscure a direct config answer."""
+    return bool(enabled and not (history or []) and not _looks_like_cluster_context_prompt(message))
+
+
+def _cached_decision_as_grounding(decision) -> str:
+    """Use a cached runbook as context without skipping live investigation."""
+    if decision is None or decision.mode != "cached" or not decision.cached_answer:
+        return ""
+
+    citation_lines = []
+    for citation in decision.citations:
+        title = getattr(citation, "title", "") or "cached runbook"
+        url = getattr(citation, "url", "") or ""
+        section = getattr(citation, "section", "") or ""
+        citation_lines.append(f"- {title}{f' ({section})' if section else ''}{f': {url}' if url else ''}")
+
+    citations = "\n".join(citation_lines) if citation_lines else "- cached runbook"
+    return (
+        "[Knowledge-base context — a verified cached runbook matched this prompt. "
+        "Use it as guidance, but verify current Kubernetes state with live tools before answering.]\n"
+        f"Similarity: {decision.top_score:.3f}\n"
+        f"Sources:\n{citations}\n\n"
+        f"{decision.cached_answer[:4000]}"
+    )
+
+
+def _should_answer_grounded_kb_directly(message: str, decision) -> bool:
+    """Bypass ReAct for static KB lookups with strong grounded retrieval."""
+    return bool(
+        decision is not None
+        and getattr(decision, "mode", None) == "grounded"
+        and getattr(decision, "grounded_chunks", None)
+        and not _looks_like_live_kubernetes_prompt(message)
+        and _looks_like_static_kb_lookup(message)
+    )
+
+
+def _format_grounded_kb_answer(message: str, decision) -> str:
+    """Render grounded retrieval chunks as a deterministic answer for KB lookups."""
+    chunks = list(getattr(decision, "grounded_chunks", None) or [])
+    top_score = float(getattr(decision, "top_score", 0.0) or 0.0)
+    seen: set[tuple[str, str, str]] = set()
+    evidence: list[dict] = []
+
+    for chunk in chunks:
+        title = str(chunk.get("title") or chunk.get("url") or "(untitled)")
+        section = str(chunk.get("section") or "")
+        content = str(chunk.get("content") or chunk.get("solution_text") or "").strip()
+        url = str(chunk.get("url") or "")
+        score = float(chunk.get("similarity") or 0.0)
+        if not content:
+            continue
+        key = (title, section, content)
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append({
+            "title": title,
+            "section": section,
+            "content": content,
+            "url": url,
+            "score": score,
+        })
+        if len(evidence) >= 5:
+            break
+
+    if not evidence:
+        return (
+            "# Diagnosis\n"
+            "The knowledge base did not return a usable source snippet for this question.\n\n"
+            "# Evidence\n"
+            "- No grounded chunk content was available from the retrieval result.\n\n"
+            "# Recommended Actions\n"
+            "1. Re-run the query with a more specific repository term or resource name.\n\n"
+            "# Uncertainty\n"
+            "Confidence: low\n"
+            "Retrieval matched metadata, but no source content was available to quote."
+        )
+
+    primary = evidence[0]
+    imported_playbooks: list[str] = []
+    for item in evidence:
+        imported_playbooks.extend(
+            match.strip().strip("'\"")
+            for match in re.findall(r"(?im)^\s*import_playbook:\s*([^\s#]+)", item["content"])
+        )
+
+    playbook_names = []
+    for item in evidence:
+        title = item["title"]
+        if title not in playbook_names:
+            playbook_names.append(title)
+
+    if imported_playbooks:
+        imported = ", ".join(f"`{p}`" for p in dict.fromkeys(imported_playbooks))
+        diagnosis = (
+            f"The knowledge base points to `{primary['title']}` as the matching playbook source. "
+            f"The retrieved playbook imports {imported} for the deployment path shown in the repo."
+        )
+    else:
+        names = ", ".join(f"`{p}`" for p in playbook_names[:3])
+        diagnosis = (
+            f"The knowledge base points to {names} as the most relevant repository source"
+            f"{'s' if len(playbook_names[:3]) != 1 else ''} for this question."
+        )
+
+    evidence_lines = []
+    for item in evidence:
+        label = f"`{item['title']}`"
+        if item["section"]:
+            label += f" > {item['section']}"
+        content = item["content"].replace("\n", " ").strip()
+        if len(content) > 260:
+            content = content[:257] + "..."
+        score = f" similarity={item['score']:.3f}" if item["score"] else ""
+        evidence_lines.append(f"- {label}: `{content}`{score}")
+
+    source_lines = []
+    for item in evidence[:3]:
+        if item["url"]:
+            source_lines.append(f"   - {item['url']}")
+
+    confidence = "high" if top_score >= 0.75 else "medium"
+    uncertainty_reason = (
+        f"Top retrieval similarity was {top_score:.3f} from "
+        f"`{getattr(decision, 'top_collection', '') or 'knowledge base'}`. "
+        "The answer is limited to the retrieved repository chunks and should be verified against the source file before making changes."
+    )
+
+    action_texts = [
+        f"Review `{primary['title']}` in the deployment-provisioning repository.",
+    ]
+    if imported_playbooks:
+        action_texts.append(
+            "Follow the imported playbook path"
+            f"{'s' if len(imported_playbooks) != 1 else ''}: "
+            + ", ".join(f"`{p}`" for p in dict.fromkeys(imported_playbooks))
+            + "."
+        )
+    if source_lines:
+        action_texts.append("Open the cited source URL(s):\n" + "\n".join(source_lines))
+    actions = [f"{idx}. {text}" for idx, text in enumerate(action_texts, start=1)]
+
+    return "\n\n".join([
+        "# Diagnosis\n" + diagnosis,
+        "# Evidence\n" + "\n".join(evidence_lines),
+        "# Recommended Actions\n" + "\n".join(actions),
+        "# Uncertainty\n" + f"Confidence: {confidence}\n{uncertainty_reason}",
+    ])
+
 
 # ── Request / response models ─────────────────────────────────────────────────
 
@@ -72,9 +542,10 @@ class SSHCredentials(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
-    history: list[ChatMessage] = []
+    history: list[ChatMessage] = Field(default_factory=list)
     ssh: Optional[SSHCredentials] = None
     session_id: Optional[str] = None   # from browser localStorage
+    model: Optional[str] = None        # request-level LLM model override
 
 
 class ChatResponse(BaseModel):
@@ -83,13 +554,20 @@ class ChatResponse(BaseModel):
     result: Optional[dict] = None
     error: Optional[str] = None
     timestamp: float = 0.0
-    suggested_actions: list = []
+    suggested_actions: list = Field(default_factory=list)
+    session_id: Optional[str] = None
+    run_id: Optional[str] = None
+    synthesis_breakdown: Optional[dict] = None
+    eval_retrieval_context: list[str] = Field(default_factory=list)
+    cost_summary: Optional[dict] = None
+    trace_id: Optional[str] = None
 
 
 class ExecuteRequest(BaseModel):
     command: str
     ssh: Optional[SSHCredentials] = None
     session_id: Optional[str] = None
+    stdin: Optional[str] = None
 
 
 class ExecuteResponse(BaseModel):
@@ -101,53 +579,95 @@ class ExecuteResponse(BaseModel):
 # ── Legacy routing code removed (Phase 2) ────────────────────────────────────
 # ROUTER_SYSTEM, _gemini_route, and _normalize_route were dead code.
 # The chat endpoint uses _keyword_route (no-LLM) or ReAct (LLM enabled).
-# See internal_docs/ROUTING_ARCHITECTURE_PROPOSAL_FIXES.md Phase 2.
+# See docs/ROUTING_ARCHITECTURE_PROPOSAL_FIXES.md Phase 2.
 
 
 # ── Tool dispatcher ───────────────────────────────────────────────────────────
 
-def _dispatch(tool: str, params: dict) -> dict:
-    """Call the appropriate tool function and return its result as a dict.
+def _dispatch(
+    tool: str,
+    params: dict,
+    *,
+    surface: str = "chat",
+    session_id: Optional[str] = None,
+) -> dict:
+    """Dispatch through the unified tool registry.
 
-    KubectlErrors (e.g. resource not found) are caught here and converted into
-    a structured dict so the chat endpoint can give the user a helpful message
-    rather than a raw exception.
+    SSH and session-selected kubeconfig runners are installed around the
+    request before this function is called, so registry handlers still target
+    the correct cluster.
     """
-    import json as _json
     try:
-        return _dispatch_inner(tool, params)
+        from tool_registry import DispatchContext, dispatch as registry_dispatch
+        result = registry_dispatch(
+            tool,
+            params or {},
+            DispatchContext(surface=surface, session_id=session_id),
+        )
+        if tool in {"list_contexts", "list_kubeconfig_contexts"}:
+            return _augment_context_listing(result, session_id=session_id)
+        return result
     except Exception as e:
         err_msg = str(e)
-        # Detect "not found" errors and suggest alternatives
-        not_found = ("not found" in err_msg.lower() or
-                     "notfound" in err_msg.lower() or
-                     "no resources found" in err_msg.lower())
-        if not_found:
-            name = (params.get("deployment_name") or params.get("service_name") or
-                    params.get("pod_name") or params.get("name") or "")
-            ns = params.get("namespace", "default")
-            # Auto-retry with find_workload across namespaces if we have a name
-            if name:
-                try:
-                    from k8s.wrappers import find_workload
-                    fw_result = find_workload(name)
-                    fw_result["_not_found_hint"] = (
-                        f"'{name}' was not found in namespace '{ns}'. "
-                        f"Searched across all namespaces instead:"
-                    )
-                    return fw_result
-                except Exception:
-                    pass
-            return {
-                "error": err_msg,
-                "suggestion": (
-                    f"The resource was not found in namespace '{ns}'. "
-                    "Try specifying the namespace explicitly, e.g. "
-                    "'check argocd in the argocd namespace'."
-                ),
-            }
-        # Generic kubectl / other error → return as structured error
-        return {"error": err_msg}
+        logger.exception("registry dispatch failed for %s", tool)
+        return {"error": err_msg, "tool": tool}
+
+
+def _augment_context_listing(result: dict, *, session_id: Optional[str]) -> dict:
+    """Add session-selected or in-cluster context metadata to context listings.
+
+    ``kubectl config get-contexts`` can be empty in Kubernetes because the
+    backend often runs with only an in-cluster ServiceAccount. The chat UI,
+    however, also supports session-scoped selected clusters stored in SQLite.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    enriched = dict(result)
+    contexts = []
+    for ctx in enriched.get("contexts") or []:
+        contexts.append(ctx if isinstance(ctx, dict) else {"name": str(ctx)})
+
+    session_conn = None
+    if session_id:
+        try:
+            session_conn = db.get_cluster_connection(session_id)
+        except Exception as exc:
+            logger.debug("context listing session lookup failed: %s", exc)
+
+    if session_conn and session_conn.get("context_name"):
+        selected = {
+            "name": session_conn["context_name"],
+            "cluster": session_conn.get("cluster_name") or session_conn["context_name"],
+            "server": session_conn.get("server_url") or "",
+            "namespace": session_conn.get("namespace") or "default",
+            "mode": session_conn.get("mode") or "",
+            "source": "session_connection",
+        }
+        if not any(c.get("name") == selected["name"] for c in contexts):
+            contexts.insert(0, selected)
+        enriched["session_connection"] = selected
+        enriched["current_context"] = enriched.get("current_context") or selected["name"]
+    elif not contexts and os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token"):
+        in_cluster = {
+            "name": "in-cluster",
+            "cluster": "Kubernetes ServiceAccount",
+            "server": "",
+            "namespace": os.environ.get("POD_NAMESPACE", "default"),
+            "mode": "in-cluster",
+            "source": "serviceaccount",
+        }
+        contexts.append(in_cluster)
+        enriched["in_cluster"] = True
+        enriched["current_context"] = "in-cluster"
+        enriched["message"] = (
+            "No kubeconfig contexts are mounted; the backend is running in-cluster "
+            "with its Kubernetes ServiceAccount."
+        )
+
+    enriched["contexts"] = contexts
+    enriched["total_contexts"] = len(contexts)
+    return enriched
 
 
 def _resolve_pod_ns(params: dict, pod_name: str) -> str:
@@ -251,146 +771,6 @@ def _resolve_pod_ns_and_name(params: dict, pod_name: str) -> tuple[str, str]:
     return explicit_ns or "default", pod_name
 
 
-def _dispatch_inner(tool: str, params: dict) -> dict:
-    """Inner dispatcher — raises on errors; called by _dispatch which handles them."""
-    import json as _json
-
-    # Helper: namespace falls back to "default" if Gemini omits it.
-    # "*" is a valid value meaning all-namespaces (passed as-is to get_events/get_pods).
-    ns = params.get("namespace") or "default"
-
-    if tool == "analyze_error":
-        from ai_tools.analyze import run
-        raw = run(params.get("error_text", ""), params.get("tool", "kubernetes"))
-        return _json.loads(raw)
-
-    elif tool == "investigate_pod":
-        from k8s.wrappers import investigate_pod
-        pod_name = params.get("pod_name", "")
-        effective_ns, pod_name = _resolve_pod_ns_and_name(params, pod_name)
-        return investigate_pod(
-            effective_ns,
-            pod_name,
-            tail=params.get("tail", 200),
-            use_ai=params.get("use_ai", True),
-        )
-
-    elif tool == "investigate_workload":
-        from k8s.wrappers import investigate_workload
-        return investigate_workload(
-            ns,
-            params.get("workload_name", ""),
-            params.get("workload_type", "deployment"),
-            use_ai=params.get("use_ai", True)
-        )
-
-    elif tool == "analyze_namespace":
-        from k8s.wrappers import analyze_namespace
-        return analyze_namespace(ns)
-
-    elif tool == "get_pods":
-        from k8s.wrappers import get_pods
-        return get_pods(ns, params.get("label_selector"), params.get("status_filter"))
-
-    elif tool == "get_pod_logs":
-        from k8s.wrappers import get_pod_logs
-        pod_name = params.get("pod_name", "")
-        effective_ns, pod_name = _resolve_pod_ns_and_name(params, pod_name)
-        return get_pod_logs(
-            effective_ns,
-            pod_name,
-            previous=params.get("previous", False),
-            tail=params.get("tail", 200),
-        )
-
-    elif tool == "get_events":
-        from k8s.wrappers import get_events
-        return get_events(ns, params.get("field_selector"))
-
-    elif tool == "get_deployment":
-        from k8s.wrappers import get_deployment
-        return get_deployment(ns, params.get("deployment_name", ""))
-
-    elif tool == "get_service":
-        from k8s.wrappers import get_service
-        svc_name = params.get("service_name", "")
-        # If namespace not explicitly stated, auto-discover via find_workload
-        if not params.get("namespace") and svc_name:
-            try:
-                from k8s.wrappers import find_workload
-                fw = find_workload(svc_name)
-                svcs = fw.get("services", [])
-                if svcs:
-                    ns = svcs[0].get("namespace") or ns
-                    # Use the exact service name returned (handles prefix matches)
-                    svc_name = svcs[0].get("name") or svc_name
-            except Exception:
-                pass
-        return get_service(ns, svc_name)
-
-    elif tool == "get_endpoints":
-        from k8s.wrappers import get_endpoints
-        return get_endpoints(ns, params.get("service_name", ""))
-
-    elif tool == "get_fix_commands":
-        from ai_tools.fix import get_fix_commands
-        raw = get_fix_commands(error_text=params.get("error_text"), category=params.get("category"))
-        return _json.loads(raw)
-
-    elif tool == "generate_runbook":
-        from ai_tools.runbook import generate_runbook
-        raw = generate_runbook(error_text=params.get("error_text"), category=params.get("category"))
-        return _json.loads(raw)
-
-    elif tool == "cluster_report":
-        from ai_tools.report import cluster_report
-        raw = cluster_report(params["events_text"])
-        return _json.loads(raw)
-
-    elif tool == "error_summary":
-        from ai_tools.report import error_summary
-        raw = error_summary(params.get("errors", []))
-        return _json.loads(raw)
-
-    elif tool == "list_contexts":
-        from k8s.wrappers import list_kubeconfig_contexts
-        return list_kubeconfig_contexts()
-
-    elif tool == "switch_context":
-        from k8s.wrappers import switch_kubeconfig_context
-        return switch_kubeconfig_context(params["context_name"])
-
-    elif tool == "find_workload":
-        from k8s.wrappers import find_workload
-        return find_workload(params["name"], params.get("environment"))
-
-    elif tool == "get_rollout_status":
-        from k8s.wrappers import get_rollout_status
-        return get_rollout_status(ns, params.get("deployment_name", ""))
-
-    elif tool == "get_namespaces":
-        from k8s.wrappers import get_namespaces
-        return get_namespaces()
-
-    elif tool == "get_nodes":
-        from k8s.wrappers import get_nodes
-        return get_nodes()
-
-    elif tool == "list_namespace_resources":
-        from k8s.wrappers import list_namespace_resources
-        return list_namespace_resources(ns)
-
-    elif tool == "list_services":
-        from k8s.wrappers import list_services
-        return list_services(ns)
-
-    elif tool == "get_resource_graph":
-        from k8s.wrappers import get_resource_graph
-        return get_resource_graph(ns)
-
-    else:
-        logger.warning("Unknown tool dispatched: %s", tool)
-        return {"error": f"Unknown tool: {tool}", "tool": tool}
 
 
 def _keyword_route(message: str, history: list = None) -> dict:
@@ -438,8 +818,17 @@ def _keyword_route(message: str, history: list = None) -> dict:
         ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)(?:\s+namespace)?", msg)
         # Default to "*" (all namespaces) when none specified
         ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "*"
+        if ns in {"crashloop", "crashloopbackoff", "crashlopp", "imagepull", "imagepullbackoff", "pending", "oom", "oomkilled", "evicted"}:
+            ns = "*"
         ns_label = "all namespaces" if ns == "*" else f"namespace '{ns}'"
-        if re.search(r"oom|evict|crash|imagepull|warning|error|fail|issue|problem", msg):
+        pod_status = _pod_status_filter_for_question(msg)
+        if pod_status:
+            return {
+                "tool": "get_pods",
+                "params": {"namespace": ns, "status_filter": pod_status},
+                "explanation": f"Checking pods in {pod_status} state across {ns_label}",
+            }
+        if re.search(r"warning|error|fail|issue|problem", msg):
             return {"tool": "get_events",
                     "params": {"namespace": ns, "field_selector": "type=Warning"},
                     "explanation": f"Checking live cluster events across {ns_label} for issues"}
@@ -451,7 +840,9 @@ def _keyword_route(message: str, history: list = None) -> dict:
     error_keywords = ["crashloopbackoff", "oomkilled", "imagepullbackoff", "error:", "exception:",
                       "failed:", "traceback", "panic:", "fatal:", "evicted", "pending",
                       "backoff", "oomkill", "exitcode", "exit code", "connection refused",
-                      "timeout", "permission denied", "forbidden"]
+                      "timeout", "permission denied", "forbidden", "responseerror", "response error",
+                      "code=404", "code=403", "code=500", "not found", "does not exist", "unable to connect",
+                      "could not locate", "fail to", "failed to", "error occurred"]
     if any(k in msg for k in error_keywords) and len(message) > 60:
         return {"tool": "analyze_error", "params": {"error_text": message},
                 "explanation": "Detected a pasted error — analyzing with AI"}
@@ -530,7 +921,42 @@ def _keyword_route(message: str, history: list = None) -> dict:
             params_log["namespace"] = ns
         return {"tool": "get_pod_logs", "params": params_log, "explanation": "Fetching pod logs"}
 
+    # ── Simple pod status inventory ────────────────────────────────────────
+    if _simple_pod_status_inventory_prompt(msg):
+        pod_status = _pod_status_filter_for_question(msg)
+        ns_match = re.search(
+            r"namespace[:\s]+(\S+)|in\s+(?:the\s+)?([a-z0-9][a-z0-9\-]+)\s+namespace",
+            msg,
+        )
+        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "*"
+        ns_label = "all namespaces" if ns == "*" else f"namespace '{ns}'"
+        return {
+            "tool": "get_pods",
+            "params": {"namespace": ns, "status_filter": pod_status},
+            "explanation": f"Checking pods in {pod_status} state across {ns_label}",
+        }
+
     # ── Pods list ──────────────────────────────────────────────────────────
+    pod_focus_params: dict[str, bool] = {}
+    if "pod" in msg or re.search(r"\bimages?\b.*\brunning\b", msg):
+        if re.search(r"\blabels?\b", msg) and not re.search(r"\bstatus|ready|restart|image|resources?|requests?|limits?|cpu|memory|where|scheduled|node\b", msg):
+            pod_focus_params["labels_only"] = True
+        elif re.search(r"\bimages?\b", msg):
+            pod_focus_params["images_only"] = True
+        elif re.search(r"\b(resources?|requests?|limits?|cpu|memory)\b", msg):
+            pod_focus_params["resources_only"] = True
+        elif re.search(r"\b(where|placement|scheduled|node_selector|node selector|tolerations?|affinity|which nodes?)\b", msg):
+            pod_focus_params["placement_only"] = True
+
+    if pod_focus_params and re.search(r"list|show|get|all|what|which|where", msg):
+        ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)", msg)
+        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "*"
+        if ns in {"all", "all-namespaces", "allnamespaces"}:
+            ns = "*"
+        params = {"namespace": ns, **pod_focus_params}
+        return {"tool": "get_pods", "params": params,
+                "explanation": f"Listing focused pod inventory in {'all namespaces' if ns == '*' else f'namespace {ns}'}"}
+
     if "pod" in msg and re.search(r"list|show|get|all|running|status", msg):
         ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)", msg)
         ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "default"
@@ -546,6 +972,45 @@ def _keyword_route(message: str, history: list = None) -> dict:
         return {"tool": "get_events",
                 "params": {"namespace": ns, "field_selector": field},
                 "explanation": f"Getting {'warning ' if field else ''}events across {ns_label}"}
+
+    # ── Single-node resource/capacity checks ───────────────────────────────
+    if (
+        re.search(r"\b(cpu|memory|resources?|allocated|allocatable|capacity)\b", msg)
+        and not re.search(r"\b(all|every|each)\b.*\bnodes?\b|\bnodes\b", msg)
+    ):
+        node_match = (
+            re.search(r"\bnode[:\s]+([a-z0-9][a-z0-9.-]+)\b", msg)
+            or re.search(r"\b(?:to|for|on)\s+([a-z0-9][a-z0-9.-]*-[a-z0-9.-]*)\b", msg)
+            or re.search(r"\b([a-z0-9][a-z0-9.-]*-[a-z0-9.-]*)\b", msg)
+        )
+        if node_match:
+            node_name = node_match.group(1).strip("?.!,")
+            return {
+                "tool": "investigate_node",
+                "params": {"node_name": node_name},
+                "explanation": f"Checking allocated resources on node '{node_name}'",
+            }
+
+    # ── Nodes list / labels ─────────────────────────────────────────────────
+    if (
+        (re.search(r"\bnodes\b", msg) or re.search(r"\b(all|every|each)\b.*\bnode\b", msg))
+        and re.search(r"list|show|get|all|labels?|roles?|ready|status|capacity|taints?|conditions?|addresses?|unschedulable", msg)
+    ):
+        labels_only = (
+            bool(re.search(r"\blabels?\b", msg))
+            and not re.search(r"\b(status|ready|roles?|capacity|allocatable|resources?|cpu|memory|version|os)\b", msg)
+        )
+        node_params: dict[str, bool] = {}
+        if labels_only:
+            node_params["labels_only"] = True
+        elif re.search(r"\btaints?\b|unschedulable", msg):
+            node_params["taints_only"] = True
+        elif re.search(r"\bconditions?\b", msg):
+            node_params["conditions_only"] = True
+        elif re.search(r"\baddresses?|internalip|externalip|hostnames?\b", msg):
+            node_params["addresses_only"] = True
+        return {"tool": "get_nodes", "params": node_params,
+                "explanation": "Listing all nodes with status, roles, resources, and labels"}
 
     # ── All resources in a namespace ───────────────────────────────────────
     if re.search(r"all resources|everything|all (the\s+)?things|what.s running|what is running", msg):
@@ -631,9 +1096,18 @@ def _keyword_route(message: str, history: list = None) -> dict:
         dep_match = re.search(r"deployment[:\s]+(\S+)|deploy[:\s]+(\S+)", msg)
         ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else None
         dep = (dep_match.group(1) or dep_match.group(2)) if dep_match else ""
+        focus_params: dict[str, bool] = {}
+        if re.search(r"\blabels?\b", msg) and not re.search(r"\bstatus|ready|replicas?|image|resources?|requests?|limits?|cpu|memory|template\b", msg):
+            focus_params["labels_only"] = True
+        elif re.search(r"\bimages?\b", msg):
+            focus_params["images_only"] = True
+        elif re.search(r"\b(resources?|requests?|limits?|cpu|memory)\b", msg):
+            focus_params["resources_only"] = True
+        elif re.search(r"\b(template|pod template|service account|node selector|node_selector|tolerations?|affinity|volumes?)\b", msg):
+            focus_params["template_only"] = True
         if dep and ns:
             return {"tool": "get_deployment",
-                    "params": {"namespace": ns, "deployment_name": dep},
+                    "params": {"namespace": ns, "deployment_name": dep, **focus_params},
                     "explanation": f"Checking deployment {dep} in {ns}"}
         elif dep:
             return {"tool": "find_workload", "params": {"name": dep},
@@ -655,9 +1129,54 @@ def _keyword_route(message: str, history: list = None) -> dict:
             "explanation": "Analyzing your message as an error/question"}
 
 
+def _pod_status_filter_for_question(msg: str) -> Optional[str]:
+    if re.search(r"crash\s*loop|crashloop|crashlopp|crashloopbackoff", msg):
+        return "CrashLoopBackOff"
+    if re.search(r"imagepull|image\s*pull|errimagepull", msg):
+        return "ImagePullBackOff"
+    if re.search(r"\bpending\b", msg):
+        return "Pending"
+    if re.search(r"\boomkilled|oom\b", msg):
+        return "OOMKilled"
+    if re.search(r"\bevicted\b", msg):
+        return "Evicted"
+    return None
+
+
+def _simple_pod_status_inventory_prompt(message: str) -> bool:
+    msg = (message or "").lower().strip()
+    if not _pod_status_filter_for_question(msg):
+        return False
+    if not re.search(r"\bpods?\b", msg):
+        return False
+    if re.search(
+        r"\b("
+        r"why|identify|root\s*cause|debug|diagnose|investigate|troubleshoot|help\s+me"
+        r"|figure\s+out|what\s+should|what\s+do\s+i|how\s+do\s+i|determine"
+        r"|check"
+        r")\b",
+        msg,
+    ):
+        return False
+    return bool(re.search(r"\b(any|are there|show|list|get|which|what)\b", msg))
+
+
 def _friendly_summary(tool: str, result: dict, explanation: str) -> str:
     """Fallback static summary used when synthesis is unavailable."""
+    if tool == "investigate_node" and isinstance(result, dict):
+        node_summary = _node_resource_summary_text(result)
+        if node_summary:
+            return node_summary
+
     if tool in {"investigate_pod", "investigate_workload", "analyze_namespace"} and isinstance(result, dict):
+        evidence_summary = result.get("evidence_summary", {})
+        if isinstance(evidence_summary, dict) and evidence_summary.get("suspected_root_cause"):
+            root = str(evidence_summary.get("suspected_root_cause", "")).strip()
+            fix = str(evidence_summary.get("suggested_fix", "")).strip()
+            if fix:
+                return f"{root}\n\nSuggested fix: {fix}"
+            return root
+
         ai = result.get("ai", {})
         ai_analysis = ai.get("ai_analysis", {}) if isinstance(ai, dict) else {}
         if isinstance(ai_analysis, dict) and ai_analysis.get("root_cause"):
@@ -692,10 +1211,13 @@ def _friendly_summary(tool: str, result: dict, explanation: str) -> str:
         "cluster_report": "Here's the cluster health report:",
         "error_summary": "Here's the error summary:",
         "list_contexts": "Here are your configured clusters:",
+        "list_kubeconfig_contexts": "Here are your configured clusters:",
         "switch_context": "Context switched:",
         "find_workload": "Here's what I found across all namespaces:",
         "get_rollout_status": "Here's the rollout status:",
         "get_namespaces": "Here are the namespaces in this cluster:",
+        "get_nodes": "Here are the nodes in this cluster:",
+        "investigate_node": "Here are the node details:",
         "list_namespace_resources": "Here are all resources in the namespace:",
         "list_services": "Here are the services in the namespace:",
         "get_resource_graph": "Here is the resource graph for the namespace:",
@@ -705,6 +1227,130 @@ def _friendly_summary(tool: str, result: dict, explanation: str) -> str:
     return summaries.get(tool, explanation)
 
 
+def _node_resource_focus(result: dict) -> dict:
+    allocated = result.get("allocated", {}) if isinstance(result.get("allocated"), dict) else {}
+    capacity = result.get("capacity", {}) if isinstance(result.get("capacity"), dict) else {}
+    allocatable = result.get("allocatable", {}) if isinstance(result.get("allocatable"), dict) else {}
+    return {
+        "name": result.get("name") or result.get("query"),
+        "query": result.get("query"),
+        "status": result.get("status"),
+        "roles": result.get("roles"),
+        "capacity": {
+            "cpu": capacity.get("cpu"),
+            "cpu_millicores": capacity.get("cpu_millicores"),
+            "memory_gib": capacity.get("memory_gib"),
+        },
+        "allocatable": {
+            "cpu": allocatable.get("cpu"),
+            "cpu_millicores": allocatable.get("cpu_millicores"),
+            "memory_gib": allocatable.get("memory_gib"),
+        },
+        "allocated": {
+            "cpu_requests_millicores": allocated.get("cpu_requests_millicores"),
+            "cpu_requests_cores": allocated.get("cpu_requests_cores"),
+            "cpu_requests_percent_of_allocatable": allocated.get("cpu_requests_percent_of_allocatable"),
+            "cpu_limits_millicores": allocated.get("cpu_limits_millicores"),
+            "cpu_limits_cores": allocated.get("cpu_limits_cores"),
+            "cpu_limits_percent_of_allocatable": allocated.get("cpu_limits_percent_of_allocatable"),
+            "memory_requests_gib": allocated.get("memory_requests_gib"),
+            "memory_requests_percent_of_allocatable": allocated.get("memory_requests_percent_of_allocatable"),
+            "memory_limits_gib": allocated.get("memory_limits_gib"),
+            "memory_limits_percent_of_allocatable": allocated.get("memory_limits_percent_of_allocatable"),
+            "non_terminated_pods": allocated.get("non_terminated_pods"),
+        },
+        "pods": result.get("pods", [])[:20] if isinstance(result.get("pods"), list) else [],
+    }
+
+
+def _node_resource_summary_text(result: dict) -> str:
+    focused = _node_resource_focus(result)
+    allocated = focused.get("allocated", {})
+    allocatable = focused.get("allocatable", {})
+    if not isinstance(allocated, dict) or not allocated:
+        return ""
+
+    name = focused.get("name") or "the node"
+    cpu_req = allocated.get("cpu_requests_cores")
+    cpu_req_pct = allocated.get("cpu_requests_percent_of_allocatable")
+    cpu_lim = allocated.get("cpu_limits_cores")
+    cpu_lim_pct = allocated.get("cpu_limits_percent_of_allocatable")
+    alloc_cpu = allocatable.get("cpu") if isinstance(allocatable, dict) else None
+    pods = allocated.get("non_terminated_pods")
+
+    if cpu_req is None and cpu_lim is None:
+        return ""
+
+    return (
+        f"On node `{name}`, CPU allocation is **{cpu_req} cores requested** "
+        f"({cpu_req_pct}% of {alloc_cpu} allocatable cores) and **{cpu_lim} cores limited** "
+        f"({cpu_lim_pct}% of allocatable). This is across **{pods} non-terminated pods**."
+    )
+
+
+def _meaningfully_different(a: str, b: str) -> bool:
+    a_words = {w for w in re.findall(r"[a-z0-9]+", a.lower()) if len(w) > 3}
+    b_words = {w for w in re.findall(r"[a-z0-9]+", b.lower()) if len(w) > 3}
+    if not a_words or not b_words:
+        return bool(a.strip() and b.strip() and a.strip() != b.strip())
+    overlap = len(a_words & b_words) / max(1, min(len(a_words), len(b_words)))
+    return overlap < 0.45
+
+
+def _pod_investigation_summary_text(result: dict) -> str:
+    """Compose a concise deterministic answer from verified and advisory evidence."""
+    evidence_summary = result.get("evidence_summary")
+    evidence_summary = evidence_summary if isinstance(evidence_summary, dict) else {}
+    verified_root = str(evidence_summary.get("suspected_root_cause") or "").strip()
+    verified_fix = str(evidence_summary.get("suggested_fix") or "").strip()
+
+    ai = result.get("ai") if isinstance(result.get("ai"), dict) else {}
+    ai_analysis = ai.get("ai_analysis") if isinstance(ai, dict) and isinstance(ai.get("ai_analysis"), dict) else {}
+    advisory_root = str(ai_analysis.get("root_cause") or "").strip() if isinstance(ai_analysis, dict) else ""
+    advisory_fix = str(ai_analysis.get("solution") or "").strip() if isinstance(ai_analysis, dict) else ""
+
+    if not verified_root:
+        return ""
+
+    pod = result.get("pod_name") or result.get("pod") or "the pod"
+    namespace = result.get("namespace") or "the namespace"
+    lines = [
+        f"`{pod}` in namespace `{namespace}` has verified evidence: **{verified_root}**"
+    ]
+
+    if advisory_root and _meaningfully_different(verified_root, advisory_root):
+        lines.append(f"Additional log/AI analysis points to another failing container issue: **{advisory_root}**")
+
+    container_findings = result.get("container_log_findings")
+    if isinstance(container_findings, list):
+        issue_lines = []
+        for finding in container_findings:
+            if not isinstance(finding, dict):
+                continue
+            container = finding.get("container")
+            reason = finding.get("reason") or finding.get("last_reason") or ""
+            previous = finding.get("logs_previous") if isinstance(finding.get("logs_previous"), dict) else {}
+            current = finding.get("logs_current") if isinstance(finding.get("logs_current"), dict) else {}
+            excerpt = str(previous.get("excerpt") or current.get("excerpt") or "").strip()
+            if not container or not (reason or excerpt):
+                continue
+            compact_excerpt = re.sub(r"\s+", " ", excerpt)[:220]
+            issue = f"`{container}`"
+            if reason:
+                issue += f" ({reason})"
+            if compact_excerpt:
+                issue += f": {compact_excerpt}"
+            issue_lines.append(issue)
+        if issue_lines:
+            lines.append("Container-level findings: " + "; ".join(issue_lines[:4]))
+
+    fix = verified_fix or advisory_fix
+    if fix:
+        lines.append(f"Recommended fix: {fix}")
+
+    return "\n\n".join(lines)
+
+
 # Tools whose output Gemini should synthesise into a direct answer.
 # AI tools (analyze_error, generate_runbook, etc.) already produce natural
 # language — a second Gemini pass on those would be wasteful.
@@ -712,8 +1358,8 @@ _SYNTHESIZE_TOOLS = {
     "get_pods", "get_events", "get_deployment", "get_service",
     "get_endpoints", "get_rollout_status", "find_workload",
     "list_namespace_resources", "list_services", "get_namespaces",
-    "get_pod_logs", "list_contexts", "investigate_pod",
-    "investigate_workload", "analyze_namespace",
+    "get_nodes", "get_pod_logs", "list_contexts", "investigate_pod",
+    "investigate_node", "investigate_workload", "analyze_namespace",
 }
 
 
@@ -729,39 +1375,185 @@ def _synthesize_answer(question: str, tool: str, result: dict) -> tuple[Optional
     if tool not in _SYNTHESIZE_TOOLS:
         return None, None
 
+    if tool == "investigate_pod" and isinstance(result, dict):
+        deterministic = _pod_investigation_summary_text(result)
+        if deterministic:
+            return deterministic, None
+
     provider = _llm_provider()
     if provider is None or not provider.enabled:
         return None, None
 
     import json as _json
 
-    # For investigate_pod, pull out the AI analysis + classification to keep
-    # the prompt focused on the diagnosis rather than raw kubectl output.
+    # For investigate_pod, prefer deterministic evidence gathered by tools.
+    # AI analysis is included as advisory context, not the primary source.
     if tool == "investigate_pod":
         focused = {
             "pod": result.get("pod_name") or result.get("pod"),
             "namespace": result.get("namespace"),
             "classification": result.get("classification"),
-            "ai_analysis": (result.get("ai") or {}).get("ai_analysis"),
+            "pod_spec_summary": result.get("pod_spec_summary"),
+            "evidence_summary": result.get("evidence_summary"),
+            "container_log_findings": result.get("container_log_findings"),
+            "ai_analysis_advisory": (result.get("ai") or {}).get("ai_analysis"),
             "steps_run": result.get("steps_run"),
         }
-        result_text = _json.dumps(focused, default=str)[:3000]
-    elif tool == "get_pods":
-        # For pod listings, always send the health summary first so the LLM
-        # sees unhealthy pods even when the full list is 170+ entries.
-        health = result.get("health_summary", {})
+        result_text = _json.dumps(focused, default=str)[:8000]
+    elif tool == "investigate_node":
+        result_text = _json.dumps(_node_resource_focus(result), default=str)[:8000]
+    elif tool == "investigate_workload":
+        focused = {
+            "workload_name": result.get("workload_name"),
+            "workload_type": result.get("workload_type"),
+            "namespace": result.get("namespace"),
+            "workload_summary": result.get("workload_summary"),
+            "related_pods_summary": result.get("related_pods_summary"),
+            "events_parsed": result.get("events_parsed"),
+            "ai_analysis_advisory": (result.get("ai") or {}).get("ai_analysis"),
+            "steps_run": result.get("steps_run"),
+        }
+        result_text = _json.dumps(focused, default=str)[:8000]
+    elif tool == "analyze_namespace":
         focused = {
             "namespace": result.get("namespace"),
-            "pod_count": result.get("pod_count"),
-            "health_summary": health,
+            "issue_summary": result.get("issue_summary"),
+            "resource_summary": (result.get("resources") or {}).get("summary"),
+            "events_summary": result.get("events_summary") or (result.get("events") or {}).get("events_summary"),
+            "ai_analysis_advisory": (result.get("ai") or {}).get("ai_analysis"),
+            "steps_run": result.get("steps_run"),
         }
-        # If there are few enough pods, include the full list
-        full_json = _json.dumps(result, default=str)
-        if len(full_json) <= 3000:
-            result_text = full_json
+        result_text = _json.dumps(focused, default=str)[:8000]
+    elif tool == "get_pods":
+        if result.get("focused_modes"):
+            focused = {
+                "namespace": result.get("namespace"),
+                "pod_count": result.get("pod_count"),
+                "namespace_summary": result.get("namespace_summary"),
+                "focused_modes": result.get("focused_modes"),
+                "pods": result.get("pods", []),
+            }
+            result_text = _json.dumps(focused, default=str)[:8000]
         else:
-            # Health summary + first/last pods for context
-            result_text = _json.dumps(focused, default=str)[:3000]
+            # For pod listings, always send the health summary first so the LLM
+            # sees unhealthy pods even when the full list is 170+ entries.
+            health = result.get("health_summary", {})
+            focused = {
+                "namespace": result.get("namespace"),
+                "pod_count": result.get("pod_count"),
+                "health_summary": health,
+            }
+            # If there are few enough pods, include the full list
+            full_json = _json.dumps(result, default=str)
+            if len(full_json) <= 3000:
+                result_text = full_json
+            else:
+                # Health summary + first/last pods for context
+                result_text = _json.dumps(focused, default=str)[:3000]
+    elif tool == "get_nodes":
+        focused = {
+            "node_count": result.get("node_count"),
+            "nodes": [
+                {
+                    "name": node.get("name"),
+                    "status": node.get("status"),
+                    "roles": node.get("roles"),
+                    "labels": node.get("labels", {}),
+                    "label_count": node.get("label_count", len(node.get("labels", {}) or {})),
+                    "annotations": node.get("annotations"),
+                    "taints": node.get("taints"),
+                    "unschedulable": node.get("unschedulable"),
+                    "addresses": node.get("addresses"),
+                    "conditions": node.get("conditions"),
+                }
+                for node in result.get("nodes", [])
+            ],
+        }
+        result_text = _json.dumps(focused, default=str)[:8000]
+    elif tool == "get_deployment":
+        if result.get("focused_modes"):
+            result_text = _json.dumps(result, default=str)[:8000]
+        else:
+            focused = {
+                "name": result.get("name"),
+                "namespace": result.get("namespace"),
+                "replicas": result.get("replicas"),
+                "health_status": result.get("health_status"),
+                "diagnostic_hint": result.get("diagnostic_hint"),
+                "selector": result.get("selector"),
+                "labels": result.get("labels", {}),
+                "revision": result.get("revision"),
+                "generation": result.get("generation"),
+                "observed_generation": result.get("observed_generation"),
+                "conditions": result.get("conditions", []),
+                "pod_template": result.get("pod_template", {}),
+            }
+            result_text = _json.dumps(focused, default=str)[:8000]
+    elif tool == "list_namespace_resources":
+        focused = {
+            "namespace": result.get("namespace"),
+            "summary": result.get("summary"),
+            "pods": result.get("pods", [])[:50],
+            "services": result.get("services", [])[:50],
+            "deployments": result.get("deployments", [])[:50],
+            "statefulsets": result.get("statefulsets", [])[:50],
+            "daemonsets": result.get("daemonsets", [])[:50],
+            "configmaps": result.get("configmaps", [])[:50],
+            "persistent_volume_claims": result.get("persistent_volume_claims", [])[:50],
+            "ingresses": result.get("ingresses", [])[:50],
+        }
+        result_text = _json.dumps(focused, default=str)[:8000]
+    elif tool == "get_endpoints":
+        endpoint_slices = result.get("endpoint_slices", {}) or {}
+        focused = {
+            "name": result.get("name"),
+            "namespace": result.get("namespace"),
+            "has_endpoints": result.get("has_endpoints"),
+            "ready_count": result.get("ready_count"),
+            "not_ready_count": result.get("not_ready_count"),
+            "ready_addresses": result.get("ready_addresses", [])[:50],
+            "not_ready_addresses": result.get("not_ready_addresses", [])[:50],
+            "ports": result.get("ports", []),
+            "diagnostic_hint": result.get("diagnostic_hint"),
+            "endpoint_slice_count": result.get("endpoint_slice_count"),
+            "endpoint_slice_endpoint_count": result.get("endpoint_slice_endpoint_count"),
+            "endpoint_slices": {
+                "slice_count": endpoint_slices.get("slice_count"),
+                "endpoint_count": endpoint_slices.get("endpoint_count"),
+                "ready_count": endpoint_slices.get("ready_count"),
+                "not_ready_count": endpoint_slices.get("not_ready_count"),
+                "serving_count": endpoint_slices.get("serving_count"),
+                "terminating_count": endpoint_slices.get("terminating_count"),
+                "ports": endpoint_slices.get("ports", []),
+                "endpoints": endpoint_slices.get("endpoints", [])[:80],
+                "diagnostic_hint": endpoint_slices.get("diagnostic_hint"),
+                "error": endpoint_slices.get("error"),
+            },
+        }
+        result_text = _json.dumps(focused, default=str)[:8000]
+    elif tool == "get_service":
+        focused = {
+            "name": result.get("name"),
+            "namespace": result.get("namespace"),
+            "type": result.get("type"),
+            "focused_modes": result.get("focused_modes"),
+            "labels": result.get("labels", {}),
+            "annotations": result.get("annotations"),
+            "cluster_ip": result.get("cluster_ip"),
+            "cluster_ips": result.get("cluster_ips"),
+            "external_ips": result.get("external_ips"),
+            "external_name": result.get("external_name"),
+            "selector": result.get("selector"),
+            "ports": result.get("ports", []),
+            "load_balancer": result.get("load_balancer"),
+            "session_affinity": result.get("session_affinity"),
+            "external_traffic_policy": result.get("external_traffic_policy"),
+            "internal_traffic_policy": result.get("internal_traffic_policy"),
+            "ip_families": result.get("ip_families"),
+            "ip_family_policy": result.get("ip_family_policy"),
+            "diagnostic_hint": result.get("diagnostic_hint"),
+        }
+        result_text = _json.dumps(focused, default=str)[:8000]
     else:
         # Compact the result to avoid inflating the prompt — 3000 chars is
         # enough to understand pod counts, statuses, restart counts etc.
@@ -770,7 +1562,8 @@ def _synthesize_answer(question: str, tool: str, result: dict) -> tuple[Optional
     # Scale max_tokens based on tool complexity
     _COMPLEX_TOOLS = {
         "investigate_pod", "investigate_workload", "analyze_namespace",
-        "list_namespace_resources", "get_pods", "get_events",
+        "list_namespace_resources", "get_pods", "get_events", "get_nodes", "investigate_node",
+        "get_deployment", "get_endpoints", "get_service",
     }
     max_tok = 800 if tool in _COMPLEX_TOOLS else 400
 
@@ -778,6 +1571,9 @@ def _synthesize_answer(question: str, tool: str, result: dict) -> tuple[Optional
         "You are a Kubernetes DevOps assistant. "
         "Answer the user's question directly and concisely in 2-4 sentences using the data provided. "
         "Be specific: mention pod names, image names, counts, or error reasons where relevant. "
+        "For node CPU/resource allocation questions, answer from allocated.cpu_requests_cores, "
+        "allocated.cpu_limits_cores, percentages, allocatable CPU, and non_terminated_pods. "
+        "When evidence_summary is present, treat it as verified tool evidence and prefer it over AI advisory analysis. "
         "Apply semantic reasoning — do not rely on exact keyword matches: "
         "  • BackOff events on pods that are pulling images = ImagePullBackOff-related issue. "
         "  • OOMKilled in pod status or events = OOM error. "
@@ -860,17 +1656,163 @@ def _extract_suggested_actions(tool: str, result: dict) -> list:
 
 # ── ReAct-powered chat path ──────────────────────────────────────────────────
 
-def _chat_react(req: ChatRequest, provider, _persist, session_tag: str) -> ChatResponse:
+def _chat_react(
+    req: ChatRequest,
+    provider,
+    _persist,
+    session_tag: str,
+    user_id: Optional[str] = None,
+    route: str = "react",
+    capture_enabled: bool = True,
+    deadline_monotonic: Optional[float] = None,
+    tool_scope_override: Optional[set[str]] = None,
+) -> ChatResponse:
     """Multi-step ReAct investigation path — used when an LLM provider is available."""
-    from react import react_loop
+    from react import build_envelope_retrieval_context, react_loop
+    from agent_run_recorder import AgentRunRecorder
 
     logger.info("chat_react session=%s ssh=%s", session_tag, bool(req.ssh))
 
+    sid = req.session_id
+    live_k8s_prompt = _looks_like_live_kubernetes_prompt(req.message)
+
+    # Phase 1.4: ask the retrieval router whether to short-circuit (cached)
+    # or pass grounding chunks to the LLM. Failures fall back to "cold"
+    # automatically inside route().
+    if _should_skip_rag_for_prompt(req.message):
+        decision = None
+        build_grounded_preamble = None
+        logger.info("rag skipped for cluster-context prompt session=%s", session_tag)
+    else:
+        try:
+            from services.rag.router import route as _rag_route, build_grounded_preamble
+            decision = _rag_route(req.message)
+        except Exception as exc:
+            logger.warning("router failed (continuing cold): %s", exc)
+            decision = None
+            build_grounded_preamble = None
+
+    # Short-circuit cached path for static knowledge. For live Kubernetes
+    # state questions, use the cached runbook as grounding only; the answer
+    # still needs fresh kubectl evidence.
+    if decision is not None and decision.mode == "cached" and not live_k8s_prompt:
+        logger.info(
+            "chat_react session=%s mode=cached top_score=%.3f collection=%s",
+            session_tag, decision.top_score, decision.top_collection,
+        )
+        decision_dict = decision.to_dict()
+        _log_chat_turn(
+            session_tag=session_tag,
+            route="react_cached",
+            message=req.message,
+            tool_used="rag_cached",
+            rag_decision=decision_dict,
+            answer=decision.cached_answer or "",
+        )
+        _persist("assistant", decision.cached_answer or "",
+                 tool_used="rag_cached",
+                 result={"rag_decision": decision_dict})
+        return ChatResponse(
+            reply=decision.cached_answer or "",
+            tool_used="rag_cached",
+            result={"rag_decision": decision_dict},
+            timestamp=time.time(),
+            suggested_actions=[],
+            session_id=req.session_id,
+        )
+
+    if _should_answer_grounded_kb_directly(req.message, decision):
+        logger.info(
+            "chat_react session=%s mode=grounded_direct top_score=%.3f collection=%s",
+            session_tag, decision.top_score, decision.top_collection,
+        )
+        decision_dict = decision.to_dict()
+        answer = _format_grounded_kb_answer(req.message, decision)
+        result_payload = {"rag_decision": decision_dict}
+        _log_chat_turn(
+            session_tag=session_tag,
+            route="react_grounded_direct",
+            message=req.message,
+            tool_used="rag_grounded",
+            rag_decision=decision_dict,
+            answer=answer,
+        )
+        _persist("assistant", answer, tool_used="rag_grounded", result=result_payload)
+        return ChatResponse(
+            reply=answer,
+            tool_used="rag_grounded",
+            result=result_payload,
+            timestamp=time.time(),
+            suggested_actions=[],
+            session_id=req.session_id,
+            eval_retrieval_context=[
+                str(c.get("content") or c.get("solution_text") or "")
+                for c in decision.grounded_chunks
+                if str(c.get("content") or c.get("solution_text") or "").strip()
+            ],
+        )
+
+    grounded_preamble = ""
+    if decision is not None and decision.mode == "grounded":
+        grounded_preamble = build_grounded_preamble(decision)
+        logger.info(
+            "chat_react session=%s mode=grounded top_score=%.3f chunks=%d",
+            session_tag, decision.top_score, len(decision.grounded_chunks),
+        )
+    elif decision is not None and decision.mode == "cached" and live_k8s_prompt:
+        grounded_preamble = _cached_decision_as_grounding(decision)
+        logger.info(
+            "chat_react session=%s mode=cached_as_grounding top_score=%.3f collection=%s",
+            session_tag, decision.top_score, decision.top_collection,
+        )
+
+    # Phase 7: deterministic tool scoping (feature-flagged).
+    scope_decision = None
+    # Machine callers may supply a server-computed scope. It takes precedence
+    # over prompt-derived scoping and is enforced by react_loop before
+    # dispatch, so a model cannot opt into recovery/write tools.
+    tool_scope_set: Optional[set[str]] = (
+        set(tool_scope_override) if tool_scope_override is not None else None
+    )
+    if (
+        tool_scope_override is None
+        and os.environ.get("TOOL_SCOPING_ENABLED", "").lower() in ("1", "true", "yes")
+    ):
+        try:
+            from tool_scoper import scope_for_prompt
+            from tool_registry import valid_tool_names
+            available = frozenset(valid_tool_names("react"))
+            scope_decision = scope_for_prompt(req.message, available_tools=available)
+            # 'broad' = no restriction; only pin a scope when classifier matched.
+            if not scope_decision.is_broad():
+                tool_scope_set = set(scope_decision.allowed_tools)
+                logger.info("tool_scoping session=%s scope=%s tools=%d",
+                            session_tag, scope_decision.scope_name, len(tool_scope_set))
+        except Exception as exc:
+            logger.warning("tool_scoping failed (continuing unscoped): %s", exc)
+
+    from react import REACT_SYSTEM_SHA, SYSTEM_PROMPT_SHA, TOOL_REGISTRY_SHA
+    recorder = AgentRunRecorder.start(
+        session_id=sid,
+        user_id=user_id,
+        route=route,
+        model=getattr(provider, "model", None) or req.model,
+        rag_decision=decision.to_dict() if decision is not None else None,
+        tool_scope=scope_decision.to_dict() if scope_decision is not None else None,
+        system_prompt_sha=SYSTEM_PROMPT_SHA,
+        react_system_sha=REACT_SYSTEM_SHA,
+        tool_registry_sha=TOOL_REGISTRY_SHA,
+    )
     result = react_loop(
         question=req.message,
         history=req.history,
         provider=provider,
-        dispatch_fn=_dispatch,
+        dispatch_fn=_make_memory_capturing_dispatch(sid),
+        memory_preamble=memory.build_memory_preamble(sid),
+        grounded_preamble=grounded_preamble,
+        run_recorder=recorder,
+        tool_scope=tool_scope_set,
+        deadline_monotonic=deadline_monotonic,
     )
 
     logger.info(
@@ -888,23 +1830,98 @@ def _chat_react(req: ChatRequest, provider, _persist, session_tag: str) -> ChatR
         for s in result.steps
     ]
 
+    persisted_result = {
+        "react_steps": steps_meta,
+        "tool_result": result.result,
+        "synthesis_breakdown": getattr(result, "synthesis_breakdown", None),
+    }
+
+    cost_summary = None
+    if os.environ.get("SHOW_COST_TO_USERS", "true").lower() in ("1", "true", "yes", "on"):
+        cost_summary = {
+            "total_tokens_in": getattr(recorder, "total_tokens_in", 0),
+            "total_tokens_out": getattr(recorder, "total_tokens_out", 0),
+            "total_cached_tokens_in": getattr(recorder, "total_cached_tokens_in", 0),
+            "total_cost_usd": getattr(recorder, "total_cost_usd", 0.0),
+            "model": getattr(provider, "model", None) or req.model or "",
+        }
+        persisted_result["run_id"] = recorder.run_id if recorder else None
+        persisted_result["cost_summary"] = cost_summary
+
+    eval_retrieval_context = build_envelope_retrieval_context(result.steps)
+    decision_dict = decision.to_dict() if decision is not None else None
+    if decision is not None:
+        persisted_result["rag_decision"] = decision_dict
+
+    # Phase 1.3: opportunistic capture into session_memory. Runs in-line
+    # for the sync endpoint (the response is already slow). Best-effort —
+    # never raises, returns None when not worthy or disabled.
+    capture_id = None
+    if capture_enabled:
+        capture_id = _maybe_capture_chat(
+            question=req.message,
+            answer=result.answer,
+            tool_used=result.tool_used,
+            react_steps=steps_meta,
+            session_id=sid,
+        )
+    if capture_id:
+        persisted_result["capture_id"] = capture_id
+
+    _log_react_trace(
+        session_tag=session_tag,
+        message=req.message,
+        steps_meta=steps_meta,
+        final_tool_used=result.tool_used,
+        rag_decision=decision_dict,
+    )
+    _log_chat_turn(
+        session_tag=session_tag,
+        route=route,
+        message=req.message,
+        tool_used=result.tool_used,
+        capture_id=capture_id,
+        rag_decision=decision_dict,
+        error=result.error,
+        answer=result.answer,
+    )
+
     _persist("assistant", result.answer, tool_used=result.tool_used,
-             result={"react_steps": steps_meta, "tool_result": result.result},
-             error=result.error)
+             result=persisted_result, error=result.error)
+
+    response_result = result.result
+    if (decision is not None and decision.mode != "cold") or capture_id:
+        # Surface decision + capture_id so the UI can render
+        # citations + thumbs buttons.
+        response_result = dict(result.result or {})
+        if decision is not None and decision.mode != "cold":
+            response_result["rag_decision"] = decision_dict
+        if capture_id:
+            response_result["capture_id"] = capture_id
 
     return ChatResponse(
         reply=result.answer,
         tool_used=result.tool_used,
-        result=result.result,
+        result=response_result,
         error=result.error,
         timestamp=time.time(),
         suggested_actions=result.suggested_actions,
+        session_id=req.session_id,
+        run_id=recorder.run_id if recorder is not None else None,
+        synthesis_breakdown=getattr(result, "synthesis_breakdown", None),
+        eval_retrieval_context=eval_retrieval_context,
+        cost_summary=cost_summary,
     )
 
 
 # ── Single-shot chat path (keyword fallback) ────────────────────────────────
 
-def _chat_single_shot(req: ChatRequest, _persist, session_tag: str) -> ChatResponse:
+def _chat_single_shot(
+    req: ChatRequest,
+    _persist,
+    session_tag: str,
+    tool_scope_override: Optional[set[str]] = None,
+) -> ChatResponse:
     """Original single-shot route → dispatch → synthesize path.
 
     Used when no LLM provider is available (keyword routing only).
@@ -920,17 +1937,39 @@ def _chat_single_shot(req: ChatRequest, _persist, session_tag: str) -> ChatRespo
 
     # No tool needed (greeting / general question)
     if tool == "none":
+        _log_chat_turn(
+            session_tag=session_tag,
+            route="single_shot",
+            message=req.message,
+            tool_used="none",
+            answer=explanation,
+        )
         _persist("assistant", explanation, tool_used="none")
         return ChatResponse(
             reply=explanation,
             tool_used="none",
             result=None,
             timestamp=time.time(),
+            session_id=req.session_id,
+        )
+
+    if tool_scope_override is not None and tool not in tool_scope_override:
+        # Server-owned scope for machine callers. This check happens before
+        # registry dispatch and therefore remains effective even if a write
+        # tool is accidentally exposed on the chat surface in the future.
+        reply = f"Tool '{tool}' is not available for this machine invocation."
+        return ChatResponse(
+            reply=reply,
+            tool_used=tool,
+            result={"error": "tool_out_of_scope", "tool": tool},
+            error="tool_out_of_scope",
+            timestamp=time.time(),
+            session_id=req.session_id,
         )
 
     # Dispatch to tool
     dispatch_started_at = time.perf_counter()
-    result = _dispatch(tool, params)
+    result = _dispatch(tool, params, session_id=req.session_id)
     dispatch_elapsed_ms = (time.perf_counter() - dispatch_started_at) * 1000
     logger.info(
         "chat_dispatched session=%s tool=%s ssh=%s elapsed_ms=%.1f",
@@ -945,14 +1984,45 @@ def _chat_single_shot(req: ChatRequest, _persist, session_tag: str) -> ChatRespo
         hint = result.get("suggestion", "")
         err = result.get("error", "Unknown error")
         reply = hint or f"I ran into an issue: {err}"
+        _log_chat_turn(
+            session_tag=session_tag,
+            route="single_shot",
+            message=req.message,
+            tool_used=tool,
+            tool_params=params,
+            error=err,
+            answer=reply,
+        )
         _persist("assistant", reply, tool_used=tool, result=result, error=err)
-        return ChatResponse(reply=reply, tool_used=tool, result=result, error=err, timestamp=time.time())
+        return ChatResponse(
+            reply=reply,
+            tool_used=tool,
+            result=result,
+            error=err,
+            timestamp=time.time(),
+            session_id=req.session_id,
+        )
 
     # Build reply — static summary (no LLM available for synthesis)
     not_found_hint = result.pop("_not_found_hint", None) if isinstance(result, dict) else None
-    reply = not_found_hint or _friendly_summary(tool, result, explanation)
+    synthesized_reply, synth_error = _synthesize_answer(req.message, tool, result)
+    if synth_error:
+        logger.debug("single-shot synthesis skipped: %s", synth_error)
+    reply = not_found_hint or synthesized_reply or _friendly_summary(tool, result, explanation)
 
-    actions = _extract_suggested_actions(tool, result)
+    # Phase 5: executable recovery actions require deterministic validation
+    # plus separate LLM review. The single-shot fallback has no LLM reviewer, so
+    # it intentionally fails closed and leaves recovery steps as prose only.
+    actions = []
+
+    _log_chat_turn(
+        session_tag=session_tag,
+        route="single_shot",
+        message=req.message,
+        tool_used=tool,
+        tool_params=params,
+        answer=reply,
+    )
 
     _persist("assistant", reply, tool_used=tool, result=result)
     return ChatResponse(
@@ -961,13 +2031,14 @@ def _chat_single_shot(req: ChatRequest, _persist, session_tag: str) -> ChatRespo
         result=result,
         timestamp=time.time(),
         suggested_actions=actions,
+        session_id=req.session_id,
     )
 
 
 # ── Chat endpoint ─────────────────────────────────────────────────────────────
 
 @router.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, request: Request):
     """Handle a chat turn.
 
     If the request includes SSH credentials, all kubectl calls in this turn
@@ -980,6 +2051,15 @@ def chat(req: ChatRequest):
     ssh_runner = None
     ctx_token = None
     sid = req.session_id  # may be None for clients that don't send it
+    user_id: Optional[str] = None
+    if auth_utils.auth_enabled():
+        user = auth_utils.require_current_user(request)
+        user_id = user["id"]
+        if sid:
+            auth_utils.require_owned_session(request, sid)
+        else:
+            sid = db.create_session(user_id=user_id)["id"]
+            req.session_id = sid
     session_tag = _short_session_id(sid)
 
     def _persist(role: str, content: str, tool_used: str = None,
@@ -994,6 +2074,7 @@ def chat(req: ChatRequest):
         except Exception as db_err:
             logger.warning(f"DB save failed: {db_err}")
 
+    resp = None
     try:
         # ── Set up SSH runner if credentials were provided ───────────────────
         if req.ssh:
@@ -1018,11 +2099,12 @@ def chat(req: ChatRequest):
                     req.ssh.port,
                     str(e),
                 )
-                return ChatResponse(
+                resp = ChatResponse(
                     reply=f"Could not connect to {req.ssh.host} via SSH: {e}",
                     tool_used="error",
                     result=None,
                     error=str(e),
+                    session_id=sid,
                 )
 
         # ── Set up kubeconfig runner if session has a cluster connection ─────
@@ -1041,27 +2123,29 @@ def chat(req: ChatRequest):
                     cluster_conn["mode"],
                 )
 
-        # 1. Persist the user message
-        _persist("user", req.message)
+        if resp is None:
+            # 1. Persist the user message
+            _persist("user", req.message)
 
-        # 2. Decide: ReAct (multi-step) or single-shot
-        provider = _llm_provider()
-        use_react = provider is not None and provider.enabled
+            # 2. Decide: ReAct (multi-step) or single-shot
+            provider = _llm_provider(req.model)
+            use_react = provider is not None and provider.enabled
 
-        if use_react:
-            return _chat_react(req, provider, _persist, session_tag)
-        else:
-            return _chat_single_shot(req, _persist, session_tag)
+            if use_react and not _simple_pod_status_inventory_prompt(req.message):
+                resp = _chat_react(req, provider, _persist, session_tag, user_id=user_id)
+            else:
+                resp = _chat_single_shot(req, _persist, session_tag)
 
     except Exception as e:
         logger.exception("Chat error")
         err_reply = f"Something went wrong: {e}"
         _persist("assistant", err_reply, tool_used="error", error=str(e))
-        return ChatResponse(
+        resp = ChatResponse(
             reply=err_reply,
             tool_used="error",
             result=None,
             error=str(e),
+            session_id=sid,
         )
 
     finally:
@@ -1071,6 +2155,558 @@ def chat(req: ChatRequest):
         if ctx_token is not None:
             from k8s.kubectl_runner import runner_ctx
             runner_ctx.reset(ctx_token)
+
+    if resp is not None:
+        from tracing import current_trace_id
+        tid = current_trace_id()
+        if tid:
+            resp.trace_id = tid
+
+    return resp
+
+
+# ── Streaming chat endpoint (Phase A: real ReAct step events) ────────────────
+
+def _format_sse(event: dict) -> str:
+    """Serialize an event as a single SSE message."""
+    return f"data: {json.dumps(event, default=str)}\n\n"
+
+
+@router.post("/chat/stream")
+async def chat_stream(req: ChatRequest, request: Request):
+    """Streaming variant of /chat.
+
+    Same input as /chat. Returns an SSE stream that emits real-time events
+    as the ReAct loop progresses:
+
+      data: {"type": "start"}
+      data: {"type": "iteration_planned", "iteration": 1, "action": "...", "thought": "...", "params": {...}}
+      data: {"type": "step_complete",    "iteration": 1, "action": "...", "duration_ms": N, "preview": "..."}
+      ... (one pair per ReAct step)
+      data: {"type": "done", "result": {reply, tool_used, result, suggested_actions, ...}}
+
+    On error: `{"type": "error", "message": "..."}` followed by close.
+
+    The single-shot (non-ReAct) fallback path is NOT streamed in Phase A —
+    it returns a single "done" event after completing. Streaming the
+    final-answer tokens themselves comes in Phase B.
+    """
+    from opentelemetry.context import get_current
+    current_context = get_current()
+
+    sid = req.session_id
+    user_id: Optional[str] = None
+    if auth_utils.auth_enabled():
+        user = auth_utils.require_current_user(request)
+        user_id = user["id"]
+        if sid:
+            auth_utils.require_owned_session(request, sid)
+        else:
+            sid = db.create_session(user_id=user_id)["id"]
+            req.session_id = sid
+    session_tag = _short_session_id(sid)
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    import threading
+    cancelled = threading.Event()
+    run_id_holder: dict = {"run_id": None}
+
+    def _enqueue(event: dict) -> None:
+        # Thread-safe push from the ReAct worker thread → async generator.
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def _persist(role: str, content: str, tool_used: str = None,
+                 result: dict = None, error: str = None):
+        if not sid:
+            return
+        try:
+            db.save_message(sid, role, content, tool_used=tool_used,
+                            result=result, error=error)
+        except Exception as db_err:
+            logger.warning(f"DB save failed: {db_err}")
+
+    def _run_react_in_thread() -> None:
+        """Body of the worker thread. Mirrors /chat's setup + teardown."""
+        from opentelemetry.context import attach
+        token = attach(current_context)
+        ssh_runner = None
+        ctx_token = None
+        try:
+            # ── Persist user message ─────────────────────────────────────
+            _persist("user", req.message)
+
+            # ── SSH runner setup (mirrors /chat) ─────────────────────────
+            if req.ssh:
+                from k8s.ssh_runner import SSHKubectlRunner, SSHConnectionError
+                from k8s.kubectl_runner import set_runner
+                try:
+                    ssh_runner = SSHKubectlRunner(
+                        host=req.ssh.host, username=req.ssh.username,
+                        password=req.ssh.password, port=req.ssh.port,
+                    )
+                    ssh_runner.connect()
+                    ctx_token = set_runner(ssh_runner)
+                except SSHConnectionError as e:
+                    _enqueue({"type": "error",
+                              "message": f"Could not connect to {req.ssh.host} via SSH: {e}"})
+                    return
+            elif sid:
+                cluster_conn = db.get_cluster_connection(sid)
+                if cluster_conn and cluster_conn.get("context_name"):
+                    from k8s.kubectl_runner import KubectlRunner, set_runner
+                    kube_runner = KubectlRunner(
+                        kubeconfig_path=cluster_conn.get("kubeconfig_path"),
+                        context=cluster_conn["context_name"],
+                    )
+                    ctx_token = set_runner(kube_runner)
+
+            # ── Phase 3.0: Proactive cluster triage ──────────────────────
+            # On the FIRST message of a session, if proactive triage is
+            # enabled, emit a one-screen cluster health greeting BEFORE
+            # we do anything with the user's actual prompt. Best-effort:
+            # any failure is swallowed so a slow/broken triage never
+            # blocks the chat.
+            try:
+                from config.settings import get_settings as _gs_triage
+                _settings = _gs_triage()
+                _triage_on = bool(getattr(_settings, "enable_proactive_triage", False))
+                if _should_run_proactive_triage(req.message, req.history, _triage_on):
+                    from triage import cluster_overview, render_greeting
+                    _ns = getattr(_settings, "proactive_triage_namespaces", "*") or "*"
+                    _lookback = int(getattr(_settings, "proactive_triage_event_lookback_min", 10))
+                    _overview = cluster_overview(
+                        namespace=_ns,
+                        event_lookback_minutes=_lookback,
+                    )
+                    _cluster_label = None
+                    if sid:
+                        _cc = db.get_cluster_connection(sid) or {}
+                        _cluster_label = _cc.get("context_name")
+                    _greeting = render_greeting(_overview, cluster_label=_cluster_label)
+                    # Emit as a synthetic assistant message so the UI
+                    # renders it inline above the LLM's eventual reply.
+                    # Persisted so chat history shows the greeting on reload.
+                    _enqueue({"type": "triage_greet",
+                              "text": _greeting})
+                    _persist("assistant", _greeting)
+            except Exception as _triage_exc:
+                logger.debug("proactive triage skipped (%s): %s",
+                             type(_triage_exc).__name__, _triage_exc)
+
+            # ── Provider / route decision ────────────────────────────────
+            provider = _llm_provider(req.model)
+
+            if not (provider and provider.enabled):
+                # No LLM — fall back to single-shot. Emit a single "done"
+                # so the client sees the same shape; richer streaming for
+                # this path is out of scope for Phase A.
+                resp = _chat_single_shot(req, _persist, session_tag)
+                _enqueue({"type": "done", "result": resp.model_dump()})
+                return
+
+            if _simple_pod_status_inventory_prompt(req.message):
+                resp = _chat_single_shot(req, _persist, session_tag)
+                _enqueue({"type": "done", "result": resp.model_dump()})
+                return
+
+            # ── Fast-Path Bypass ─────────────────────────────────────────
+            k8s_prompt = _looks_like_kubernetes_prompt(req.message)
+            live_k8s_prompt = _looks_like_live_kubernetes_prompt(req.message)
+            static_kb_lookup = _looks_like_static_kb_lookup(req.message)
+            try:
+                # If the question is obviously conversational or general knowledge,
+                # we bypass the ReAct loop entirely to provide an instant streaming response.
+                if _should_protect_from_fast_path(req.message):
+                    logger.info(
+                        "Fast-path bypass protected for routed prompt: k8s=%s static_kb=%s prompt=%s",
+                        k8s_prompt,
+                        static_kb_lookup,
+                        _prompt_preview(req.message),
+                    )
+                else:
+                    bypass_prompt = (
+                        f"Does this user input require running kubectl commands, checking a Kubernetes cluster, "
+                        f"or DevOps troubleshooting? Reply exactly 'yes' or 'no'. Input: {req.message}"
+                    )
+                    is_k8s = provider.generate(bypass_prompt, max_tokens=10).strip().lower()
+                    if "no" not in is_k8s:
+                        raise ValueError("classified as Kubernetes/DevOps")
+                    logger.info("Fast-path routing activated for: %s", _prompt_preview(req.message))
+                    _enqueue({"type": "answer_start", "iteration": 0})
+                    
+                    from react import _build_finalize_prompt, _FINALIZE_SYSTEM
+                    history_context = ""
+                    if req.history:
+                        recent = req.history[-4:]
+                        history_context = "\n".join(
+                            f"{getattr(m, 'role', 'user')}: {getattr(m, 'content', str(m))[:200]}"
+                            for m in recent
+                        )
+                        history_context = f"\nRecent conversation:\n{history_context}\n"
+                        
+                    finalize_prompt = _build_finalize_prompt(req.message, history_context)
+                    streamed_text = ""
+                    for chunk in provider.generate_stream(finalize_prompt, system=_FINALIZE_SYSTEM, temperature=0.2, max_tokens=8000):
+                        if cancelled.is_set():
+                            logger.info("Fast-path stream cancelled by client connection drop")
+                            break
+                        if chunk:
+                            streamed_text += chunk
+                            _enqueue({"type": "token", "text": chunk})
+                    _enqueue({"type": "answer_end", "iteration": 0, "fallback_used": False})
+                    
+                    _log_chat_turn(
+                        session_tag=session_tag,
+                        route="stream_fast_path",
+                        message=req.message,
+                        tool_used="none",
+                        answer=streamed_text,
+                    )
+                    _persist("assistant", streamed_text, tool_used="none", result={}, error=None)
+                    _enqueue({
+                        "type": "done", 
+                        "result": {
+                            "reply": streamed_text, 
+                            "tool_used": "none", 
+                            "result": {}, 
+                            "error": None, 
+                            "timestamp": time.time(), 
+                            "suggested_actions": [],
+                            "session_id": sid,
+                        }
+                    })
+                    return
+            except Exception as e:
+                logger.debug("Fast-path classification skipped: %s", e)
+
+            # ── Phase 2.3: semantic prompt cache (L2) ────────────────────
+            # Before the router or any LLM call, check if a similar
+            # question was answered in the last N hours by anyone on the
+            # team. Strict 0.95 similarity bar minimizes false-positives.
+            # On hit: short-circuit ENTIRELY — no router, no ReAct, no
+            # tools, no classifier — and return the cached resolution.
+            # Best-effort: any failure (collection missing, embed fail,
+            # vector DB down) silently misses and falls through.
+            try:
+                if live_k8s_prompt or static_kb_lookup:
+                    _pc_hit, _pc_sim = None, 0.0
+                    logger.info(
+                        "prompt_cache skipped for routed prompt: live_k8s=%s static_kb=%s prompt=%s",
+                        live_k8s_prompt,
+                        static_kb_lookup,
+                        _prompt_preview(req.message),
+                    )
+                else:
+                    from services.rag.prompt_cache import (
+                        lookup as _pc_lookup,
+                        format_cached_answer as _pc_format,
+                    )
+                    _pc_hit, _pc_sim = _pc_lookup(req.message)
+            except Exception as _pc_exc:
+                logger.debug("prompt_cache skipped (%s): %s",
+                             type(_pc_exc).__name__, _pc_exc)
+                _pc_hit, _pc_sim = None, 0.0
+
+            if _pc_hit is not None:
+                _cached_text = _pc_format(_pc_hit)
+                _pc_meta = {
+                    "similarity": _pc_sim,
+                    "original_question": _pc_hit.get("question"),
+                    "original_user": _pc_hit.get("user"),
+                    "original_timestamp": _pc_hit.get("timestamp"),
+                }
+                _log_chat_turn(
+                    session_tag=session_tag,
+                    route="prompt_cache",
+                    message=req.message,
+                    tool_used="prompt_cache",
+                    answer=_cached_text,
+                )
+                _enqueue({
+                    "type": "prompt_cache_hit",
+                    "meta": _pc_meta,
+                })
+                _persist("assistant", _cached_text, tool_used="prompt_cache",
+                         result={"prompt_cache_meta": _pc_meta})
+                _enqueue({
+                    "type": "done",
+                    "result": {
+                        "reply": _cached_text,
+                        "tool_used": "prompt_cache",
+                        "result": {"prompt_cache_meta": _pc_meta},
+                        "error": None,
+                        "timestamp": time.time(),
+                        "suggested_actions": [],
+                        "session_id": sid,
+                    },
+                })
+                return
+
+            # ── Phase 1.4: retrieval router ──────────────────────────────
+            if _should_skip_rag_for_prompt(req.message):
+                decision = None
+                build_grounded_preamble = None
+                logger.info("rag skipped for cluster-context prompt session=%s", session_tag)
+            else:
+                try:
+                    from services.rag.router import route as _rag_route, build_grounded_preamble
+                    decision = _rag_route(req.message)
+                except Exception as exc:
+                    logger.warning("router failed (continuing cold): %s", exc)
+                    decision = None
+                    build_grounded_preamble = None
+
+            # Tell the UI immediately so it can render "found 3 relevant docs"
+            # before the ReAct loop / streaming finalize even starts.
+            if decision is not None and decision.mode != "cold":
+                _enqueue({
+                    "type": "kb_route",
+                    "decision": decision.to_dict(),
+                })
+
+            # Cached short-circuit: persist + emit a single done event with
+            # the runbook's answer. No ReAct, no token streaming — the
+            # answer is canned and authoritative.
+            if decision is not None and decision.mode == "cached" and not live_k8s_prompt:
+                cached_text = decision.cached_answer or ""
+                decision_dict = decision.to_dict()
+                _log_chat_turn(
+                    session_tag=session_tag,
+                    route="stream_cached",
+                    message=req.message,
+                    tool_used="rag_cached",
+                    rag_decision=decision_dict,
+                    answer=cached_text,
+                )
+                _persist("assistant", cached_text, tool_used="rag_cached",
+                         result={"rag_decision": decision_dict})
+                _enqueue({
+                    "type": "done",
+                    "result": {
+                        "reply": cached_text,
+                        "tool_used": "rag_cached",
+                        "result": {"rag_decision": decision_dict},
+                        "error": None,
+                        "timestamp": time.time(),
+                        "suggested_actions": [],
+                        "session_id": sid,
+                    },
+                })
+                return
+
+            if _should_answer_grounded_kb_directly(req.message, decision):
+                answer = _format_grounded_kb_answer(req.message, decision)
+                decision_dict = decision.to_dict()
+                result_payload = {"rag_decision": decision_dict}
+                _log_chat_turn(
+                    session_tag=session_tag,
+                    route="stream_grounded_direct",
+                    message=req.message,
+                    tool_used="rag_grounded",
+                    rag_decision=decision_dict,
+                    answer=answer,
+                )
+                _persist("assistant", answer, tool_used="rag_grounded", result=result_payload)
+                _enqueue({
+                    "type": "done",
+                    "result": {
+                        "reply": answer,
+                        "tool_used": "rag_grounded",
+                        "result": result_payload,
+                        "error": None,
+                        "timestamp": time.time(),
+                        "suggested_actions": [],
+                        "session_id": sid,
+                        "eval_retrieval_context": [
+                            str(c.get("content") or c.get("solution_text") or "")
+                            for c in decision.grounded_chunks
+                            if str(c.get("content") or c.get("solution_text") or "").strip()
+                        ],
+                    },
+                })
+                return
+
+            grounded_preamble = ""
+            if decision is not None and decision.mode == "grounded":
+                grounded_preamble = build_grounded_preamble(decision)
+            elif decision is not None and decision.mode == "cached" and live_k8s_prompt:
+                grounded_preamble = _cached_decision_as_grounding(decision)
+
+            from react import build_envelope_retrieval_context, react_loop
+            from agent_run_recorder import AgentRunRecorder
+
+            # Phase 7: deterministic tool scoping (feature-flagged).
+            scope_decision = None
+            tool_scope_set: Optional[set[str]] = None
+            if os.environ.get("TOOL_SCOPING_ENABLED", "").lower() in ("1", "true", "yes"):
+                try:
+                    from tool_scoper import scope_for_prompt
+                    from tool_registry import valid_tool_names
+                    available = frozenset(valid_tool_names("react"))
+                    scope_decision = scope_for_prompt(req.message, available_tools=available)
+                    if not scope_decision.is_broad():
+                        tool_scope_set = set(scope_decision.allowed_tools)
+                        logger.info("tool_scoping session=%s scope=%s tools=%d",
+                                    session_tag, scope_decision.scope_name, len(tool_scope_set))
+                except Exception as exc:
+                    logger.warning("tool_scoping failed (continuing unscoped): %s", exc)
+
+            from react import REACT_SYSTEM_SHA, SYSTEM_PROMPT_SHA, TOOL_REGISTRY_SHA
+            recorder = AgentRunRecorder.start(
+                session_id=sid,
+                user_id=user_id,
+                route="stream_react",
+                model=getattr(provider, "model", None) or req.model,
+                rag_decision=decision.to_dict() if decision is not None else None,
+                tool_scope=scope_decision.to_dict() if scope_decision is not None else None,
+                system_prompt_sha=SYSTEM_PROMPT_SHA,
+                react_system_sha=REACT_SYSTEM_SHA,
+                tool_registry_sha=TOOL_REGISTRY_SHA,
+            )
+            if recorder is not None:
+                run_id_holder["run_id"] = recorder.run_id
+            result = react_loop(
+                question=req.message,
+                history=req.history,
+                provider=provider,
+                dispatch_fn=_make_memory_capturing_dispatch(sid),
+                on_event=_enqueue,
+                memory_preamble=memory.build_memory_preamble(sid),
+                grounded_preamble=grounded_preamble,
+                is_cancelled=cancelled.is_set,
+                run_recorder=recorder,
+                tool_scope=tool_scope_set,
+            )
+
+            # Persist + emit final done event (mirrors _chat_react).
+            steps_meta = [
+                {"thought": s.thought, "action": s.action,
+                 "params": s.action_params, "duration_ms": round(s.duration_ms)}
+                for s in result.steps
+            ]
+            persisted_result = {
+                "react_steps": steps_meta,
+                "tool_result": result.result,
+                "synthesis_breakdown": getattr(result, "synthesis_breakdown", None),
+            }
+
+            cost_summary = None
+            if os.environ.get("SHOW_COST_TO_USERS", "true").lower() in ("1", "true", "yes", "on"):
+                cost_summary = {
+                    "total_tokens_in": getattr(recorder, "total_tokens_in", 0),
+                    "total_tokens_out": getattr(recorder, "total_tokens_out", 0),
+                    "total_cached_tokens_in": getattr(recorder, "total_cached_tokens_in", 0),
+                    "total_cost_usd": getattr(recorder, "total_cost_usd", 0.0),
+                    "model": getattr(provider, "model", None) or req.model or "",
+                }
+                persisted_result["run_id"] = run_id_holder["run_id"]
+                persisted_result["cost_summary"] = cost_summary
+
+            eval_retrieval_context = build_envelope_retrieval_context(result.steps)
+            response_result = result.result
+            decision_dict = decision.to_dict() if decision is not None else None
+            if decision is not None:
+                persisted_result["rag_decision"] = decision_dict
+                if decision.mode != "cold":
+                    response_result = dict(result.result or {})
+                    response_result["rag_decision"] = decision_dict
+
+            # Phase 1.3 capture (best-effort).
+            capture_id = _maybe_capture_chat(
+                question=req.message, answer=result.answer,
+                tool_used=result.tool_used, react_steps=steps_meta,
+                session_id=sid,
+            )
+            if capture_id:
+                persisted_result["capture_id"] = capture_id
+                response_result = dict(response_result or {})
+                response_result["capture_id"] = capture_id
+
+            _log_react_trace(
+                session_tag=session_tag,
+                message=req.message,
+                steps_meta=steps_meta,
+                final_tool_used=result.tool_used,
+                rag_decision=decision_dict,
+            )
+            _log_chat_turn(
+                session_tag=session_tag,
+                route="stream_react",
+                message=req.message,
+                tool_used=result.tool_used,
+                capture_id=capture_id,
+                rag_decision=decision_dict,
+                error=result.error,
+                answer=result.answer,
+            )
+
+            _persist("assistant", result.answer, tool_used=result.tool_used,
+                     result=persisted_result, error=result.error)
+
+            _enqueue({
+                "type": "done",
+                "result": {
+                    "reply": result.answer,
+                    "tool_used": result.tool_used,
+                    "result": response_result,
+                    "error": result.error,
+                    "timestamp": time.time(),
+                    "suggested_actions": result.suggested_actions,
+                    "session_id": sid,
+                    "run_id": run_id_holder["run_id"],
+                    "synthesis_breakdown": getattr(result, "synthesis_breakdown", None),
+                    "eval_retrieval_context": eval_retrieval_context,
+                    "cost_summary": cost_summary,
+                },
+            })
+        except Exception as e:
+            logger.exception("chat_stream error")
+            _enqueue({"type": "error", "message": f"Something went wrong: {e}"})
+        finally:
+            if ssh_runner is not None:
+                ssh_runner.close()
+            if ctx_token is not None:
+                from k8s.kubectl_runner import runner_ctx
+                runner_ctx.reset(ctx_token)
+            # Sentinel so the SSE generator knows to close.
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+            from opentelemetry.context import detach
+            detach(token)
+
+    async def _event_generator():
+        from tracing import current_trace_id
+        trace_id = current_trace_id()
+
+        # Initial event so the client knows the stream is alive.
+        yield _format_sse({"type": "start", "session": session_tag,
+                           "timestamp": time.time(), "trace_id": trace_id})
+        # Kick off the ReAct loop in a worker thread.
+        worker_task = asyncio.create_task(asyncio.to_thread(_run_react_in_thread))
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield _format_sse(event)
+        finally:
+            # Set the cancelled event so the ReAct loop running in the thread aborts on its next step.
+            cancelled.set()
+            try:
+                await worker_task  # surface any unhandled thread exception
+            except Exception:
+                logger.exception("chat_stream worker task raised after disconnect")
+
+    headers = {
+        "Cache-Control": "no-cache, no-transform",
+        # X-Accel-Buffering: no disables nginx/proxy buffering so events
+        # reach the client immediately rather than batching at the proxy.
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers=headers,
+    )
 
 
 # ── Execute endpoint ──────────────────────────────────────────────────────────
@@ -1095,7 +2731,7 @@ _SAFE_KUBECTL_PREFIXES = [
 
 
 @router.post("/execute", response_model=ExecuteResponse)
-def execute_command(req: ExecuteRequest):
+def execute_command(req: ExecuteRequest, request: Request):
     """Execute a kubectl command suggested by AI analysis.
 
     Safety guards:
@@ -1109,6 +2745,8 @@ def execute_command(req: ExecuteRequest):
 
     cmd = req.command.strip()
     logger.info("execute_request command=%s ssh=%s", cmd[:80], bool(req.ssh))
+    if req.session_id:
+        auth_utils.require_owned_session(request, req.session_id)
 
     # Safety check 1: Must start with "kubectl"
     if not cmd.startswith("kubectl"):
@@ -1126,6 +2764,23 @@ def execute_command(req: ExecuteRequest):
     if any(c in cmd for c in dangerous):
         return ExecuteResponse(success=False, error="Command contains disallowed shell characters.")
 
+    if cmd == "kubectl apply -f -" and not (req.stdin or "").strip():
+        return ExecuteResponse(success=False, error="kubectl apply -f - requires a reviewed stdin manifest.")
+
+    try:
+        from react import _deterministic_review_recovery_action
+        action_review = _deterministic_review_recovery_action(
+            {"command": cmd, "stdin": req.stdin},
+            {},
+            require_evidence=False,
+        )
+    except Exception as exc:
+        logger.warning("execute_action_validation_failed command=%s error=%s", cmd[:80], exc)
+        return ExecuteResponse(success=False, error="Unable to validate recovery action safely.")
+    if not action_review.get("approved"):
+        reason = action_review.get("reason") or "not_approved"
+        return ExecuteResponse(success=False, error=f"Recovery action rejected by safety validation: {reason}.")
+
     # Execute
     ssh_runner = None
     try:
@@ -1142,7 +2797,7 @@ def execute_command(req: ExecuteRequest):
                 ssh_runner.connect()
                 # Strip "kubectl " prefix — SSHKubectlRunner.run() prepends it
                 args = shlex.split(cmd.replace("kubectl ", "", 1))
-                result = ssh_runner.run(args)
+                result = ssh_runner.run(args, stdin_data=req.stdin)
                 if result.success:
                     return ExecuteResponse(success=True, output=result.stdout.strip())
                 else:
@@ -1172,6 +2827,7 @@ def execute_command(req: ExecuteRequest):
 
         result = subprocess.run(
             cmd_parts,
+            input=req.stdin,
             capture_output=True,
             text=True,
             timeout=30,
@@ -1189,3 +2845,312 @@ def execute_command(req: ExecuteRequest):
     finally:
         if ssh_runner is not None:
             ssh_runner.close()
+
+
+# ── Phase 3: Approval Endpoints ──────────────────────────────────────────────
+
+class ApproveRequest(BaseModel):
+    token: str
+    ssh: Optional[SSHCredentials] = None
+
+
+class RejectRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+@router.post("/agent-runs/{run_id}/steps/{step_id}/approve")
+async def approve_step(run_id: str, step_id: int, req: ApproveRequest, request: Request):
+    """Approve a suspended agent step and resume the run's ReAct loop.
+
+    Reads the prior run state, validates the token, marks the step approved,
+    and streams the remaining ReAct iterations using SSE.
+    """
+    from fastapi import HTTPException
+    from opentelemetry.context import get_current
+    current_context = get_current()
+    
+    if not req.token:
+        raise HTTPException(status_code=400, detail="Token is required")
+
+    run_data = db.get_agent_run(run_id)
+    if not run_data:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+        
+    sid = run_data.get("session_id")
+    user_id = None
+    is_owner = False
+    is_admin = False
+    if auth_utils.auth_enabled():
+        user = auth_utils.require_current_user(request)
+        user_id = user["id"]
+        is_owner = (run_data.get("user_id") == user_id)
+        is_admin = auth_utils.is_admin(user)
+        if not (is_owner or is_admin):
+            raise HTTPException(status_code=404, detail="Agent run not found")
+
+    # Stale Run Freshness Check (7-day cap)
+    started_at_str = run_data.get("started_at")
+    if started_at_str:
+        from datetime import datetime, timedelta, timezone
+        try:
+            started_at = datetime.fromisoformat(started_at_str)
+        except ValueError:
+            started_at = datetime.strptime(started_at_str.replace(" ", "T"), "%Y-%m-%dT%H:%M:%S")
+        if datetime.now(timezone.utc).replace(tzinfo=None) - started_at > timedelta(days=7):
+            raise HTTPException(status_code=410, detail="Agent run is stale (older than 7 days)")
+
+    # Emit warning log on admin approval overrides
+    steps = db.get_agent_steps(run_id)
+    step = next((s for s in steps if s["id"] == step_id), None)
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+    pending_action = step.get("action", "")
+
+    if auth_utils.auth_enabled() and not is_owner and is_admin:
+        logger.warning(
+            "admin_approval run_id=%s admin_user_id=%s owner_user_id=%s action=%s",
+            run_id, user_id, run_data.get("user_id"), pending_action,
+        )
+
+    # State Transition & CAS (returns False if already running or not suspended)
+    if not db.resume_agent_run(run_id):
+        raise HTTPException(status_code=409, detail="Agent run is already running or not suspended")
+
+    session_tag = _short_session_id(sid)
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    import threading
+    cancelled = threading.Event()
+
+    def _enqueue(event: dict) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def _persist(role: str, content: str, tool_used: str = None,
+                 result: dict = None, error: str = None):
+        if not sid:
+            return
+        try:
+            db.save_message(sid, role, content, tool_used=tool_used,
+                            result=result, error=error)
+        except Exception as db_err:
+            logger.warning(f"DB save failed: {db_err}")
+
+    def _run_react_in_thread() -> None:
+        from opentelemetry.context import attach
+        token = attach(current_context)
+        ssh_runner = None
+        ctx_token = None
+        try:
+            # ── SSH runner setup (mirrors /chat) ─────────────────────────
+            if req.ssh:
+                from k8s.ssh_runner import SSHKubectlRunner
+                from k8s.kubectl_runner import set_runner, runner_ctx
+
+                try:
+                    ssh_runner = SSHKubectlRunner(
+                        host=req.ssh.host,
+                        username=req.ssh.username,
+                        password=req.ssh.password,
+                        port=req.ssh.port,
+                    )
+                    ctx_token = runner_ctx.set(ssh_runner)
+                    logger.info("SSH runner active for approval session=%s", session_tag)
+                except Exception as exc:
+                    logger.warning("Failed to establish SSH connection: %s", exc)
+                    _enqueue({"type": "error", "message": f"SSH connection failed: {exc}"})
+                    return
+
+            # Retrieve provider
+            from services.llm import get_provider
+            model_name = run_data.get("model") or HARDCODED_GEMINI_MODEL
+            provider = get_provider(model_name)
+
+            # Retrieve tool scope
+            tool_scope_set = None
+            if run_data.get("tool_scope_json"):
+                scope_dict = run_data["tool_scope_json"]
+                if isinstance(scope_dict, dict) and "allowed_tools" in scope_dict:
+                    tool_scope_set = set(scope_dict["allowed_tools"])
+
+            # Retrieve grounded preamble
+            grounded_preamble = ""
+            if run_data.get("rag_decision_json"):
+                from services.rag.router import RouteDecision, build_grounded_preamble
+                d = run_data["rag_decision_json"]
+                decision = RouteDecision(
+                    mode=d.get("mode", "cold"),
+                    citations=[],
+                    cached_answer=d.get("cached_answer"),
+                    grounded_chunks=d.get("grounded_chunks") or [],
+                    top_score=d.get("top_score") or 0.0,
+                    top_collection=d.get("top_collection") or "",
+                    reason=d.get("reason") or "",
+                    ansible_detected=d.get("ansible_detected") or False,
+                )
+                if decision.mode == "grounded":
+                    grounded_preamble = build_grounded_preamble(decision)
+
+            # Load history
+            history_db = db.get_history(sid)
+            # Find the original question (the last user message)
+            user_msgs = [m for m in history_db if m["role"] == "user"]
+            if not user_msgs:
+                _enqueue({"type": "error", "message": "No user message found to resume from"})
+                return
+            question = user_msgs[-1]["content"]
+            history = [ChatMessage(role=m["role"], content=m["content"]) for m in history_db[:-1]]
+
+            from react import react_loop
+            from agent_run_recorder import AgentRunRecorder
+
+            # Reuse existing AgentRunRecorder
+            recorder = AgentRunRecorder(run_id=run_id, user_id=user_id, session_id=sid)
+
+            result = react_loop(
+                question=question,
+                history=history,
+                provider=provider,
+                dispatch_fn=_make_memory_capturing_dispatch(sid),
+                on_event=_enqueue,
+                memory_preamble=memory.build_memory_preamble(sid),
+                grounded_preamble=grounded_preamble,
+                is_cancelled=cancelled.is_set,
+                run_recorder=recorder,
+                tool_scope=tool_scope_set,
+                resume_run_id=run_id,
+                approved_token=req.token,
+                approver_user_id=user_id,
+            )
+
+            if result.error == "PendingApproval":
+                # Suspended again, do not finalize yet
+                return
+
+            # Otherwise, persist the final reply and complete the run
+            steps_meta = [
+                {"thought": s.thought, "action": s.action,
+                 "params": s.action_params, "duration_ms": round(s.duration_ms)}
+                for s in result.steps
+            ]
+            persisted_result = {
+                "react_steps": steps_meta,
+                "tool_result": result.result,
+                "synthesis_breakdown": getattr(result, "synthesis_breakdown", None),
+            }
+            response_result = result.result
+            decision_dict = run_data.get("rag_decision_json")
+            if decision_dict:
+                persisted_result["rag_decision"] = decision_dict
+                if decision_dict.get("mode") != "cold":
+                    response_result = dict(result.result or {})
+                    response_result["rag_decision"] = decision_dict
+
+            # Best-effort capture
+            capture_id = _maybe_capture_chat(
+                question=question, answer=result.answer,
+                tool_used=result.tool_used, react_steps=steps_meta,
+                session_id=sid,
+            )
+            if capture_id:
+                persisted_result["capture_id"] = capture_id
+                response_result = dict(response_result or {})
+                response_result["capture_id"] = capture_id
+
+            _log_react_trace(
+                session_tag=session_tag,
+                message=question,
+                steps_meta=steps_meta,
+                final_tool_used=result.tool_used,
+                rag_decision=decision_dict,
+            )
+            _log_chat_turn(
+                session_tag=session_tag,
+                route="stream_react_resume",
+                message=question,
+                tool_used=result.tool_used,
+                capture_id=capture_id,
+                rag_decision=decision_dict,
+                error=result.error,
+                answer=result.answer,
+            )
+
+            _persist("assistant", result.answer, tool_used=result.tool_used,
+                     result=persisted_result, error=result.error)
+
+            _enqueue({
+                "type": "done",
+                "result": {
+                    "reply": result.answer,
+                    "tool_used": result.tool_used,
+                    "result": response_result,
+                    "error": result.error,
+                    "timestamp": time.time(),
+                    "suggested_actions": result.suggested_actions,
+                    "session_id": sid,
+                    "run_id": run_id,
+                },
+            })
+        except Exception as e:
+            logger.exception("approve_step stream error")
+            _enqueue({"type": "error", "message": f"Something went wrong: {e}"})
+        finally:
+            if ssh_runner is not None:
+                ssh_runner.close()
+            if ctx_token is not None:
+                from k8s.kubectl_runner import runner_ctx
+                runner_ctx.reset(ctx_token)
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+            from opentelemetry.context import detach
+            detach(token)
+
+    async def _event_generator():
+        from tracing import current_trace_id
+        trace_id = current_trace_id()
+
+        yield _format_sse({"type": "start", "session": session_tag, "timestamp": time.time(), "trace_id": trace_id})
+        worker_task = asyncio.create_task(asyncio.to_thread(_run_react_in_thread))
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield _format_sse(event)
+        finally:
+            cancelled.set()
+            try:
+                await worker_task
+            except Exception:
+                logger.exception("approve_step worker task raised after disconnect")
+
+    headers = {
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers=headers,
+    )
+
+
+@router.post("/agent-runs/{run_id}/steps/{step_id}/reject")
+def reject_step(run_id: str, step_id: int, req: RejectRequest, request: Request):
+    """Reject a pending approval step. Marks step as rejected and fails the run."""
+    from fastapi import HTTPException
+    
+    run_data = db.get_agent_run(run_id)
+    if not run_data:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+        
+    sid = run_data.get("session_id")
+    if auth_utils.auth_enabled():
+        if sid:
+            auth_utils.require_owned_session(request, sid)
+
+    try:
+        db.reject_agent_step(run_id, step_id)
+        db.fail_agent_run(run_id, error="User rejected the operation.", status="aborted")
+        return {"success": True, "message": "Run aborted by user."}
+    except Exception as exc:
+        logger.warning("Failed to reject step: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))

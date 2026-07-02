@@ -1,0 +1,11 @@
+{
+  "id": "helm_revision_diff",
+  "prompt": "What changed between Helm revisions 6 and 7 for the jenkins-legacy release in namespace jenkins-legacy?",
+  "expected_output": "The answer should use the read-only diff_helm_revisions tool to compare revisions 6 and 7, summarize the non-secret values or manifest changes, and clearly avoid claiming secret-only changes are impossible because the diff is redacted before comparison.",
+  "context": "Helm revision diff routing: the agent should not manually fetch two large releases and compare them in prose when the server-side diff_helm_revisions tool exists. The answer should explain that redaction can hide secret-only changes if the tool reports that flag.",
+  "expected_tools": ["diff_helm_revisions"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "must_not_contain": ["helm upgrade", "helm rollback", "helm uninstall", "envelope["],
+  "tags": ["helm", "revision_diff", "routing", "read_only", "redaction"],
+  "notes": "Fails if the agent ignores diff_helm_revisions for a clear revision comparison prompt, emits Helm write guidance as an action, or overstates redacted diffs as byte-identical."
+}

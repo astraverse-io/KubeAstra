@@ -1,0 +1,11 @@
+{
+  "id": "helm_release_investigation",
+  "prompt": "Why is the jenkins-legacy Helm release unhealthy in namespace jenkins-legacy?",
+  "expected_output": "The answer should use investigate_helm_release to combine Helm status, recent revisions, rendered resources, release-scoped pod health, and warning events. It should distinguish current release health from older failed revisions and should not blame unrelated namespace-wide pods or events.",
+  "context": "Helm release investigation routing: this prompt asks about a Helm release, not a single pod. The composite investigate_helm_release tool is the intended read-only path because it correlates release status/history with live Kubernetes signals.",
+  "expected_tools": ["investigate_helm_release"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "must_not_contain": ["helm upgrade", "helm rollback", "helm uninstall", "envelope["],
+  "tags": ["helm", "investigation", "release_health", "routing", "read_only"],
+  "notes": "Fails if the agent falls back to generic pod-only investigation for a release-level health prompt or treats older failed revisions as the current root cause without checking current status."
+}

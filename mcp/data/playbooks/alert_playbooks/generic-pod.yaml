@@ -1,0 +1,89 @@
+id: generic-pod
+version: "1.0.0"
+display_name: "Generic Pod Investigation"
+abstract: false
+supported_alerts: []
+allowed_tools:
+  - "list_kubeconfig_contexts"
+  - "get_pods"
+  - "get_events"
+  - "get_pod_logs"
+  - "investigate_pod"
+  - "list_namespace_resources"
+  - "search_configmaps"
+  - "get_configmap"
+  - "get_service"
+  - "get_endpoints"
+steps:
+  - id: "step-1"
+    tool: "get_pods"
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      details: true
+    description: "List pod inventory and health in the namespace"
+  - id: "step-2"
+    tool: "get_events"
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      field_selector: "involvedObject.name={{ alert.labels.resource }},involvedObject.kind=Pod"
+    description: "Check recent events for the pod"
+  - id: "step-3"
+    tool: "get_pod_logs"
+    args:
+      pod_name: "{{ alert.labels.resource }}"
+      namespace: "{{ alert.labels.namespace }}"
+      tail: 200
+    description: "Collect current pod logs"
+  - id: "step-4"
+    tool: "get_pod_logs"
+    args:
+      pod_name: "{{ alert.labels.resource }}"
+      namespace: "{{ alert.labels.namespace }}"
+      previous: true
+      tail: 200
+    description: "Collect previous container logs when available"
+  - id: "step-5"
+    tool: "investigate_pod"
+    args:
+      pod_name: "{{ alert.labels.resource }}"
+      namespace: "{{ alert.labels.namespace }}"
+      use_ai: true
+    description: "Run the existing MCP pod investigation for richer deterministic RCA evidence"
+  - id: "step-6"
+    tool: "list_namespace_resources"
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+    description: "Inspect related namespace resources, services, configmaps, PVCs, and workloads"
+decision_rules:
+  - id: crashloop_found_from_manual_pod
+    applies_to:
+      alert_names: [ManualPodInvestigation]
+    priority: 90
+    when:
+      any:
+        - evidence.kubernetes.pod.mode == "CrashLoopBackOff"
+        - evidence.kubernetes.pod.reason == "CrashLoopBackOff"
+        - evidence.events.reason == "BackOff"
+    prefer_tools: [investigate_pod, get_pod_logs, get_events, list_namespace_resources]
+    prefer_steps: [step-5, step-4, step-2, step-6]
+    focus: [container_state, previous_logs, namespace_context, config_and_dependencies]
+    interpretation: Manual pod target is crash-looping; gather pod investigation, previous logs, events, and namespace context before RCA.
+  - id: logs_show_config_or_dependency
+    applies_to:
+      alert_names: [ManualPodInvestigation]
+    priority: 80
+    when:
+      any:
+        - evidence.logs.previous contains "older version defined on the top level"
+        - evidence.logs.previous contains "plugin prerequisites not met"
+        - evidence.logs.previous contains "connection refused"
+        - evidence.logs.previous contains "missing"
+        - evidence.logs.previous contains "config"
+    prefer_tools: [list_namespace_resources, search_configmaps, get_configmap, get_service, get_endpoints]
+    prefer_steps: [step-6]
+    focus: [configmap_keys, service_endpoints, dependency_config, live_namespace_resources]
+    interpretation: Logs suggest a configuration or dependency issue; inspect namespace resources and, if a specific value/name is visible, use ConfigMap or endpoint tools.
+execution_policy:
+  mode: "autonomous"
+safety:
+  max_steps: 10

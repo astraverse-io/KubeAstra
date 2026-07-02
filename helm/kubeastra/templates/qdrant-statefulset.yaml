@@ -1,0 +1,82 @@
+{{- if .Values.qdrant.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kubeastra.qdrantServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeastra.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "kubeastra.qdrantServiceName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kubeastra.qdrant.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubeastra.qdrant.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: qdrant
+          image: "{{ .Values.qdrant.image.repository }}:{{ .Values.qdrant.image.tag }}"
+          imagePullPolicy: {{ .Values.qdrant.image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - name: http
+              containerPort: 6333
+            - name: grpc
+              containerPort: 6334
+          env:
+            - name: QDRANT__LOG_LEVEL
+              value: {{ .Values.qdrant.logLevel | default "INFO" | quote }}
+            {{- if .Values.qdrant.auth.apiKeySecretRef }}
+            - name: QDRANT__SERVICE__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.qdrant.auth.apiKeySecretRef }}
+                  key: {{ .Values.qdrant.auth.apiKeySecretKey | default "apiKey" }}
+            {{- end }}
+            - name: QDRANT__STORAGE__STORAGE_PATH
+              value: /qdrant/storage
+            - name: QDRANT__STORAGE__SNAPSHOTS_PATH
+              value: /qdrant/storage/snapshots
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /qdrant/storage
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.qdrant.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.qdrant.storage.size }}
+        {{- with .Values.qdrant.storage.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+{{- end }}

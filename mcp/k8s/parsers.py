@@ -6,6 +6,177 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
+def _env_value_from_summary(value_from: dict) -> Optional[Dict[str, Any]]:
+    if not isinstance(value_from, dict) or not value_from:
+        return None
+    for key, ref_type in (
+        ("secretKeyRef", "secretKeyRef"),
+        ("configMapKeyRef", "configMapKeyRef"),
+        ("fieldRef", "fieldRef"),
+        ("resourceFieldRef", "resourceFieldRef"),
+    ):
+        ref = value_from.get(key)
+        if isinstance(ref, dict):
+            return {
+                "type": ref_type,
+                "name": ref.get("name", ""),
+                "key": ref.get("key", ""),
+                "field_path": ref.get("fieldPath", ""),
+                "resource": ref.get("resource", ""),
+                "optional": ref.get("optional"),
+            }
+    return {"type": "unknown"}
+
+
+def _env_from_summary(env_from: list) -> List[Dict[str, Any]]:
+    refs = []
+    for item in env_from or []:
+        if not isinstance(item, dict):
+            continue
+        prefix = item.get("prefix", "")
+        if isinstance(item.get("secretRef"), dict):
+            refs.append({
+                "type": "secretRef",
+                "name": item["secretRef"].get("name", ""),
+                "prefix": prefix,
+                "optional": item["secretRef"].get("optional"),
+            })
+        if isinstance(item.get("configMapRef"), dict):
+            refs.append({
+                "type": "configMapRef",
+                "name": item["configMapRef"].get("name", ""),
+                "prefix": prefix,
+                "optional": item["configMapRef"].get("optional"),
+            })
+    return refs
+
+
+def _container_summary(container: dict) -> Dict[str, Any]:
+    env = []
+    for item in container.get("env", []) or []:
+        if not isinstance(item, dict):
+            continue
+        # Deliberately expose env names and references, never literal values.
+        env.append({
+            "name": item.get("name", ""),
+            "value_from": _env_value_from_summary(item.get("valueFrom", {})),
+            "has_literal_value": "value" in item,
+        })
+
+    return {
+        "name": container.get("name", ""),
+        "image": container.get("image", ""),
+        "ports": [
+            {
+                "name": port.get("name", ""),
+                "container_port": port.get("containerPort"),
+                "protocol": port.get("protocol", "TCP"),
+            }
+            for port in container.get("ports", []) or []
+            if isinstance(port, dict)
+        ],
+        "resources": container.get("resources", {}) or {},
+        "env": env,
+        "env_from": _env_from_summary(container.get("envFrom", [])),
+        "volume_mounts": [
+            {
+                "name": mount.get("name", ""),
+                "mount_path": mount.get("mountPath", ""),
+                "read_only": mount.get("readOnly", False),
+            }
+            for mount in container.get("volumeMounts", []) or []
+            if isinstance(mount, dict)
+        ],
+    }
+
+
+def _volume_summary(volume: dict) -> Dict[str, Any]:
+    for key, ref_type in (
+        ("secret", "secret"),
+        ("configMap", "configMap"),
+        ("persistentVolumeClaim", "persistentVolumeClaim"),
+        ("projected", "projected"),
+        ("emptyDir", "emptyDir"),
+        ("hostPath", "hostPath"),
+        ("downwardAPI", "downwardAPI"),
+    ):
+        if key in volume:
+            ref = volume.get(key) if isinstance(volume.get(key), dict) else {}
+            return {
+                "name": volume.get("name", ""),
+                "type": ref_type,
+                "ref_name": ref.get("secretName") or ref.get("name") or ref.get("claimName") or "",
+                "path": ref.get("path", "") if ref_type == "hostPath" else "",
+            }
+    return {"name": volume.get("name", ""), "type": "unknown", "ref_name": ""}
+
+
+def _affinity_summary(affinity: dict) -> Dict[str, Any]:
+    if not isinstance(affinity, dict) or not affinity:
+        return {}
+    return {
+        "has_node_affinity": bool(affinity.get("nodeAffinity")),
+        "has_pod_affinity": bool(affinity.get("podAffinity")),
+        "has_pod_anti_affinity": bool(affinity.get("podAntiAffinity")),
+    }
+
+
+def _owner_references_summary(owner_refs: list) -> List[Dict[str, Any]]:
+    return [
+        {
+            "kind": ref.get("kind", ""),
+            "name": ref.get("name", ""),
+            "controller": ref.get("controller", False),
+        }
+        for ref in owner_refs or []
+        if isinstance(ref, dict)
+    ]
+
+
+def _annotations_summary(annotations: dict) -> Dict[str, Any]:
+    if not isinstance(annotations, dict) or not annotations:
+        return {"count": 0, "keys": []}
+    return {
+        "count": len(annotations),
+        "keys": sorted(annotations.keys()),
+    }
+
+
+def _pod_template_summary(template: dict) -> Dict[str, Any]:
+    metadata = template.get("metadata", {}) if isinstance(template, dict) else {}
+    spec = template.get("spec", {}) if isinstance(template, dict) else {}
+    containers = spec.get("containers", []) or []
+    init_containers = spec.get("initContainers", []) or []
+
+    return {
+        "labels": metadata.get("labels", {}) or {},
+        "label_count": len(metadata.get("labels", {}) or {}),
+        "annotations": _annotations_summary(metadata.get("annotations", {}) or {}),
+        "service_account_name": spec.get("serviceAccountName", ""),
+        "node_selector": spec.get("nodeSelector", {}) or {},
+        "tolerations": [
+            {
+                "key": tol.get("key", ""),
+                "operator": tol.get("operator", ""),
+                "value": tol.get("value", ""),
+                "effect": tol.get("effect", ""),
+                "toleration_seconds": tol.get("tolerationSeconds"),
+            }
+            for tol in spec.get("tolerations", []) or []
+            if isinstance(tol, dict)
+        ],
+        "affinity": _affinity_summary(spec.get("affinity", {})),
+        "containers": [_container_summary(c) for c in containers if isinstance(c, dict)],
+        "init_containers": [_container_summary(c) for c in init_containers if isinstance(c, dict)],
+        "images": [
+            c.get("image", "")
+            for c in containers
+            if isinstance(c, dict) and c.get("image")
+        ],
+        "volumes": [_volume_summary(v) for v in spec.get("volumes", []) or [] if isinstance(v, dict)],
+    }
+
+
 def parse_pod_list(json_output: dict) -> List[Dict[str, Any]]:
     """
     Parse kubectl get pods JSON output into structured summaries.
@@ -92,11 +263,13 @@ def parse_pod_list(json_output: dict) -> List[Dict[str, Any]]:
 
             # Extract container images
             containers = spec.get("containers", [])
+            init_containers = spec.get("initContainers", []) or []
             images = [c.get("image", "") for c in containers]
 
             pod_summary = {
                 "name": metadata.get("name", ""),
                 "namespace": metadata.get("namespace", ""),
+                "owner_references": _owner_references_summary(metadata.get("ownerReferences", [])),
                 "phase": status.get("phase", "Unknown"),
                 "status": effective_status,
                 "status_reason": status_reason,
@@ -109,6 +282,24 @@ def parse_pod_list(json_output: dict) -> List[Dict[str, Any]]:
                 "pod_ip": status.get("podIP", ""),
                 "creation_timestamp": metadata.get("creationTimestamp", ""),
                 "labels": metadata.get("labels", {}),
+                "label_count": len(metadata.get("labels", {}) or {}),
+                "service_account_name": spec.get("serviceAccountName", ""),
+                "node_selector": spec.get("nodeSelector", {}) or {},
+                "tolerations": [
+                    {
+                        "key": tol.get("key", ""),
+                        "operator": tol.get("operator", ""),
+                        "value": tol.get("value", ""),
+                        "effect": tol.get("effect", ""),
+                        "toleration_seconds": tol.get("tolerationSeconds"),
+                    }
+                    for tol in spec.get("tolerations", []) or []
+                    if isinstance(tol, dict)
+                ],
+                "affinity": _affinity_summary(spec.get("affinity", {})),
+                "containers": [_container_summary(c) for c in containers if isinstance(c, dict)],
+                "init_containers": [_container_summary(c) for c in init_containers if isinstance(c, dict)],
+                "volumes": [_volume_summary(v) for v in spec.get("volumes", []) or [] if isinstance(v, dict)],
                 "container_states": container_states,
             }
             
@@ -150,6 +341,7 @@ def parse_deployment(json_output: dict) -> Dict[str, Any]:
     metadata = json_output.get("metadata", {})
     spec = json_output.get("spec", {})
     status = json_output.get("status", {})
+    pod_template = _pod_template_summary(spec.get("template", {}))
     
     desired = spec.get("replicas", 0)
     ready = status.get("readyReplicas", 0)
@@ -159,6 +351,9 @@ def parse_deployment(json_output: dict) -> Dict[str, Any]:
     deployment_summary = {
         "name": metadata.get("name", ""),
         "namespace": metadata.get("namespace", ""),
+        "labels": metadata.get("labels", {}) or {},
+        "label_count": len(metadata.get("labels", {}) or {}),
+        "annotations": _annotations_summary(metadata.get("annotations", {}) or {}),
         "replicas": {
             "desired": desired,
             "current": status.get("replicas", 0),
@@ -167,8 +362,12 @@ def parse_deployment(json_output: dict) -> Dict[str, Any]:
             "available": available,
             "unavailable": unavailable,
         },
-        "selector": spec.get("selector", {}),
+        "selector": spec.get("selector", {}) or {},
         "strategy": spec.get("strategy", {}),
+        "revision": metadata.get("annotations", {}).get("deployment.kubernetes.io/revision", ""),
+        "generation": metadata.get("generation"),
+        "observed_generation": status.get("observedGeneration"),
+        "pod_template": pod_template,
         "conditions": [],
         "health_status": "healthy" if ready == desired and desired > 0 else "unhealthy",
         "creation_timestamp": metadata.get("creationTimestamp", ""),
@@ -210,25 +409,41 @@ def parse_service(json_output: dict) -> Dict[str, Any]:
     
     metadata = json_output.get("metadata", {})
     spec = json_output.get("spec", {})
+    status = json_output.get("status", {})
+    labels = metadata.get("labels", {}) or {}
     
     service_summary = {
         "name": metadata.get("name", ""),
         "namespace": metadata.get("namespace", ""),
+        "labels": labels,
+        "label_count": len(labels),
+        "annotations": _annotations_summary(metadata.get("annotations", {}) or {}),
         "type": spec.get("type", "ClusterIP"),
         "cluster_ip": spec.get("clusterIP", ""),
+        "cluster_ips": spec.get("clusterIPs", []) or [],
         "external_ips": spec.get("externalIPs", []),
+        "external_name": spec.get("externalName", ""),
         "selector": spec.get("selector", {}),
         "ports": [],
+        "load_balancer": status.get("loadBalancer", {}) or {},
+        "session_affinity": spec.get("sessionAffinity", "None"),
+        "external_traffic_policy": spec.get("externalTrafficPolicy", ""),
+        "internal_traffic_policy": spec.get("internalTrafficPolicy", ""),
+        "ip_families": spec.get("ipFamilies", []) or [],
+        "ip_family_policy": spec.get("ipFamilyPolicy", ""),
         "creation_timestamp": metadata.get("creationTimestamp", ""),
     }
     
     # Parse ports
-    for port in spec.get("ports", []):
+    for port in spec.get("ports", []) or []:
+        if not isinstance(port, dict):
+            continue
         port_info = {
             "name": port.get("name", ""),
             "protocol": port.get("protocol", "TCP"),
             "port": port.get("port"),
             "target_port": port.get("targetPort"),
+            "app_protocol": port.get("appProtocol", ""),
         }
         # Only include nodePort if it exists (for NodePort/LoadBalancer services)
         if "nodePort" in port:
@@ -319,6 +534,113 @@ def parse_endpoints(json_output: dict) -> Dict[str, Any]:
     elif ready_count == 0 and not_ready_count > 0:
         result["diagnostic_hint"] = f"{not_ready_count} endpoint(s) not ready - check pod readiness"
     
+    return result
+
+
+def parse_endpoint_slices(json_output: dict) -> Dict[str, Any]:
+    """
+    Parse kubectl get endpointslices JSON output into connectivity evidence.
+
+    EndpointSlice includes readiness dimensions that legacy Endpoints cannot
+    represent, especially serving and terminating state.
+    """
+    if not isinstance(json_output, dict):
+        return {"error": "Invalid JSON output"}
+
+    slices = []
+    endpoints = []
+    ports_by_key: dict[tuple, dict] = {}
+
+    for item in json_output.get("items", []) or []:
+        metadata = item.get("metadata", {}) or {}
+        address_type = item.get("addressType", "")
+        slice_ports = []
+        for port in item.get("ports", []) or []:
+            if not isinstance(port, dict):
+                continue
+            port_info = {
+                "name": port.get("name", ""),
+                "port": port.get("port"),
+                "protocol": port.get("protocol", "TCP"),
+                "app_protocol": port.get("appProtocol", ""),
+            }
+            slice_ports.append(port_info)
+            ports_by_key[(
+                port_info["name"],
+                port_info["port"],
+                port_info["protocol"],
+                port_info["app_protocol"],
+            )] = port_info
+
+        slice_endpoint_count = 0
+        for endpoint in item.get("endpoints", []) or []:
+            if not isinstance(endpoint, dict):
+                continue
+            target_ref = endpoint.get("targetRef", {}) or {}
+            conditions = endpoint.get("conditions", {}) or {}
+            hints = endpoint.get("hints", {}) or {}
+            zones = [
+                zone.get("name", "")
+                for zone in hints.get("forZones", []) or []
+                if isinstance(zone, dict) and zone.get("name")
+            ]
+            endpoint_info = {
+                "slice_name": metadata.get("name", ""),
+                "addresses": endpoint.get("addresses", []) or [],
+                "address_type": address_type,
+                "hostname": endpoint.get("hostname", ""),
+                "node_name": endpoint.get("nodeName", ""),
+                "zone": endpoint.get("zone", ""),
+                "hints_for_zones": zones,
+                "conditions": {
+                    "ready": conditions.get("ready"),
+                    "serving": conditions.get("serving"),
+                    "terminating": conditions.get("terminating"),
+                },
+                "target_ref": {
+                    "kind": target_ref.get("kind", ""),
+                    "name": target_ref.get("name", ""),
+                    "namespace": target_ref.get("namespace", ""),
+                },
+                "ports": slice_ports,
+            }
+            endpoints.append(endpoint_info)
+            slice_endpoint_count += 1
+
+        slices.append({
+            "name": metadata.get("name", ""),
+            "namespace": metadata.get("namespace", ""),
+            "labels": metadata.get("labels", {}) or {},
+            "address_type": address_type,
+            "ports": slice_ports,
+            "endpoint_count": slice_endpoint_count,
+        })
+
+    ready_count = sum(1 for endpoint in endpoints if endpoint.get("conditions", {}).get("ready") is True)
+    not_ready_count = sum(1 for endpoint in endpoints if endpoint.get("conditions", {}).get("ready") is False)
+    serving_count = sum(1 for endpoint in endpoints if endpoint.get("conditions", {}).get("serving") is True)
+    terminating_count = sum(1 for endpoint in endpoints if endpoint.get("conditions", {}).get("terminating") is True)
+
+    result = {
+        "slice_count": len(slices),
+        "endpoint_count": len(endpoints),
+        "ready_count": ready_count,
+        "not_ready_count": not_ready_count,
+        "serving_count": serving_count,
+        "terminating_count": terminating_count,
+        "ports": list(ports_by_key.values()),
+        "slices": slices,
+        "endpoints": endpoints,
+        "has_endpoints": ready_count > 0,
+    }
+
+    if not endpoints:
+        result["diagnostic_hint"] = "No EndpointSlice endpoints found - check service selector and backing pods"
+    elif ready_count == 0:
+        result["diagnostic_hint"] = "EndpointSlice endpoints exist, but none are ready"
+    elif terminating_count > 0:
+        result["diagnostic_hint"] = f"{terminating_count} endpoint(s) are terminating"
+
     return result
 
 

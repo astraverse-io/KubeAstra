@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { AlertTriangle, Play, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import type { TabId } from "./Sidebar";
+import { SlideToConfirm } from "./SlideToConfirm";
 
 interface Props {
   tab: TabId;
@@ -15,7 +16,7 @@ interface Props {
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
 function Label({ children }: { children: React.ReactNode }) {
-  return <label className="block text-xs font-medium text-gray-400 mb-1.5">{children}</label>;
+  return <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 500, color: "var(--ink-3)", marginBottom: "0.375rem" }}>{children}</label>;
 }
 
 function Input({
@@ -31,11 +32,13 @@ function Input({
 }) {
   return (
     <input
+      name={placeholder || "tool-input"}
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+      className="sym-input"
+      style={{ width: "100%", fontSize: "0.875rem" }}
     />
   );
 }
@@ -53,11 +56,13 @@ function TextArea({
 }) {
   return (
     <textarea
+      name={placeholder || "tool-textarea"}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       rows={rows}
-      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-colors resize-y"
+      className="sym-input"
+      style={{ width: "100%", fontSize: "0.875rem", fontFamily: "var(--mono)", resize: "vertical" }}
     />
   );
 }
@@ -73,9 +78,11 @@ function Select({
 }) {
   return (
     <select
+      name="tool-select"
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+      className="sym-input"
+      style={{ width: "100%", fontSize: "0.875rem" }}
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -96,16 +103,23 @@ function Toggle({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 cursor-pointer">
+    <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
       <div
         onClick={() => onChange(!value)}
-        className={`w-9 h-5 rounded-full transition-colors ${value ? "bg-blue-600" : "bg-gray-700"} relative`}
+        style={{
+          width: "2.25rem", height: "1.25rem", borderRadius: "9999px", transition: "background-color 0.15s",
+          backgroundColor: value ? "var(--brand)" : "var(--paper-3)", position: "relative"
+        }}
       >
         <span
-          className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${value ? "translate-x-4" : ""}`}
+          style={{
+            position: "absolute", top: "0.125rem", left: "0.125rem", width: "1rem", height: "1rem",
+            borderRadius: "50%", backgroundColor: "var(--paper)", transition: "transform 0.15s",
+            transform: value ? "translateX(1rem)" : "translateX(0)"
+          }}
         />
       </div>
-      <span className="text-xs text-gray-400">{label}</span>
+      <span style={{ fontSize: "0.75rem", color: "var(--ink-3)" }}>{label}</span>
     </label>
   );
 }
@@ -123,10 +137,11 @@ function SubmitButton({
     <button
       type="submit"
       disabled={loading || disabled}
-      className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium text-white transition-colors"
+      className="sym-btn-primary"
+      style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.875rem", padding: "0.5rem 1rem" }}
     >
       {loading ? (
-        <RefreshCw size={14} className="animate-spin" />
+        <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} />
       ) : (
         <Play size={14} />
       )}
@@ -176,14 +191,14 @@ function AnalyzeTab({ onResult, onLoading, onError }: Props) {
   };
 
   return (
-    <form onSubmit={run} className="space-y-4">
+    <form onSubmit={run} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <div>
         <Label>Tool</Label>
         <Select
           value={tool}
           onChange={setTool}
           options={[
-            { value: "analyze", label: "Analyze Error (Gemini + RAG)" },
+            { value: "analyze", label: "Analyze Error (AI + RAG)" },
             { value: "fix", label: "Get Fix Commands" },
             { value: "runbook", label: "Generate Runbook" },
             { value: "report", label: "Cluster Report (paste events)" },
@@ -192,7 +207,7 @@ function AnalyzeTab({ onResult, onLoading, onError }: Props) {
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.75rem" }}>
         <div>
           <Label>Tool type</Label>
           <Select
@@ -225,9 +240,11 @@ function AnalyzeTab({ onResult, onLoading, onError }: Props) {
         <div>
           <Label>Category (or leave blank to auto-detect)</Label>
           <select
+            name="error-category"
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="sym-input"
+            style={{ width: "100%" }}
           >
             <option value="">-- auto-detect from error text --</option>
             {Object.entries(categories).map(([k, v]) => (
@@ -238,7 +255,7 @@ function AnalyzeTab({ onResult, onLoading, onError }: Props) {
       )}
 
       {tool === "fix" && (
-        <div className="grid grid-cols-2 gap-3">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.75rem" }}>
           <div>
             <Label>Namespace</Label>
             <Input value={namespace} onChange={setNamespace} placeholder="my-namespace" />
@@ -321,7 +338,7 @@ function InvestigateTab({ onResult, onLoading, onError }: Props) {
   };
 
   return (
-    <form onSubmit={run} className="space-y-4">
+    <form onSubmit={run} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <div>
         <Label>Tool</Label>
         <Select
@@ -365,18 +382,18 @@ function InvestigateTab({ onResult, onLoading, onError }: Props) {
       )}
 
       {["investigate", "logs"].includes(tool) && (
-        <div className="flex items-center gap-4">
-          <div className="flex-1">
+        <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+          <div style={{ flex: 1 }}>
             <Label>Tail lines</Label>
             <Input value={tail} onChange={setTail} placeholder="200" type="number" />
           </div>
           {tool === "logs" && (
-            <div className="mt-5">
+            <div style={{ marginTop: "1.25rem" }}>
               <Toggle label="Previous container" value={previous} onChange={setPrevious} />
             </div>
           )}
           {tool === "investigate" && (
-            <div className="mt-5">
+            <div style={{ marginTop: "1.25rem" }}>
               <Toggle label="AI analysis" value={useAi} onChange={setUseAi} />
             </div>
           )}
@@ -416,7 +433,7 @@ function ClusterTab({ onResult, onLoading, onError }: Props) {
   };
 
   return (
-    <form onSubmit={run} className="space-y-4">
+    <form onSubmit={run} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <div>
         <Label>Tool</Label>
         <Select
@@ -482,7 +499,7 @@ function MulticlusterTab({ onResult, onLoading, onError }: Props) {
   };
 
   return (
-    <form onSubmit={run} className="space-y-4">
+    <form onSubmit={run} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <div>
         <Label>Tool</Label>
         <Select
@@ -532,18 +549,17 @@ function RecoveryTab({ onResult, onLoading, onError }: Props) {
   const [confirm, setConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const run = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const executeAction = async (isConfirmed: boolean = confirm) => {
     setLoading(true);
     onLoading(true);
     onError(null);
     try {
       let result: unknown;
-      if (tool === "restart") result = await api.restart({ namespace, deployment_name: deploymentName, confirm });
-      else if (tool === "scale") result = await api.scale({ namespace, deployment_name: deploymentName, replicas: parseInt(replicas), confirm });
-      else if (tool === "delete") result = await api.deletePod({ namespace, pod_name: podName, confirm });
-      else if (tool === "exec") result = await api.exec({ namespace, pod_name: podName, command, confirm });
-      else result = await api.patch({ namespace, resource_type: resourceType, resource_name: resourceName, patch, confirm });
+      if (tool === "restart") result = await api.restart({ namespace, deployment_name: deploymentName, confirm: isConfirmed });
+      else if (tool === "scale") result = await api.scale({ namespace, deployment_name: deploymentName, replicas: parseInt(replicas), confirm: isConfirmed });
+      else if (tool === "delete") result = await api.deletePod({ namespace, pod_name: podName, confirm: isConfirmed });
+      else if (tool === "exec") result = await api.exec({ namespace, pod_name: podName, command, confirm: isConfirmed });
+      else result = await api.patch({ namespace, resource_type: resourceType, resource_name: resourceName, patch, confirm: isConfirmed });
       onResult(result as Record<string, unknown>);
     } catch (err) {
       onError((err as Error).message);
@@ -553,16 +569,21 @@ function RecoveryTab({ onResult, onLoading, onError }: Props) {
     }
   };
 
+  const run = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await executeAction(confirm);
+  };
+
   return (
-    <form onSubmit={run} className="space-y-4">
+    <form onSubmit={run} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       {/* Warning banner */}
-      <div className="flex items-start gap-3 rounded-lg border border-orange-800 bg-orange-950/40 px-4 py-3">
-        <AlertTriangle size={16} className="text-orange-400 mt-0.5 shrink-0" />
+      <div style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", borderRadius: "0.5rem", border: "1px solid var(--amber-bd)", backgroundColor: "var(--amber-bg)", padding: "0.75rem 1rem" }}>
+        <AlertTriangle size={16} color="var(--amber)" style={{ marginTop: "0.125rem", flexShrink: 0 }} />
         <div>
-          <p className="text-xs font-medium text-orange-300">Write Operations</p>
-          <p className="text-xs text-orange-400/80 mt-0.5">
+          <p style={{ fontSize: "0.75rem", fontWeight: 500, color: "var(--amber)", margin: 0 }}>Write Operations</p>
+          <p style={{ fontSize: "0.75rem", color: "var(--ink-2)", margin: "0.125rem 0 0 0" }}>
             These tools modify cluster state. You must toggle Confirm before running.
-            Requires <code className="font-mono">ENABLE_RECOVERY_OPERATIONS=true</code> in the backend .env.
+            Requires <code style={{ fontFamily: "var(--mono)" }}>ENABLE_RECOVERY_OPERATIONS=true</code> in the backend .env.
           </p>
         </div>
       </div>
@@ -617,7 +638,7 @@ function RecoveryTab({ onResult, onLoading, onError }: Props) {
 
       {tool === "patch" && (
         <>
-          <div className="grid grid-cols-2 gap-3">
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "0.75rem" }}>
             <div>
               <Label>Resource type</Label>
               <Select
@@ -649,13 +670,28 @@ function RecoveryTab({ onResult, onLoading, onError }: Props) {
         </>
       )}
 
-      <div className="flex items-center justify-between pt-2 border-t border-gray-800">
-        <Toggle label="I confirm this write operation" value={confirm} onChange={setConfirm} />
-        <SubmitButton
-          loading={loading}
-          disabled={!namespace || !confirm}
-          label={confirm ? "Execute" : "Toggle confirm first"}
-        />
+      <div style={{ paddingTop: "1rem", borderTop: "1px solid var(--rule)" }}>
+        <p style={{ fontSize: "0.75rem", color: "var(--ink-3)", marginBottom: "0.5rem" }}>
+          Confirm write operation (Slide or Button fallback)
+        </p>
+        <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+          <div style={{ flex: 1, minWidth: "200px" }}>
+            <SlideToConfirm
+              disabled={!namespace}
+              label="Slide to confirm and run"
+              confirmedLabel="Running..."
+              onConfirm={() => {
+                setConfirm(true);
+                executeAction(true);
+              }}
+            />
+          </div>
+          <SubmitButton
+            loading={loading}
+            disabled={!namespace}
+            label="Run fallback"
+          />
+        </div>
       </div>
     </form>
   );

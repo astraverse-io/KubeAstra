@@ -1,12 +1,12 @@
 #!/bin/bash
-# One-command local setup for Kubeastra Web UI (no Docker required)
+# One-command local setup for K8s DevOps Web UI (no Docker required)
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MCP_DIR="$(cd "$SCRIPT_DIR/../mcp" && pwd)"
 
 echo "==========================================="
-echo "  Kubeastra Web UI — Local Setup"
+echo "  K8s DevOps Web UI — Local Setup"
 echo "==========================================="
 
 # ── Check dependencies ────────────────────────────────────────────────────────
@@ -31,14 +31,16 @@ fi
 
 # Create .env if missing
 if [ ! -f ".env" ]; then
-    cp .env.example .env
-    echo "  Created backend/.env — edit it to set GEMINI_API_KEY"
+    if [ -f "$MCP_DIR/.env" ]; then
+        ln -sf "$MCP_DIR/.env" .env
+        echo "  Linked backend/.env to mcp/.env"
+    else
+        cp .env.example .env
+        echo "  Created backend/.env — edit it to set GEMINI_API_KEY"
+    fi
 fi
 
-# Symlink mcp .env so backend picks up the right key
-if [ -f "$MCP_DIR/.env" ] && [ ! -f ".env" ]; then
-    ln -sf "$MCP_DIR/.env" .env
-fi
+mkdir -p .cache/huggingface
 
 echo "  ✓ Backend ready"
 
@@ -59,13 +61,13 @@ echo "Start the app (two terminals):"
 echo ""
 echo "  Terminal 1 — Backend:"
 echo "    cd $SCRIPT_DIR/backend"
-echo "    MCP_PATH=$MCP_DIR PYTHONPATH=$MCP_DIR venv/bin/uvicorn main:app --reload --port 8800"
+echo "    MCP_PATH=$MCP_DIR PYTHONPATH=$MCP_DIR HF_HOME=$SCRIPT_DIR/backend/.cache/huggingface SENTENCE_TRANSFORMERS_HOME=$SCRIPT_DIR/backend/.cache/huggingface HF_HUB_DISABLE_PROGRESS_BARS=1 HF_HUB_VERBOSITY=error TRANSFORMERS_VERBOSITY=error TOKENIZERS_PARALLELISM=false venv/bin/uvicorn main:app --reload --port 8000"
 echo ""
 echo "  Terminal 2 — Frontend:"
 echo "    cd $SCRIPT_DIR/frontend"
-echo "    API_BASE_URL=http://localhost:8800 npm run dev -- -p 3300"
+echo "    API_BASE_URL=http://localhost:8000 npm run dev"
 echo ""
-echo "  Then open: http://localhost:3300"
+echo "  Then open: http://localhost:3000"
 echo ""
 echo "  Or run both at once:"
 echo "    bash $SCRIPT_DIR/start.sh"
@@ -77,22 +79,35 @@ cat > "$SCRIPT_DIR/start.sh" << STARTEOF
 SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 MCP_DIR="\$(cd "\$SCRIPT_DIR/../mcp" && pwd)"
 
-echo "Starting Kubeastra Web UI..."
+echo "Starting K8s DevOps Web UI..."
+
+# Turbopack can exhaust macOS file descriptors on some local setups.
+# Raise the per-shell limit when allowed; frontend dev uses webpack by default.
+ulimit -n 65536 2>/dev/null || true
 
 # Start backend
 cd "\$SCRIPT_DIR/backend"
-MCP_PATH="\$MCP_DIR" PYTHONPATH="\$MCP_DIR" venv/bin/uvicorn main:app --port 8800 &
+mkdir -p .cache/huggingface
+MCP_PATH="\$MCP_DIR" \
+PYTHONPATH="\$MCP_DIR" \
+HF_HOME="\$SCRIPT_DIR/backend/.cache/huggingface" \
+SENTENCE_TRANSFORMERS_HOME="\$SCRIPT_DIR/backend/.cache/huggingface" \
+HF_HUB_DISABLE_PROGRESS_BARS=1 \
+HF_HUB_VERBOSITY=error \
+TRANSFORMERS_VERBOSITY=error \
+TOKENIZERS_PARALLELISM=false \
+venv/bin/uvicorn main:app --port 8000 &
 BACKEND_PID=\$!
-echo "Backend PID: \$BACKEND_PID (port 8800)"
+echo "Backend PID: \$BACKEND_PID (port 8000)"
 
 # Start frontend
 cd "\$SCRIPT_DIR/frontend"
-API_BASE_URL=http://localhost:8800 npm run dev -- -p 3300 &
+API_BASE_URL=http://localhost:8000 npm run dev &
 FRONTEND_PID=\$!
-echo "Frontend PID: \$FRONTEND_PID (port 3300)"
+echo "Frontend PID: \$FRONTEND_PID (port 3000)"
 
 echo ""
-echo "Open: http://localhost:3300"
+echo "Open: http://localhost:3000"
 echo "Press Ctrl+C to stop both services"
 
 trap "kill \$BACKEND_PID \$FRONTEND_PID 2>/dev/null; exit" INT TERM

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight, Code, Copy, Check } from "lucide-react";
 import CommandCard from "./CommandCard";
+import { copyToClipboard } from "../lib/clipboard";
 
 const SEVERITY_COLORS: Record<string, string> = {
   critical: "bg-red-900/50 border-red-700 text-red-300",
@@ -11,6 +12,35 @@ const SEVERITY_COLORS: Record<string, string> = {
   low: "bg-green-900/50 border-green-700 text-green-300",
   unknown: "bg-gray-800 border-gray-600 text-gray-300",
 };
+
+type Classification = {
+  source?: string;
+  deterministic_category?: string;
+  llm_category?: string | null;
+};
+
+function asClassification(v: unknown): Classification | null {
+  if (!v || typeof v !== "object") return null;
+  return v as Classification;
+}
+
+function classificationDisagreed(v: unknown): boolean {
+  const c = asClassification(v);
+  if (!c) return false;
+  const d = c.deterministic_category;
+  const l = c.llm_category;
+  return !!d && !!l && d !== l;
+}
+
+function classificationTitle(v: unknown): string | undefined {
+  const c = asClassification(v);
+  if (!c) return undefined;
+  const parts: string[] = [];
+  if (c.source) parts.push(`source: ${c.source}`);
+  if (c.deterministic_category) parts.push(`deterministic: ${c.deterministic_category}`);
+  if (c.llm_category) parts.push(`LLM: ${c.llm_category}`);
+  return parts.length > 0 ? parts.join(" • ") : undefined;
+}
 
 interface Props {
   result: Record<string, unknown> | null;
@@ -51,7 +81,7 @@ export default function ResultView({ result, loading, error }: Props) {
   }
 
   const copyJson = async () => {
-    await navigator.clipboard.writeText(JSON.stringify(result, null, 2));
+    await copyToClipboard(JSON.stringify(result, null, 2));
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -102,7 +132,15 @@ export default function ResultView({ result, loading, error }: Props) {
             </span>
           )}
           {!!result.category && (
-            <span className="text-xs text-gray-500 font-mono">{String(result.category)}</span>
+            <span
+              className="text-xs text-gray-500 font-mono"
+              title={classificationTitle(result.classification)}
+            >
+              {String(result.category)}
+              {classificationDisagreed(result.classification) && (
+                <span className="ml-1 text-yellow-400" aria-label="classification override">*</span>
+              )}
+            </span>
           )}
         </div>
       )}

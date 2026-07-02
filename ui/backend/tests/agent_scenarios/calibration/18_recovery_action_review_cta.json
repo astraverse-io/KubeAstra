@@ -1,0 +1,14 @@
+{
+  "id": "recovery_action_review_cta",
+  "prompt": "The kafka pods are in CrashLoopBackOff because the ZooKeeper service name is wrong. Identify the fix and prepare a safe recovery action for review.",
+  "expected_output": "The answer should explain the proposed manifest/configuration change and expose at least one reviewed suggested action for the UI to render the Review and execute fix flow.",
+  "context": "Regression coverage for the recovery-action bridge introduced by synthesis remediation. The prose recommendation alone is not enough; the response payload must include reviewed executable suggested_actions.",
+  "expected_tools": ["investigate_pod", "find_workload", "get_pods"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment"],
+  "expected_answer_contains": ["ZooKeeper"],
+  "must_not_contain": ["envelope["],
+  "expected_suggested_actions_min": 1,
+  "expect_eval_retrieval_context": true,
+  "tags": ["synthesis", "remediation", "recovery", "suggested_actions", "cta"],
+  "notes": "Fails when the backend only writes prose under Recommended Actions but does not emit reviewed suggested_actions for the frontend CTA."
+}

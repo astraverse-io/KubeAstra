@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Copy, Check, Terminal } from "lucide-react";
+import { copyToClipboard } from "../lib/clipboard";
 
 interface Command {
   cmd: string;
@@ -17,14 +18,16 @@ export default function CommandCard({ commands, title = "Commands" }: Props) {
   if (!commands || commands.length === 0) return null;
 
   return (
-    <div className="rounded-lg border border-gray-700 overflow-hidden">
-      <div className="flex items-center gap-2 px-4 py-2.5 bg-gray-800 border-b border-gray-700">
-        <Terminal size={14} className="text-gray-400" />
-        <span className="text-xs font-medium text-gray-300">{title}</span>
+    <div style={{ borderRadius: "0.5rem", border: "1px solid var(--rule)", overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 1rem", backgroundColor: "var(--paper-2)", borderBottom: "1px solid var(--rule)" }}>
+        <Terminal size={14} color="var(--ink-3)" />
+        <span style={{ fontSize: "0.75rem", fontWeight: 500, color: "var(--ink-2)" }}>{title}</span>
       </div>
-      <div className="divide-y divide-gray-800">
+      <div style={{ display: "flex", flexDirection: "column" }}>
         {commands.map((c, i) => (
-          <CommandRow key={i} cmd={c.cmd} description={c.description} />
+          <div key={i} style={{ borderTop: i > 0 ? "1px solid var(--rule)" : "none" }}>
+            <CommandRow cmd={c.cmd} description={c.description} />
+          </div>
         ))}
       </div>
     </div>
@@ -35,27 +38,33 @@ function CommandRow({ cmd, description }: { cmd: string; description?: string })
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(cmd);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    const success = await copyToClipboard(cmd);
+    if (success) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
   };
 
   return (
-    <div className="px-4 py-3 bg-gray-900 group">
+    <div style={{ padding: "0.75rem 1rem", backgroundColor: "var(--paper)" }}>
       {description && (
-        <p className="text-xs text-gray-500 mb-1.5">{description}</p>
+        <p style={{ fontSize: "0.75rem", color: "var(--ink-3)", marginBottom: "0.375rem", marginTop: 0 }}>{description}</p>
       )}
-      <div className="flex items-start justify-between gap-3">
-        <code className="text-sm text-green-400 font-mono break-all leading-relaxed">
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "0.75rem" }}>
+        <code style={{ fontSize: "0.875rem", color: "var(--brand)", fontFamily: "var(--mono)", wordBreak: "break-all", lineHeight: 1.625 }}>
           {cmd}
         </code>
         <button
           onClick={handleCopy}
-          className="shrink-0 mt-0.5 p-1 rounded text-gray-600 hover:text-gray-300 hover:bg-gray-700 transition-colors"
+          style={{
+            flexShrink: 0, marginTop: "0.125rem", padding: "0.25rem", borderRadius: "0.25rem",
+            color: copied ? "var(--green)" : "var(--ink-3)", background: "none", border: "none", cursor: "pointer",
+            transition: "color 0.15s"
+          }}
           title="Copy command"
         >
           {copied ? (
-            <Check size={14} className="text-green-400" />
+            <Check size={14} />
           ) : (
             <Copy size={14} />
           )}

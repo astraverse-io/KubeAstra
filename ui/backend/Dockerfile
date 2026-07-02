@@ -1,6 +1,6 @@
-# ── Build context: kubeastra/ ───────────────────────────────────
-# Build command (run from kubeastra/):
-#   docker build -f ui/backend/Dockerfile -t <registry>/kubeastra-backend:latest .
+# ── Build context: k8s-devops-ai-assistant/ ───────────────────────────────────
+# Build command (run from k8s-devops-ai-assistant/):
+#   docker build -f ui/backend/Dockerfile -t <registry>/k8s-devops-backend:latest .
 
 FROM python:3.11-slim
 
@@ -37,6 +37,29 @@ COPY mcp/ /app/mcp/
 COPY ui/backend/ /app/
 RUN chmod +x /app/entrypoint.sh
 
+# ── Import smoke test ─────────────────────────────────────────────────────────
+# Catches the class of bug where someone adds a type annotation referencing
+# an unimported name — Python evaluates annotations at module-load time, so
+# missing imports = NameError that only fires when the module is actually
+# imported in production (and silently passes a build that never imports it).
+#
+# Specifically guards against the May 2026 regression where ``react.py`` got
+# ``provider: Any`` without ``Any`` being added to the typing import — broke
+# every chat in production despite a "successful" image build.
+#
+# Done inline (no pytest dep) to keep the image lean. Local devs can run
+# the equivalent pytest suite via ``python -m pytest tests/`` for the same
+# guarantees plus more expressive failure messages.
+RUN cd /app && python -c "\
+import auth, inspect, react, triage; \
+from react import react_loop; \
+from triage import cluster_overview, render_greeting; \
+assert auth.get_auth_settings(); \
+inspect.get_annotations(react_loop, eval_str=True); \
+inspect.get_annotations(cluster_overview, eval_str=True); \
+inspect.get_annotations(render_greeting, eval_str=True); \
+print('OK: import + annotation resolution clean')"
+
 # ── Runtime environment ───────────────────────────────────────────────────────
 ENV MCP_PATH=/app/mcp
 ENV PYTHONPATH=/app/mcp
@@ -53,9 +76,9 @@ ENV KUBECTL_TIMEOUT_SECONDS=15
 ENV MAX_LOG_TAIL_LINES=200
 ENV ENABLE_RECOVERY_OPERATIONS=false
 
-# Port 8800 — FastAPI chat backend (web UI)
+# Port 8000 — FastAPI chat backend (web UI)
 # Port 8001 — HTTP MCP server (Cursor / Claude Desktop / any MCP client)
-EXPOSE 8800 8001
+EXPOSE 8000 8001
 
 # Starts both services; set MCP_AUTH_TOKEN env var to protect port 8001
 CMD ["/app/entrypoint.sh"]

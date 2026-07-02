@@ -1,0 +1,155 @@
+{{/*
+Bootstrap reindex Job — runs once after every helm install/upgrade so
+operators don't have to manually ``kubectl create job --from=cronjob/...``
+on a fresh cluster.
+
+Idempotent: re-running against unchanged content is a no-op thanks to the
+content-hash dedup in services/rag/ingestion.py. So firing this on every
+``helm upgrade`` is safe — only delta chunks get embedded.
+
+Gated on:
+  - rag.enabled            (master switch, same as the CronJob)
+  - rag.bootstrap.enabled  (lets ops opt out — e.g. if they prefer to
+                            kick off the first run manually)
+
+Helm hook ordering:
+  weight 0  → rag-config ConfigMap exists (from rag-ingestion-cronjob.yaml)
+  weight 5  → bootstrap Job runs
+The before-hook-creation,hook-succeeded delete policy means a previous
+job is wiped before each install/upgrade, so we don't pile up history.
+*/}}
+{{- if and .Values.rag.enabled .Values.rag.bootstrap.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kubeastra.fullname" . }}-rag-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeastra.labels" . | nindent 4 }}
+    # Deliberately ``rag-ingestion`` (not ``rag-bootstrap``) so this Job
+    # is covered by the existing Qdrant NetworkPolicy ingress rule
+    # (qdrant-networkpolicy.yaml) without needing a second podSelector.
+    # The semantic difference vs. the CronJob is captured by the resource
+    # kind + name, not the component label.
+    app.kubernetes.io/component: rag-ingestion
+  annotations:
+    # Run after install AND every upgrade so newly-added sources index
+    # automatically. Idempotent, so this is safe.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    # hook-failed retained so failed bootstrap pods stick around for
+    # debugging instead of being silently wiped before the next upgrade.
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.rag.bootstrap.backoffLimit | default 2 }}
+  # First run downloads the embedding model + clones the deployment repo +
+  # embeds ~4k chunks — typically 10-15 min. Bump for very large corpora.
+  activeDeadlineSeconds: {{ .Values.rag.bootstrap.timeoutSeconds | default 1800 }}
+  ttlSecondsAfterFinished: {{ .Values.rag.bootstrap.ttlSecondsAfterFinished | default 86400 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubeastra.labels" . | nindent 8 }}
+        # Match the Job's component label so the NetworkPolicy podSelector
+        # finds the pod (NetworkPolicy matches on POD labels, not Job labels).
+        app.kubernetes.io/component: rag-ingestion
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "kubeastra.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: rag-bootstrap
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy | default "IfNotPresent" }}
+          command: ["python", "/app/mcp/scripts/reindex.py"]
+          env:
+            - name: RAG_CONFIG
+              value: /etc/rag/config.yaml
+            # sentence-transformers wants to cache the embedding model.
+            # The pod has readOnlyRootFilesystem so ~/.cache (the default)
+            # is unwritable. Redirect to /tmp which is an emptyDir.
+            - name: HF_HOME
+              value: /tmp/hf-cache
+            - name: TRANSFORMERS_CACHE
+              value: /tmp/hf-cache
+            - name: SENTENCE_TRANSFORMERS_HOME
+              value: /tmp/hf-cache
+            - name: QDRANT_URL
+              value: {{ include "kubeastra.qdrantUrl" . | quote }}
+            - name: QDRANT_COLLECTION
+              value: {{ .Values.backend.config.qdrantCollection | quote }}
+            - name: EMBEDDING_MODEL
+              value: {{ .Values.backend.config.embeddingModel | quote }}
+            - name: EMBEDDING_DIM
+              value: {{ .Values.backend.config.embeddingDim | quote }}
+            {{- if .Values.qdrant.auth.apiKeySecretRef }}
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.qdrant.auth.apiKeySecretRef }}
+                  key: {{ .Values.qdrant.auth.apiKeySecretKey | default "apiKey" }}
+            {{- end }}
+            {{- range $name, $val := .Values.rag.ingestion.extraEnv }}
+            - name: {{ $name }}
+              value: {{ $val | quote }}
+            {{- end }}
+            {{- range $name, $ref := .Values.rag.ingestion.extraEnvFromSecrets }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName }}
+                  key: {{ $ref.key }}
+            {{- end }}
+            {{- if .Values.deploymentRepo.enabled }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.deploymentRepo.tokenSecretName }}
+                  key: {{ .Values.deploymentRepo.tokenSecretKey | default "token" }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: rag-config
+              mountPath: /etc/rag
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.rag.ingestion.knowledgeVolume.enabled }}
+            - name: knowledge
+              mountPath: {{ .Values.rag.ingestion.knowledgeVolume.mountPath | default "/knowledge" }}
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.rag.ingestion.resources | nindent 12 }}
+      volumes:
+        - name: rag-config
+          configMap:
+            name: {{ include "kubeastra.fullname" . }}-rag-config
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.rag.ingestion.knowledgeVolume.enabled }}
+        - name: knowledge
+          {{- if .Values.rag.ingestion.knowledgeVolume.configMapName }}
+          configMap:
+            name: {{ .Values.rag.ingestion.knowledgeVolume.configMapName }}
+          {{- else if .Values.rag.ingestion.knowledgeVolume.pvcName }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.rag.ingestion.knowledgeVolume.pvcName }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+{{- end }}

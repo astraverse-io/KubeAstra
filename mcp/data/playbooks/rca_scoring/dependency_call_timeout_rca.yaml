@@ -1,0 +1,89 @@
+rca_scoring:
+  version: "1.0"
+  candidates:
+    - id: dependency_timeout_retry_storm
+      display_name: Dependency Timeout Retry Storm
+      description: Client times out waiting for upstream dependency and immediately retries, amplifying load.
+      applies_to_alerts:
+        - DependencyCallTimeout
+      max_score: 100
+      confidence_thresholds:
+        high: 75
+        medium: 50
+        low: 0
+      evidence:
+        - id: client_timeout_retry_logs
+          points: 40
+          description: Client logs show dependency timeout followed by immediate retry.
+          when:
+            all:
+              - evidence.logs.current contains "dependency timeout"
+              - evidence.logs.current contains "retrying immediately"
+
+        - id: client_timeout_config_visible
+          points: 20
+          description: Client logs expose configured timeout shorter than upstream can respond.
+          when:
+            any:
+              - evidence.logs.current contains "timeout=0.2s"
+              - signals.dependency.client_timeout_short.present == true
+
+        - id: upstream_slow_response_logs
+          points: 25
+          description: Upstream logs show slow handling before response.
+          when:
+            any:
+              - evidence.logs.current contains "sleeping before response"
+              - evidence.logs.current contains "slow-dependency received request"
+              - signals.dependency.upstream_slow_response.present == true
+
+        - id: client_pod_healthy
+          points: 10
+          description: Client pod is running without restarts, supporting application-level retry issue over pod crash.
+          when:
+            all:
+              - evidence.kubernetes.pod.phase == "Running"
+              - evidence.kubernetes.pod.restart_count == 0
+
+      contradictions:
+        - id: cpu_saturation_primary
+          points: -25
+          description: High CPU saturation makes CPU limit the more likely primary cause than dependency timeout.
+          when:
+            any:
+              - evidence.prometheus.pod_cpu_usage_percent >= 85
+              - signals.cpu.usage_high == true
+
+        - id: pod_crash_loop
+          points: -20
+          description: Crash looping reduces confidence that dependency timeout is the primary issue.
+          when:
+            any:
+              - evidence.kubernetes.pod.reason == "CrashLoopBackOff"
+              - evidence.kubernetes.pod.restart_count > 3
+
+    - id: upstream_service_degraded
+      display_name: Upstream Service Degraded
+      description: Upstream dependency is slow or failing, causing client-side timeouts.
+      applies_to_alerts:
+        - DependencyCallTimeout
+      max_score: 100
+      confidence_thresholds:
+        high: 70
+        medium: 45
+        low: 0
+      evidence:
+        - id: upstream_slow_logs
+          points: 45
+          description: Upstream logs show slow response handling.
+          when:
+            any:
+              - evidence.logs.current contains "sleeping before response"
+              - evidence.logs.current contains "slow-dependency received request"
+              - signals.dependency.upstream_slow_response.present == true
+
+        - id: client_timeout_logs
+          points: 30
+          description: Client logs show dependency call timeouts.
+          when:
+            evidence.logs.current contains "dependency timeout"

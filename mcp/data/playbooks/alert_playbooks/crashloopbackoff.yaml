@@ -1,0 +1,123 @@
+id: crashloopbackoff
+version: "1.1"
+display_name: CrashLoopBackOff Investigation
+includes:
+  - branches/pod_health_baseline.yaml
+  - branches/pvc_mount_blockers.yaml
+  - branches/probe_failure.yaml
+  - branches/oom_memory_termination.yaml
+supported_alerts:
+  - pattern: CONTAINER_RESTART_CRASH
+    fields: [classification.category]
+  - pattern: CrashLoopBackOff, pod crash looping, restart storm, or unhealthy pod
+    fields: [name, labels.alertname, labels.reason, annotations.summary]
+allowed_tools:
+  - describe_pod
+  - get_events
+  - get_pod_logs
+  - get_pods
+  - investigate_pod
+  - list_namespace_resources
+  - search_configmaps
+  - get_configmap
+  - get_service
+  - get_endpoints
+  - prom_query
+safety:
+  readonly: true
+  max_steps: 10
+  blocked_verbs: [create, update, patch, delete, scale, restart, exec]
+llm_policy:
+  mode: advisory_only
+  require_structured_output: true
+  may_select_tools_only_from_allowed_tools: true
+steps:
+  - id: collect_crashing_pods
+    tool: get_pods
+    description: List CrashLoopBackOff pods in the namespace to detect related failures and avoid single-pod blind spots.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      status_filter: "CrashLoopBackOff"
+      details: true
+  - id: run_existing_pod_investigation
+    tool: investigate_pod
+    description: Reuse the MCP pod investigation path for describe, current/previous logs, pod events, per-container findings, and deterministic evidence.
+    # Run unconditionally before the LLM steers — this is the same composite
+    # tool /chat uses, which auto-selects the failing container (the LLM
+    # otherwise picks raw get_pod_logs and defaults to the first container,
+    # producing empty logs when an init container crashed).
+    deterministic: true
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+      tail: 200
+      use_ai: true
+  - id: collect_previous_logs
+    tool: get_pod_logs
+    description: Collect previous logs explicitly; crashloops often fail before current logs are useful.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+      previous: true
+      tail: 200
+  - id: inspect_namespace_resources
+    tool: list_namespace_resources
+    description: Inspect related services, endpoints, configmaps, PVCs, and workloads in the namespace.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+  - id: query_restart_rate
+    tool: prom_query
+    description: Check restart rate from kube-state-metrics.
+    args:
+      query: "increase(kube_pod_container_status_restarts_total{namespace='{{ alert.labels.namespace }}',pod='{{ alert.labels.pod }}'}[15m])"
+decision_rules:
+  - id: crashloop_confirmed
+    applies_to:
+      alert_categories: [container_restart_crash]
+      alert_names: [CrashLoopBackOff]
+    priority: 100
+    when:
+      all:
+        - evidence.kubernetes.pod.reason == "CrashLoopBackOff"
+        - evidence.kubernetes.pod.restart_count > 0
+    prefer_tools: [investigate_pod, get_pod_logs, get_events, list_namespace_resources]
+    prefer_steps: [run_existing_pod_investigation, collect_previous_logs, collect_recent_events, inspect_namespace_resources]
+    focus: [container_state, restart_count, last_termination_reason]
+    interpretation: Pod is repeatedly failing after container start.
+  - id: previous_logs_show_config_error
+    applies_to:
+      alert_categories: [container_restart_crash]
+    priority: 90
+    when:
+      any:
+        - evidence.logs.previous contains "missing environment variable"
+        - evidence.logs.previous contains "config"
+        - evidence.logs.previous contains "permission denied"
+        - evidence.logs.previous contains "connection refused"
+        - evidence.logs.previous contains "older version defined on the top level"
+        - evidence.logs.previous contains "plugin prerequisites not met"
+    prefer_tools: [list_namespace_resources, search_configmaps, get_configmap, get_service, get_endpoints, describe_pod, get_events]
+    prefer_steps: [inspect_namespace_resources, collect_recent_events, describe_target_pod]
+    focus: [env_vars, configmap, secret, dependency_connection]
+    interpretation: Crash may be caused by misconfiguration, dependency version mismatch, or a missing dependency service; inspect namespace resources and use ConfigMap/service tools when a concrete name or value is visible.
+  - id: backoff_without_specific_logs
+    applies_to:
+      alert_categories: [container_restart_crash]
+    priority: 70
+    when:
+      all:
+        - evidence.events.reason == "BackOff"
+        - evidence.logs.current_empty == true
+        - evidence.logs.previous_empty == true
+    prefer_tools: [investigate_pod, describe_pod, get_events, prom_query]
+    prefer_steps: [run_existing_pod_investigation, describe_target_pod, collect_recent_events, query_restart_rate]
+    focus: [command_args, exit_code, restart_rate]
+    interpretation: Pod is crash-looping but logs are unavailable; inspect command, args, exit code, and restart metrics.
+remediation_mappings:
+  CrashLoopBackOff:
+    - Inspect application logs and recent deployment changes.
+    - Verify image tag, configuration, secrets, and dependency availability.
+stop_conditions:
+  max_confidence: 0.85
+  max_steps_reached: true
+  root_cause_identified: true

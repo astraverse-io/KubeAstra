@@ -1,0 +1,14 @@
+{
+  "id": "root_cause_card_contract",
+  "prompt": "Investigate the my-kafka-0 pod crashloop in the infrastructure namespace and summarize the verified root cause.",
+  "expected_output": "The response should identify the verified primary root cause and include a root_cause_summary payload so the UI can render the deterministic RootCauseCard.",
+  "context": "Regression coverage for preserving the pre-synthesis deterministic incident view while keeping the Markdown synthesis as the narrative layer.",
+  "expected_tools": ["investigate_pod"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "expected_answer_contains": ["my-kafka-0", "infrastructure"],
+  "must_not_contain": ["envelope["],
+  "expect_root_cause_summary": true,
+  "expect_eval_retrieval_context": true,
+  "tags": ["synthesis", "remediation", "root_cause_card", "contract"],
+  "notes": "Catches regressions where synthesis text exists but the deterministic RootCauseCard payload disappears."
+}

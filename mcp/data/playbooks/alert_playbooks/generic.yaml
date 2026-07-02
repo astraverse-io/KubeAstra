@@ -1,0 +1,59 @@
+id: generic
+version: "1.0"
+display_name: Generic Kubernetes Alert Investigation
+supported_alerts:
+  - pattern: kubernetes
+    fields: [name, annotations.summary]
+allowed_tools:
+  - describe_pod
+  - get_events
+  - get_pod_logs
+  - get_pods
+  - investigate_pod
+  - list_namespace_resources
+  - prom_query
+safety:
+  readonly: true
+  max_steps: 6
+  blocked_verbs: [create, update, patch, delete, scale, restart, exec]
+llm_policy:
+  mode: advisory_only
+  require_structured_output: true
+  may_select_tools_only_from_allowed_tools: true
+steps:
+  - id: list_namespace_pods
+    tool: get_pods
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      details: true
+  - id: describe_target_pod
+    tool: describe_pod
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+  - id: collect_recent_events
+    tool: get_events
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      field_selector: "involvedObject.name={{ alert.labels.pod }},involvedObject.kind=Pod"
+  - id: collect_recent_logs
+    tool: get_pod_logs
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+  - id: run_existing_pod_investigation
+    tool: investigate_pod
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+      use_ai: true
+  - id: inspect_namespace_resources
+    tool: list_namespace_resources
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+decision_rules: []
+remediation_mappings: {}
+stop_conditions:
+  max_confidence: 0.7
+  max_steps_reached: true
+  root_cause_identified: true

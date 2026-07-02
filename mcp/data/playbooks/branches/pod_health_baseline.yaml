@@ -1,0 +1,61 @@
+allowed_tools:
+  - describe_pod
+  - get_events
+  - get_pod_logs
+
+steps:
+  - id: describe_target_pod
+    tool: describe_pod
+    description: Inspect pod phase, readiness, container states, waiting reasons, restart count, and last termination state.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+  - id: collect_recent_events
+    tool: get_events
+    description: Collect recent pod or namespace events for scheduling, image pull, probe, eviction, and volume clues.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      involved_object: "{{ alert.labels.pod }}"
+  - id: collect_recent_logs
+    tool: get_pod_logs
+    description: Collect current and previous logs for crash, startup, dependency, and application error signatures.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+
+decision_rules:
+  - id: pod_not_ready_baseline
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure, workload_availability]
+    priority: 86
+    when:
+      any:
+        - evidence.kubernetes.pod.ready == false
+        - evidence.kubernetes.pod.phase in ["Pending", "Failed", "Unknown"]
+    prefer_tools: [describe_pod, get_events, get_pod_logs]
+    prefer_steps: [describe_target_pod, collect_recent_events, collect_recent_logs]
+    focus: [pod_phase, readiness, waiting_reason, restart_count]
+    interpretation: Pod baseline health is degraded; inspect pod state, events, and logs before deeper subsystem assumptions.
+  - id: logs_empty_try_previous
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure, workload_availability]
+    priority: 84
+    when:
+      all:
+        - evidence.logs.current_empty == true
+    prefer_tools: [get_pod_logs, get_events]
+    prefer_steps: [collect_recent_logs, collect_recent_events]
+    focus: [previous_container_logs, termination_message]
+    interpretation: Current logs are empty; previous container logs or events may contain the failure reason.
+  - id: image_pull_failure
+    applies_to:
+      alert_categories: [container_restart_crash, image_pull_failure, workload_availability]
+    priority: 82
+    when:
+      any:
+        - evidence.events.reason in ["ImagePullBackOff", "ErrImagePull"]
+        - evidence.kubernetes.pod.reason in ["ImagePullBackOff", "ErrImagePull"]
+    prefer_tools: [get_events, describe_pod]
+    prefer_steps: [collect_recent_events, describe_target_pod]
+    focus: [image, image_tag, registry, image_pull_secret]
+    interpretation: Pod is unavailable because its container image cannot be pulled.

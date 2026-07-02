@@ -1,0 +1,10 @@
+{
+  "id": "multi_pod_conflation",
+  "prompt": "Investigate the api-pod in both default and prod-blue namespaces. Are they both healthy?",
+  "expected_output": "No. The api-pod in the default namespace is Healthy and Running, but the api-pod in the prod-blue namespace is Unhealthy and crashing due to an exit code 137 (OOMKilled).",
+  "context": "Tests that the agent does not conflate different pods across namespaces. The answer must distinguish default.api-pod from prod-blue.api-pod.",
+  "expected_tools": ["investigate_pod"],
+  "must_not_call": [],
+  "tags": ["synthesis", "multi_pod", "namespaces"],
+  "notes": "Verifies namespaces are not mixed up in the final synthesis."
+}

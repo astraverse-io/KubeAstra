@@ -1,0 +1,177 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $fullname := include "kubeastra.fullname" . -}}
+{{- $mode := default "enforce-all" .Values.networkPolicy.mode -}}
+{{- if not (has $mode (list "allow-only" "enforce-ingress" "enforce-all")) -}}
+{{- fail (printf "networkPolicy.mode must be one of allow-only, enforce-ingress, enforce-all (got %q)" $mode) -}}
+{{- end -}}
+{{- if or (eq $mode "enforce-ingress") (eq $mode "enforce-all") }}
+# Default deny for application pods. Required traffic is opened explicitly
+# below. Qdrant has its own policy in qdrant-networkpolicy.yaml.
+#
+# When mode=enforce-ingress only Ingress is denied by default. When
+# mode=enforce-all both Ingress and Egress are denied. The allow rules below
+# always render (they are the entire policy when mode=allow-only).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-app-default-deny
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: ["frontend", "backend"]
+  policyTypes:
+    - Ingress
+    {{- if eq $mode "enforce-all" }}
+    - Egress
+    {{- end }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-frontend
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeastra.frontend.selectorLabels" . | nindent 6 }}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressController.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressController.podLabels | nindent 14 }}
+        {{- range .Values.networkPolicy.ingressCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeastra.backend.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8000
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dns.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dns.podLabels | nindent 14 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-backend
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeastra.backend.selectorLabels" . | nindent 6 }}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeastra.frontend.selectorLabels" . | nindent 14 }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressController.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressController.podLabels | nindent 14 }}
+        {{- range .Values.networkPolicy.ingressCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 8000 }
+        - { protocol: TCP, port: 8001 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dns.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dns.podLabels | nindent 14 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    {{- if .Values.qdrant.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeastra.qdrant.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 6333 }
+        - { protocol: TCP, port: 6334 }
+    {{- end }}
+    {{- range .Values.networkPolicy.kubernetesApiCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+      ports:
+        - { protocol: TCP, port: 443 }
+    {{- end }}
+    {{- range .Values.networkPolicy.externalHttpsCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+            {{- with $.Values.networkPolicy.externalHttpsExceptCidrs }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports:
+        - { protocol: TCP, port: 443 }
+    {{- end }}
+    {{- range .Values.networkPolicy.internalHttpsCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+      ports:
+        - { protocol: TCP, port: 443 }
+    {{- end }}
+    {{- /*
+       Phase 6 SSH egress. Rendered only when remoteDiagnostics.enabled — an
+       operator running the chart without the feature never widens their
+       backend egress surface. Wildcard CIDRs are rejected upstream in
+       templates/agent-remote-diagnostics-config.yaml so a fat-fingered
+       0.0.0.0/0 cannot make it past ``helm template``.
+    */ -}}
+    {{- if .Values.remoteDiagnostics.enabled }}
+    {{- range .Values.remoteDiagnostics.network.targetEgress }}
+    - to:
+        - ipBlock:
+            cidr: {{ .cidr | quote }}
+      ports:
+        {{- range .ports }}
+        - { protocol: TCP, port: {{ . | int }} }
+        {{- end }}
+    {{- end }}
+    {{- range .Values.remoteDiagnostics.network.bastionEgress }}
+    - to:
+        - ipBlock:
+            cidr: {{ .cidr | quote }}
+      ports:
+        {{- range .ports }}
+        - { protocol: TCP, port: {{ . | int }} }
+        {{- end }}
+    {{- end }}
+    {{- end }}
+{{- end }}

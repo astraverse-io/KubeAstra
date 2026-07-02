@@ -1,0 +1,12 @@
+{
+  "id": "source_config_trace_jenkins",
+  "prompt": "I already verified that jenkins-legacy in namespace jenkins-legacy is crashing because the pipeline-model-api plugin is pinned to an incompatible version (2.2277.v00573e73ddf1) in its config. Trace where this is defined in source/config so I can fix it at the source. Read-only only.",
+  "expected_output": "The answer should locate where the pinned plugin version lives in live config — the jenkins-legacy ConfigMap, key plugins.txt — citing the exact ConfigMap name and key, note the Helm/Argo-managed labels (chart jenkins-5.8.92), and recommend the source change WITHOUT executing helm upgrade or any kubectl patch/apply.",
+  "context": "Deeper source/config trace as a self-contained follow-up (mirrors the 'Trace source/config' button prompt). The pinned versions live in ConfigMap/jenkins-legacy key plugins.txt; list_namespace_resources only shows the ConfigMap exists, so the agent must search_configmaps by the version string and get_configmap to read plugins.txt. Deployment-repo tools are not available to the agent.",
+  "expected_tools": ["search_configmaps", "get_configmap"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "expected_answer_contains": ["plugins.txt"],
+  "must_not_contain": ["envelope["],
+  "tags": ["source_trace", "deeper_trace", "configmap", "jenkins", "read_only"],
+  "notes": "Fails if the agent does not inspect the live ConfigMap data (search_configmaps + get_configmap) to find plugins.txt, or if it emits an executable helm/kubectl fix instead of pointing at the source location."
+}

@@ -1,0 +1,10 @@
+{
+  "id": "service_missing_endpoints",
+  "prompt": "The service frontend-service in prod-blue is returning 503 errors. Check its endpoints. What's wrong?",
+  "expected_output": "The frontend-service in prod-blue has no backing endpoints. This is because the selector labels do not match any running pods, or the target pods are not in a Ready state, resulting in a 503 Service Unavailable error.",
+  "context": "Scenario testing a service missing its backing endpoint targets. Expects the status check to report Degraded/Unhealthy with 0 targets.",
+  "expected_tools": ["get_endpoints"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "tags": ["synthesis", "service", "endpoints", "connectivity"],
+  "notes": "Ensures that 0-endpoint backing issues are identified as the root cause of service 503s."
+}

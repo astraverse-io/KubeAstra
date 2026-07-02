@@ -1,0 +1,178 @@
+# Classifier rules — alert -> playbook routing.
+#
+# Order matters: classifier checks exact_overrides first, then regex_groups,
+# then label_hints, then fallback. Keep manual-* overrides AT THE TOP so /rca
+# slash-command synthesized alerts (alertname = ManualPodInvestigation /
+# ManualWorkloadInvestigation) route deterministically to our kind-aware
+# generic playbooks regardless of what specialty rules below may otherwise
+# match.
+exact_overrides:
+  # Manual /rca triggers — synthetic alertnames produced by the /manual router.
+  - id: manual-pod
+    alert_names: ["ManualPodInvestigation"]
+    playbook_id: generic-pod
+    category: manual
+    confidence: 0.99
+  - id: manual-workload
+    alert_names: ["ManualWorkloadInvestigation"]
+    playbook_id: generic-workload
+    category: manual
+    confidence: 0.99
+
+  # OOMKilled — explicit alertname matches (highest confidence)
+  - id: oom_killer_exact
+    playbook_id: oomkilled
+    category: memory_pressure
+    alert_names:
+      - KubernetesContainerOomKiller
+      - ContainerOOMKilled
+      - PodOOMKilled
+      - OOMKilledAlert
+    confidence: 0.99
+
+regex_groups:
+  - id: dependency_call_failure
+    playbook_id: dependency_call_timeout
+    category: dependency_call_failure
+    confidence: 0.93
+    fields:
+      - name
+      - labels.alertname
+      - annotations.summary
+      - annotations.description
+    patterns:
+      - (?i)\bdependencycalltimeout\b
+      - (?i)\bdependency.*timeout\b
+      - (?i)\bupstream.*timeout\b
+      - (?i)\bdownstream.*timeout\b
+      - (?i)\bclient.*timeout.*retry\b
+
+  - id: cpu_resource_pressure
+    playbook_id: highcpuusage
+    category: cpu_resource_pressure
+    confidence: 0.92
+    fields:
+      - name
+      - labels.alertname
+      - annotations.summary
+      - annotations.description
+    patterns:
+      - (?i)\bhighcpuusage\b
+      - (?i)\bnodecpuhigh\b
+      - (?i)\bhigh\s*cpu\b
+      - (?i)\bcpu\s*high\b
+      - (?i)\bcpu\b.*\b(throttl|saturat|pressure|load|steal)\b
+      - (?i)\b(host|node|container).*cpu\b
+      - (?i)\bhosthighcpuload\b
+      - (?i)\bhostcpustealnoisyneighbor\b
+      - (?i)\bcontainercputhrottling\b
+
+  - id: memory_pressure
+    playbook_id: oomkilled
+    category: memory_pressure
+    confidence: 0.93
+    fields:
+      - name
+      - labels.alertname
+      - labels.reason
+      - labels.condition
+      - annotations.summary
+      - annotations.description
+    patterns:
+      - (?i)\boom\b
+      - (?i)\bout\s*of\s*memory\b
+      - (?i)\bmemory\s*pressure\b
+      - (?i)\bmemory\s*(high|usage|exhaust|limit)\b
+      - (?i)\bkubernetesmemorypressure\b
+      - (?i)\bhostoutofmemory\b
+
+  - id: container_restart_crash
+    playbook_id: crashloopbackoff
+    category: container_restart_crash
+    confidence: 0.9
+    fields:
+      - name
+      - labels.alertname
+      - labels.reason
+      - annotations.summary
+      - annotations.description
+    patterns:
+      - (?i)\bcrash\s*loop\b
+      - (?i)\bcrashloopbackoff\b
+      - (?i)\bpod.*crash.*loop\b
+      # The previous bare `\brestart(s|ing|ed)?\b` matched any alert text
+      # mentioning "restart" — including benign "Node restarted successfully"
+      # and "Deployment is restarting pods as part of rollout" alerts — and
+      # misrouted them to crashloopbackoff. Constrain the match to require
+      # pod/container context or an explicit crash/loop qualifier so we only
+      # catch real restart-storm signals.
+      - (?i)\b(pod|container)[-_ ]?restart
+      - (?i)\brestart(s|ing|ed)?\s+(loop|backoff|crash)
+      - (?i)\b(too\s*many|frequent|repeated|excessive|continuous)\s+restart
+      - (?i)\bkubernetespodcrashlooping\b
+
+  - id: workload_availability
+    playbook_id: kubernetes_workload_availability
+    category: workload_availability
+    confidence: 0.91
+    fields:
+      - name
+      - labels.alertname
+      - annotations.summary
+      - annotations.description
+    patterns:
+      - (?i)\bkubernetesdeploymentreplicasmismatch\b
+      - (?i)\bkubernetesreplicassetmismatch\b
+      - (?i)\bkubernetesstatefulsetdown\b
+      - (?i)\bkubernetesstatefulsetreplicasmismatch\b
+      - (?i)\bkubernetespodnothealthy\b
+      - (?i)\bdeployment.*replica.*mismatch\b
+      - (?i)\breplicaset.*mismatch\b
+      - (?i)\bstatefulset.*(down|replica.*mismatch)\b
+      - (?i)\bworkload.*(unavailable|not.*available|replica.*mismatch)\b
+
+  - id: loki_logs_health
+    playbook_id: loki_logs_health
+    category: loki_logs_health
+    confidence: 0.91
+    fields:
+      - name
+      - labels.alertname
+      - labels.job
+      - annotations.summary
+      - annotations.description
+    patterns:
+      - (?i)\blokirequesterrors\b
+      - (?i)\blokirequestlatency\b
+      - (?i)\blokiingestionratelimit\b
+      - (?i)\blokidiscardedsamples\b
+      - (?i)\bloki(distributor|ingester|querier|compactor)unhealthy\b
+      - (?i)\bloki.*(push|ingest|distributor|ingester|discard|rate.?limit|latency|5xx|error)\b
+      - (?i)\blogs?.*(missing|delayed|not.*found|not.*queryable|ingestion.*delay)\b
+
+label_hints:
+  - id: oom_reason_label
+    playbook_id: oomkilled
+    category: memory_pressure
+    confidence: 0.95
+    labels:
+      reason: (?i)^OOMKilled$
+
+  - id: memory_pressure_condition
+    playbook_id: oomkilled
+    category: memory_pressure
+    confidence: 0.94
+    labels:
+      condition: (?i)^MemoryPressure$
+
+  - id: crashloop_reason_label
+    playbook_id: crashloopbackoff
+    category: container_restart_crash
+    confidence: 0.94
+    labels:
+      reason: (?i)^CrashLoopBackOff$
+
+fallback:
+  playbook_id: generic
+  category: generic
+  confidence: 0.3

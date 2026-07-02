@@ -1,0 +1,10 @@
+{
+  "id": "knowledge_citation_rag",
+  "prompt": "How do we recover from a Redis failover in the cache lane according to our team runbooks?",
+  "expected_output": "According to the Redis Failover Runbook (runbooks/redis-failover.md), you must check the sentinel status, verify the new master replica, and update the cache lane configuration mapping to point to the new master address.",
+  "context": "Scenario testing citation of runbooks and team vocabulary from RAG/knowledge. Expects correct runbook/document citation and terminology.",
+  "expected_tools": ["kb_search"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "tags": ["rag", "synthesis", "citation", "runbook"],
+  "notes": "Verifies that the RAG retrieval router correctly triggers kb_search and parses the corresponding runbook citation."
+}

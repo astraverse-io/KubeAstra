@@ -1,4 +1,4 @@
-"""Unified Kubeastra MCP Server.
+"""Unified K8s DevOps MCP Server.
 
 Merges capabilities from:
   - mcp-k8s-investigation-agent: live kubectl investigation, multi-cluster, recovery ops
@@ -7,11 +7,11 @@ Merges capabilities from:
 Cursor Configuration (~/.cursor/mcp.json):
 {
   "mcpServers": {
-    "kubeastra": {
-      "command": "/path/to/kubeastra/mcp/venv/bin/python",
-      "args": ["/path/to/kubeastra/mcp/mcp_server/server.py"],
+    "k8s-devops": {
+      "command": "/Users/pruthvidavineni/AI_DevOps_Assistant/mcp/venv/bin/python",
+      "args": ["/Users/pruthvidavineni/AI_DevOps_Assistant/mcp/mcp_server/server.py"],
       "env": {
-        "PYTHONPATH": "/path/to/kubeastra/mcp",
+        "PYTHONPATH": "/Users/pruthvidavineni/AI_DevOps_Assistant/mcp",
         "ALLOWED_NAMESPACES": "prod,staging,dev,default"
       }
     }
@@ -36,7 +36,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("kubeastra_mcp.log"),
+        logging.FileHandler("k8s_devops_mcp.log"),
         logging.StreamHandler(sys.stderr),
     ],
 )
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 async def main():
-    logger.info("Starting Kubeastra MCP Server (unified)")
+    logger.info("Starting K8s DevOps MCP Server (unified)")
 
     try:
         log_runtime_settings(logger)

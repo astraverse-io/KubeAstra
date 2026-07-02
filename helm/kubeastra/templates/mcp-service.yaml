@@ -1,14 +1,17 @@
 {{/*
 HTTP MCP server service — port 8001.
 
-Exposes the MCP endpoint for IDE clients (Cursor, Claude Desktop, VS Code, etc.).
-Default is an Internal LoadBalancer so corporate-network IDEs can connect without
-exposing the endpoint publicly. Override mcp.service.type and annotations in
-values.yaml for your environment.
+Use type: NodePort or LoadBalancer to let Cursor / Claude Desktop / other MCP
+clients connect directly to the MCP server from outside the cluster.
 
-MCP client config example:
+The MCP server uses Streamable HTTP (SSE). On GKE, the default proxy-based
+Internal LB buffers SSE responses, causing MCP clients to hang. The values
+include cloud.google.com/l4-rbs: "enabled" to create a passthrough Network LB
+that does not buffer streaming responses.
+
+Cursor config (after exposing externally):
   "mcpServers": {
-    "kubeastra": {
+    "k8s-devops": {
       "type": "http",
       "url": "http://<ilb-ip>:8001/mcp/",
       "headers": { "Authorization": "Bearer <mcpAuthToken>" }
@@ -19,7 +22,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "kubeastra.fullname" . }}-mcp
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "kubeastra.labels" . | nindent 4 }}
     app.kubernetes.io/component: mcp
@@ -29,6 +32,9 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.mcp.service.type }}
+  {{- if eq .Values.mcp.service.type "LoadBalancer" }}
+  externalTrafficPolicy: Local
+  {{- end }}
   selector:
     {{- include "kubeastra.backend.selectorLabels" . | nindent 4 }}
   ports:

@@ -1,0 +1,51 @@
+id: cpu_resource_base
+abstract: true
+version: "1.0"
+display_name: CPU Resource Investigation Base
+allowed_tools:
+  - describe_pod
+  - get_events
+  - get_pod_logs
+  - prom_query
+safety:
+  readonly: true
+  max_steps: 4
+  blocked_verbs: [create, update, patch, delete, scale, restart, exec]
+llm_policy:
+  mode: advisory_only
+  require_structured_output: true
+  may_select_tools_only_from_allowed_tools: true
+execution_policy:
+  mode: bounded_llm
+  allow_only_playbook_steps: true
+  allow_llm_suggested_steps: true
+  auto_execute_llm_suggestions: false
+  require_human_review_for_new_steps: true
+steps:
+  - id: describe_target_pod
+    tool: describe_pod
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+decision_rules:
+  - id: cpu_alert_but_pod_unhealthy
+    applies_to:
+      alert_categories: [cpu_resource_pressure]
+    priority: 80
+    when:
+      any:
+        - evidence.kubernetes.pod.reason in ["CrashLoopBackOff", "Error", "OOMKilled"]
+        - evidence.kubernetes.pod.ready == false
+    prefer_tools: [get_events, get_pod_logs]
+    focus: [pod_state, restart_reason, failure_events]
+    interpretation: CPU alert may be secondary; pod health issue should be investigated first.
+  - id: cpu_query_empty
+    applies_to:
+      alert_categories: [cpu_resource_pressure]
+    priority: 70
+    when:
+      all:
+        - evidence.prometheus.result_count == 0
+    prefer_tools: [describe_pod, get_events]
+    focus: [wrong_namespace, wrong_pod_label, metric_label_mismatch]
+    interpretation: Prometheus did not return pod CPU data; validate target labels.

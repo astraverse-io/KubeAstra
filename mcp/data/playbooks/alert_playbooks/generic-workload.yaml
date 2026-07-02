@@ -1,0 +1,28 @@
+id: generic-workload
+version: "1.0.0"
+display_name: "Generic Workload Investigation"
+abstract: false
+supported_alerts: []
+allowed_tools:
+  - "list_kubeconfig_contexts"
+  - "get_pods"
+  - "get_events"
+  - "investigate_workload"
+steps:
+  - id: "step-1"
+    tool: "get_events"
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+    description: "Check cluster events for the namespace"
+  - id: "step-2"
+    tool: "investigate_workload"
+    args:
+      workload_name: "{{ alert.labels.resource }}"
+      namespace: "{{ alert.labels.namespace }}"
+      workload_type: "{{ alert.labels.kind }}"
+    description: "Investigate the workload state"
+decision_rules: []
+execution_policy:
+  mode: "autonomous"
+safety:
+  max_steps: 10

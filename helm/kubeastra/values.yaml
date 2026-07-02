@@ -1,37 +1,85 @@
-# ── values.yaml — Kubeastra Helm Chart ────────────────────────────
+# ── values.yaml — K8s DevOps Assistant Helm Chart ────────────────────────────
 #
-# Minimal install (pass secrets via --set or a secrets file):
+# This file contains chart defaults and a complete record of every knob.
+# **NO secret values live here.** Secret material (Gemini API key,
+# kubeconfig, MCP auth token, deployment-repo PAT) belongs in the
+# gitignored ``values-secrets.yaml`` next to this file.
 #
-#   helm install kubeastra . \
-#     --namespace kubeastra --create-namespace \
-#     --set backend.image.repository=ghcr.io/your-org/kubeastra-backend \
-#     --set backend.image.tag=1.0.0 \
-#     --set frontend.image.repository=ghcr.io/your-org/kubeastra-frontend \
-#     --set frontend.image.tag=1.0.0 \
-#     --set secrets.geminiApiKey="YOUR_GEMINI_API_KEY" \
-#     --set secrets.kubeconfig="$(cat ~/.kube/config | base64)"
+# Recommended install pattern:
+#
+#   helm install k8s-devops . \
+#     --namespace k8s-devops --create-namespace \
+#     -f values.yaml \
+#     -f values-production.yaml      # opt in to every Phase 1 feature
+#     -f values-secrets.yaml         # gitignored — holds Gemini key + tokens
+#
+# Plus optional --set overrides for one-off tweaks (image tags, etc.).
+# See docs/BEST_FEATURES_QUICKSTART.md for the full guided install.
 
 # ── Global ────────────────────────────────────────────────────────────────────
 nameOverride: ""
 # Shorten pod names: "kubeastra-backend-xxx" / "kubeastra-frontend-xxx"
-# Without this, Helm combines release name + chart name → "kubeastra-..."
+# Without this, Helm combines release name + chart name → "k8s-devops-kubeastra-..."
 fullnameOverride: "kubeastra"
 
-namespace: kubeastra
+# Namespace is automatically set by helm install -n flag
+# Do not override it here; use .Release.Namespace in templates instead
+
+# ── Networking ────────────────────────────────────────────────────────────────
+# Per-environment networking knobs resolved at install time from
+# .Release.Namespace, so a single chart can target dev or prod without
+# separate values files:
+#
+#   helm install ... --namespace k8s-ai-test   -> dev IP applied to LBs
+#   helm install ... --namespace k8s-devops    -> prod IP applied to LBs
+#
+# Both the frontend Service (:3000) and the backend Service (:8000, when
+# type=LoadBalancer) read this map via the
+# `kubeastra.loadBalancerIP` helper. The per-service
+# loadBalancerIP override (e.g. frontend.service.loadBalancerIP) still
+# wins if set explicitly.
+networking:
+  loadBalancerIPByNamespace: {}
+    # Example — replace with your own LoadBalancer IPs per namespace:
+    # k8s-ai-test: "10.0.0.100"   # DEV
+    # kubeastra:   "10.0.0.101"   # PROD
 
 # ── Backend (FastAPI + mcp) ───────────────────────────────────────
 backend:
   image:
-    # Replace with your registry — e.g. ghcr.io/your-org/kubeastra-backend
-    repository: ghcr.io/your-org/kubeastra-backend
+    repository: ghcr.io/kubeastra/kubeastra-backend
     tag: "latest"
     pullPolicy: IfNotPresent
 
+  # Keep this at 1 while using SQLite with backend.persistence.enabled=true
+  # and ReadWriteOnce storage. Move session/feedback persistence to Postgres
+  # before scaling backend replicas horizontally.
   replicaCount: 1
 
   service:
-    type: ClusterIP
-    port: 8800
+    # Empty (the default) means: let the chart infer the right type from
+    # .Release.Namespace. If the namespace is in
+    # networking.loadBalancerIPByNamespace (k8s-ai-test / k8s-devops by
+    # default), the backend Service is automatically promoted to
+    # LoadBalancer with the GCP Internal LB annotation — matching the
+    # frontend service — so `helm install --namespace <env>` just works.
+    # Otherwise the chart falls back to ClusterIP.
+    #
+    # Set explicitly to "ClusterIP" to opt out even in a known namespace,
+    # or to "LoadBalancer" / "NodePort" in any other namespace.
+    type: ""
+    port: 8000
+    # Extra annotations to add to the backend Service. Merged with the
+    # auto-defaults (Internal LB annotation when the namespace is in the
+    # known-env map); user keys win on collision.
+    annotations: {}
+    # Pre-reserved internal IP to attach to this Service. Leave empty to let
+    # the cloud LB controller pick one (ephemeral). When set, the IP MUST
+    # already be reserved in the cloud (gcloud compute addresses create ...)
+    # and the project/subnet must match. Sharing the same value across
+    # frontend + backend Services puts them both behind one IP — GCP allows
+    # this as long as their ports don't overlap (3000 vs 8000 here).
+    loadBalancerIP: ""
 
   resources:
     requests:
@@ -39,13 +87,17 @@ backend:
       memory: "512Mi"
     limits:
       cpu: "1000m"
-      memory: "1Gi"
+      # Bumped from 1Gi: a webhook burst (Alertmanager batching ~35 alerts
+      # into one POST) fans out into ~35 concurrent investigations, each
+      # holding evidence + LLM context + Qdrant connections. 1Gi triggered
+      # OOMKills under that load even with the LLM concurrency cap below.
+      memory: "2Gi"
 
   # Liveness / readiness probes
   livenessProbe:
     httpGet:
-      path: /health
-      port: 8800
+      path: /health/live
+      port: 8000
     initialDelaySeconds: 30
     periodSeconds: 30
     timeoutSeconds: 5
@@ -53,8 +105,8 @@ backend:
 
   readinessProbe:
     httpGet:
-      path: /health
-      port: 8800
+      path: /health/ready
+      port: 8000
     initialDelaySeconds: 15
     periodSeconds: 10
     timeoutSeconds: 5
@@ -70,21 +122,126 @@ backend:
     maxLogTailLines: "200"
     # Maximum output bytes per tool response
     maxOutputBytes: "20000"
-    # Gemini model to use
-    geminiModel: "gemini-2.5-flash"
+    # Durable kubectl/tool audit log. /app/data is always a writable volume
+    # (PVC when persistence is enabled, emptyDir otherwise).
+    enableAuditLog: "true"
+    auditLogPath: "/app/data/audit.log"
+    auditLogMaxBytes: "10485760"
+    auditLogWarningIntervalSeconds: "60"
+    # LLM provider: gemini or ollama
+    llmProvider: "gemini"
+    # Gemini model to use. The chat UI no longer exposes a model selector.
+    geminiModel: "gemini-3.1-flash-lite"
+    geminiTimeoutSeconds: "60"
+    # Backwards-compatible single-model catalog for older clients.
+    geminiAvailableModels: "gemini-3.1-flash-lite"
+    # Enable multi-step ReAct investigations (uses more LLM calls)
+    useReactChat: "false"
+    # Ollama settings for local/self-hosted inference
+    ollamaBaseUrl: "http://localhost:11434"
+    ollamaModel: "llama3.1"
+    ollamaAvailableModels: "llama3.1"
+    # Optional: explicitly set Ollama's context window (e.g., "32768")
+    ollamaNumCtx: ""
     # Enable write/recovery operations (delete_pod, rollout_restart, scale, patch)
     enableRecoveryOperations: "false"
-    # Weaviate URL (set if RAG is enabled)
-    weaviateUrl: "http://localhost:8080"
-    weaviateCollection: "K8sAnsibleError"
+    # Qdrant connection (defaults to in-cluster service when qdrant.enabled=true).
+    # Set qdrant.externalUrl to point at an existing Qdrant instead.
+    qdrantCollection: "k8s_errors"
+    qdrantTimeoutSeconds: "10"
+    # Prometheus URL for the prom_query MCP tool (used by specialty alert
+    # playbooks: crashloopbackoff, oomkilled, highcpuusage, etc.). Leave empty
+    # to disable — investigations still complete, they just skip metrics
+    # evidence steps and fall back to logs/events.
+    prometheusUrl: ""
+    prometheusTimeoutSeconds: "10"
+    # Cap on simultaneous LLM calls across all in-flight alert
+    # investigations. Prevents a webhook burst from saturating both the
+    # threadpool the blocking Gemini SDK runs in and the per-minute model
+    # quota. 8 fits comfortably inside gemini-3.1-flash-lite free-tier
+    # limits for typical Alertmanager bursts; raise after quota uplift.
+    alertsLlmConcurrency: "8"
     embeddingModel: "sentence-transformers/all-MiniLM-L6-v2"
+    embeddingDim: "384"
+    # Keep Hugging Face / Transformers model-load chatter out of pod logs.
+    # The public embedding model still works without HF_TOKEN; add one via a
+    # secret only if you need higher Hub rate limits.
+    hfHome: "/tmp/hf-cache"
+    sentenceTransformersHome: "/tmp/hf-cache"
+    hfHubDisableProgressBars: "1"
+    hfHubVerbosity: "error"
+    transformersVerbosity: "error"
+    tokenizersParallelism: "false"
+    # RAG retrieval router (Phase 1.4). Empty values inherit Python defaults.
+    ragRouterEnabled: "true"
+    ragRouterTopK: "5"
+    ragRouterCachedThreshold: "0.92"
+    ragRouterGroundedThreshold: "0.70"
+    # Phase 1.5 adds ``deployment_repo`` to the default list — indexed
+    # Ansible playbooks/roles/inventory. The router also force-includes
+    # this collection when it detects an Ansible-flavored error in the
+    # user's question, regardless of this setting.
+    # Add ``session_memory`` once Phase 1.3 capture is on and you want the
+    # router to also consider unverified captures: e.g.
+    # "runbook,devops_doc,deployment_repo,session_memory"
+    ragRouterCollections: "runbook,devops_doc,deployment_repo"
+
+    # Semantic prompt cache (Phase 2.3) — before invoking the router /
+    # LLM, check if a similar question was answered within the last
+    # ``promptCacheLookbackHours``. Hit → return cached answer instantly,
+    # zero LLM cost. Requires session capture (1.3) to have been running
+    # — without it, session_memory is empty and the cache always misses.
+    # Off by default; safe to leave off until you have ≥ 1 week of
+    # captures (otherwise the cache hit rate is ~0).
+    promptCacheEnabled: "false"
+    promptCacheThreshold: "0.95"
+    promptCacheLookbackHours: "24"
+    promptCacheTopK: "5"
+
+    # Proactive cluster triage (Phase 3.0). When true, the chat stream
+    # emits a one-screen cluster-health greeting on the FIRST message of
+    # a session. Off by default so existing installs don't suddenly start
+    # emitting summaries.
+    enableProactiveTriage: "false"
+    proactiveTriageNamespaces: "*"
+    proactiveTriageEventLookbackMin: "10"
+
+    # Session capture (Phase 1.3). Off by default until you've watched it
+    # on staging — see docs/QDRANT_DEPLOYMENT_GUIDE.md for the rollout plan.
+    sessionCaptureEnabled: "false"
+    sessionCaptureTtlDays: "90"
+    sessionCaptureTranscriptChars: "4000"
+    sessionCaptureRedactSecrets: "true"
     # k8sgpt CLI integration (requires k8sgpt installed in the image)
     enableK8sgpt: "false"
 
+    # Local account auth. Keep disabled for local/dev compatibility; enable for
+    # shared beta deployments so chat history follows users across browsers.
+    authEnabled: "true"
+    authAllowSignup: "true"
+    authSessionTtlDays: "14"
+    authCookieName: "k8s_devops_auth"
+    # Set true only when the frontend is served over HTTPS.
+    authCookieSecure: "false"
+    authPasswordMinLength: "12"
+    # Comma-separated frontend origins for Origin checks, e.g.
+    # "https://k8s-devops.example.com"
+    authAllowedOrigins: ""
+    # Public HTTPS origin used for password reset links.
+    appBaseUrl: "http://localhost:3000"
+
+  agentApi:
+    maxConcurrency: "2"
+    queueTimeoutSeconds: "5"
+    maxInputBytes: "65536"
+    requestsPerMinute: "30"
+    executionTimeoutSeconds: "90"
+
   # ── SQLite persistence ─────────────────────────────────────────────────────
   # The backend writes chat_history.db to /app/data/ (controlled by DB_PATH).
-  # Without a PVC the file is lost on pod restart (all chat histories cleared).
-  # Set enabled: true and choose a storageClass to keep history across restarts.
+  # This stores chat history, per-session memory, cluster selections, SSH
+  # targets, and feedback_events audit rows. Without a PVC the file is lost on
+  # pod restart. Set enabled: true for beta/prod feedback triage.
   persistence:
     enabled: false
     storageClass: ""      # "" = cluster default; "standard", "gp2", etc.
@@ -100,8 +257,7 @@ backend:
 # ── Frontend (Next.js) ────────────────────────────────────────────────────────
 frontend:
   image:
-    # Replace with your registry — e.g. ghcr.io/your-org/kubeastra-frontend
-    repository: ghcr.io/your-org/kubeastra-frontend
+    repository: ghcr.io/kubeastra/kubeastra-frontend
     tag: "latest"
     pullPolicy: IfNotPresent
 
@@ -109,13 +265,15 @@ frontend:
 
   service:
     type: LoadBalancer
-    port: 3300
-    # Add cloud-provider annotations here as needed.
-    # GKE internal LB example:
-    #   networking.gke.io/load-balancer-type: "Internal"
-    # AWS NLB example:
-    #   service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    annotations: {}
+    port: 3000
+    # GCP Internal Load Balancer — required because the org policy blocks external LBs.
+    # This assigns a private IP from your VPC subnet (reachable within the network only).
+    annotations:
+      networking.gke.io/load-balancer-type: "Internal"
+    # Pre-reserved internal IP. Leave empty to let GCP assign one ephemerally.
+    # Set this and the matching backend.service.loadBalancerIP to host both
+    # Services on one IP/DNS, with frontend on :3000 and backend on :8000.
+    loadBalancerIP: ""
 
   resources:
     requests:
@@ -128,12 +286,12 @@ frontend:
   # The frontend calls the backend API. In-cluster, use the backend Service DNS.
   # If using Ingress with a public URL, override this with the public backend URL.
   # Default uses the in-cluster service name resolved at deploy time via _helpers.tpl.
-  apiUrl: ""  # Leave blank to auto-resolve to http://<release-name>-backend:8800
+  apiUrl: ""  # Leave blank to auto-resolve to http://<release-name>-backend:8000
 
   livenessProbe:
     httpGet:
       path: /
-      port: 3300
+      port: 3000
     initialDelaySeconds: 20
     periodSeconds: 30
     timeoutSeconds: 5
@@ -142,7 +300,7 @@ frontend:
   readinessProbe:
     httpGet:
       path: /
-      port: 3300
+      port: 3000
     initialDelaySeconds: 10
     periodSeconds: 10
     timeoutSeconds: 5
@@ -152,23 +310,203 @@ frontend:
   tolerations: []
   affinity: {}
 
+# ── Qdrant vector DB (Phase 1.1) ──────────────────────────────────────────────
+# Self-hosted StatefulSet by default. Set qdrant.enabled=false and
+# qdrant.externalUrl=https://your-qdrant.example to point at an existing
+# Qdrant cluster instead.
+qdrant:
+  enabled: true
+  # Used only when qdrant.enabled=false.
+  externalUrl: ""
+  image:
+    repository: qdrant/qdrant
+    tag: "v1.11.0"
+    pullPolicy: IfNotPresent
+  logLevel: "INFO"
+  # API-key auth. Leave apiKeySecretRef empty to run anonymously
+  # (acceptable in trusted in-cluster deployments; recommended to set
+  # in production via an existing Kubernetes Secret).
+  auth:
+    apiKeySecretRef: ""   # name of an existing Secret holding the API key
+    apiKeySecretKey: "apiKey"
+  storage:
+    size: 10Gi
+    storageClassName: "hyperdisk-balanced"   # explicitly set for n4 machine types
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1
+      memory: 2Gi
+  networkPolicy:
+    # Restrict Qdrant ingress to backend pods + the RAG ingestion CronJob.
+    # Requires a CNI that enforces NetworkPolicy (GKE/EKS native do).
+    enabled: false
+
+# ── RAG ingestion (Phase 1.2) ─────────────────────────────────────────────────
+# A nightly CronJob runs scripts/reindex.py against the configured sources
+# and upserts chunks into the `devops_doc` Qdrant collection.
+rag:
+  # Master switch — turn the CronJob off without ripping out the values.
+  enabled: false
+  ingestion:
+    # Cron schedule (cluster timezone). Empty string disables the CronJob.
+    schedule: "0 2 * * *"     # nightly 02:00
+    # Reindex config consumed by scripts/reindex.py.
+    config:
+      sources:
+        # Drop markdown into a ConfigMap or PVC and mount it via
+        # rag.ingestion.knowledgeVolume below.
+        - kind: local_path
+          path: /knowledge
+        # Example git source — uncomment and customize:
+        # - kind: git_repo
+        #   url:  https://github.com/your-org/devops-runbooks
+        #   branch: main
+        #   token_env: GITHUB_TOKEN
+        #   subdir: docs
+
+        # Phase 1.5 — internal Ansible deployment repo into
+        # ``deployment_repo`` collection. The ``emit_role_aggregates``
+        # flag adds the per-role coarse-tier chunks (plan §11.3) in the
+        # same clone pass. Enable by setting deploymentRepo.enabled=true
+        # below (the template will inject this source spec automatically
+        # when enabled).
+      chunking:
+        max_tokens: 400
+        overlap_tokens: 60
+    # Mount a knowledge source into the CronJob pod. The local_path source
+    # in config above reads from this mount.
+    knowledgeVolume:
+      enabled: false
+      mountPath: /knowledge
+      # Exactly one of these can be set:
+      configMapName: ""        # for small corpora (≤1 MB total)
+      pvcName: ""              # for larger corpora
+    # Extra env vars injected into the ingestion container (e.g. tokens).
+    extraEnv: {}
+    # Extra env vars sourced from K8s Secrets — for tokens you don't want
+    # baked into values. Format mirrors corev1.EnvVar.valueFrom.secretKeyRef:
+    #   extraEnvFromSecrets:
+    #     GITHUB_TOKEN:
+    #       secretName: deployment-repo-token
+    #       key: token
+    extraEnvFromSecrets: {}
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        cpu: 1
+        memory: 2Gi
+
+  # ── Bootstrap reindex (runs once per helm install/upgrade) ──────────────
+  # When enabled, the chart includes a one-shot Job (helm post-install /
+  # post-upgrade hook) that runs scripts/reindex.py immediately. Removes
+  # the need to ``kubectl create job --from=cronjob/...`` after every
+  # install. Idempotent — re-runs against unchanged content are no-ops
+  # thanks to content-hash dedup, so safe to fire on every upgrade.
+  bootstrap:
+    enabled: true
+    # First run downloads ~85 MB MiniLM + embeds the configured corpora.
+    # 30 min budget covers a typical deployment-repo + small docs corpus.
+    # Bump for very large repos.
+    timeoutSeconds: 1800
+    backoffLimit: 2
+    ttlSecondsAfterFinished: 86400   # auto-clean the Job pod a day later
+
+# ── Deployment repo as KB (Phase 1.5) ─────────────────────────────────────────
+# Internal Ansible deployment repo indexed into the deployment_repo Qdrant
+# collection. When enabled, the rag-ingestion CronJob includes a git_repo
+# source for this repo with role-aggregate emission turned on. The MCP/
+# backend pods never touch GitHub directly — only the CronJob does. See
+# docs/DEPLOYMENT_REPO_KB_PLAN.md §10 for the full runtime model.
+#
+# NOTE: deploymentRepo.enabled is a no-op unless ``rag.enabled=true`` —
+# the deployment-repo source is rendered into the same rag-ingestion
+# ConfigMap, and that whole CronJob is gated on rag.enabled.
+deploymentRepo:
+  enabled: false
+  url: "https://github.com/kubeastra/deployment-provisioning.git"
+  # The deployment-provisioning repo's default branch is "develop", not
+  # "main". Setting "main" here will fail the clone with
+  # "Remote branch main not found in upstream origin".
+  branch: "develop"
+  # Walk only this subdirectory inside the repo. Empty string = whole repo.
+  subdir: "ansible"
+
+  # ── Token: two ways to provide ──────────────────────────────────────────
+  # Method 1 (chart-managed Secret): set deploymentRepo.token below to a
+  #   GitHub fine-grained PAT (read-only Contents on the repo). The chart
+  #   will template a K8s Secret named ``tokenSecretName`` containing the
+  #   token. **NEVER commit a real value here** — use --set or a
+  #   gitignored values-secrets.yaml. Leave empty to skip the templated
+  #   Secret.
+  # Method 2 (externally-managed Secret): leave token: "" and create the
+  #   Secret yourself (sealed-secrets, external-secrets-operator,
+  #   kubectl create, etc.) with the name ``tokenSecretName``. The
+  #   CronJob will reference it either way.
+  token: ""
+  tokenSecretName: "deployment-repo-token"
+  tokenSecretKey: "token"
+
 # ── Secrets ───────────────────────────────────────────────────────────────────
-# IMPORTANT: Do not commit real values here.
-# Pass via: --set secrets.geminiApiKey="..." --set secrets.kubeconfig="..."
-# Or use a sealed-secrets / external-secrets solution.
+# Real values for these fields are kept OUT of this file. Provide them
+# via one of:
+#
+#   1. ``values-secrets.yaml`` (gitignored sibling of this file) — the
+#      recommended path for local dev / single-operator clusters:
+#        helm upgrade ... -f values.yaml -f values-secrets.yaml
+#
+#   2. ``--set`` on the CLI — good for one-off operations:
+#        helm upgrade ... --set secrets.geminiApiKey=AIza... \
+#                         --set secrets.mcpAuthToken=$(openssl rand -hex 32)
+#
+#   3. sealed-secrets / external-secrets-operator / Vault — production
+#      pattern. Leave the fields here empty and let the template Secret
+#      stay un-rendered; ship the actual K8s Secret out-of-band.
+#
+# The chart's secret.yaml template only renders entries whose value here
+# is non-empty, so leaving any of these blank is fine and just means the
+# corresponding Secret key is omitted.
 secrets:
-  # Your Gemini API key (get one at https://aistudio.google.com/)
   geminiApiKey: ""
-
-  # Your kubeconfig file content, base64-encoded.
-  # Generate with: cat ~/.kube/config | base64 | tr -d '\n'
-  # This is mounted at /app/kubeconfig/config inside the backend pod.
   kubeconfig: ""
-
-  # Bearer token for the HTTP MCP server (port 8001).
-  # When set, MCP clients must send: Authorization: Bearer <token>
-  # Leave blank to run the MCP server without authentication (not recommended for production).
   mcpAuthToken: ""
+  # Bearer token Alertmanager/Grafana must send to POST /api/v1/alerts/webhook.
+  # Generate with: openssl rand -hex 32. Leave empty to keep the webhook open
+  # (acceptable only for in-cluster senders on a trusted network).
+  #
+  # Three ways to set it — the chart picks one at install time via the
+  # kubeastra.alertWebhookToken helper, first non-empty wins:
+  #
+  #   1. alertWebhookToken — explicit single-env value (legacy / one-off).
+  #
+  #   2. alertWebhookTokensByNamespace — namespace -> token map. Use this
+  #      when you have more than two environments, e.g.:
+  #        alertWebhookTokensByNamespace:
+  #          k8s-ai-test:  "<DEV_TOKEN>"
+  #          k8s-devops:   "<PROD_TOKEN>"
+  #          k8s-staging:  "<STAGING_TOKEN>"
+  #
+  #   3. alertWebhookToken_Dev / alertWebhookToken_Prod — convenience aliases
+  #      that match the two named environments (k8s-ai-test, k8s-devops). Put
+  #      these in your gitignored values-secrets.yaml so a single `helm install
+  #      --namespace <ns>` picks the right one with zero per-env files:
+  #        secrets:
+  #          alertWebhookToken_Dev:  "<DEV_TOKEN>"
+  #          alertWebhookToken_Prod: "<PROD_TOKEN>"
+  alertWebhookToken: ""
+  alertWebhookToken_Dev: ""
+  alertWebhookToken_Prod: ""
+  alertWebhookTokensByNamespace: {}
+  # Agent harness (feat/agent-harness branch) — bearer tokens for
+  # POST /api/v1/agent/invoke. Both current and previous are accepted during
+  # rotation. PRUNE_TOKEN is auto-generated by secret.yaml when
+  # agentHarness.tracePersistence.retentionEnabled=true.
+  agentApiToken: ""
+  agentApiTokenPrevious: ""
 
 # ── HTTP MCP server (port 8001) ───────────────────────────────────────────────
 # The same Docker image also runs an HTTP MCP server that Cursor, Claude Desktop,
@@ -179,15 +517,28 @@ secrets:
 #
 # MCP client config example (Cursor, Claude Desktop, VS Code, etc.):
 #   "mcpServers": {
-#     "kubeastra": {
+#     "k8s-devops": {
 #       "type": "http",
 #       "url": "http://<ilb-ip>:8001/mcp/",
 #       "headers": { "Authorization": "Bearer <mcpAuthToken>" }
 #     }
 #   }
 mcp:
+  # Use JSON responses instead of SSE streaming for the MCP Streamable HTTP
+  # transport. This is recommended for load-balanced Kubernetes deployments
+  # because some network paths buffer SSE/chunked responses and make Cursor
+  # appear stuck in "loading".
+  jsonResponse: true
+
+  # Disable MCP server-side session state for load-balanced deployments.
+  # This avoids sticky-session requirements and removes the long-lived stream
+  # transport behavior that can hang through Kubernetes Service/LB paths.
+  stateless: true
+
+  # Expose port 8001 via a NodePort or LoadBalancer so external clients can connect.
+  # Set to ClusterIP to keep it internal only (access via kubectl port-forward).
   service:
-    type: LoadBalancer
+    type: LoadBalancer      # Use NodePort or LoadBalancer for external IDE access
     port: 8001
     nodePort: ""         # Only used when type=NodePort (e.g. 30801)
     # Annotations to make this an Internal Load Balancer.
@@ -195,8 +546,14 @@ mcp:
     # GKE:  networking.gke.io/load-balancer-type: "Internal"
     # AWS:  service.beta.kubernetes.io/aws-load-balancer-internal: "true"
     # Azure: service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    #
+    # IMPORTANT: The MCP server uses Streamable HTTP (SSE). The default GKE
+    # proxy-based ILB buffers SSE responses, causing MCP clients to hang.
+    # cloud.google.com/l4-rbs: "enabled" creates a passthrough Network LB
+    # that does not buffer streaming responses.
     annotations:
       networking.gke.io/load-balancer-type: "Internal"
+      cloud.google.com/l4-rbs: "enabled"
 
 # ── ServiceAccount + RBAC ─────────────────────────────────────────────────────
 serviceAccount:
@@ -218,15 +575,164 @@ ingress:
     # nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     # nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
   # Frontend host — serves the chat UI
-  frontendHost: "kubeastra.example.com"
+  frontendHost: "k8s-devops.example.com"
   # Backend host — serves the API (optional: use path-based routing instead)
-  backendHost: "kubeastra-api.example.com"
+  backendHost: "k8s-devops-api.example.com"
   tls: []
-  # - secretName: kubeastra-tls
+  # - secretName: k8s-devops-tls
   #   hosts:
-  #     - kubeastra.example.com
-  #     - kubeastra-api.example.com
+  #     - k8s-devops.example.com
+  #     - k8s-devops-api.example.com
 
-# ── Image pull secret (for private registries) ───────────────────────────────
+# ── Frontend/backend NetworkPolicies ─────────────────────────────────────────
+# Disabled by default because API-server CIDRs, ingress-controller labels, and
+# internal LB source ranges are cluster-specific. Deploy explicit allow rules
+# and verify them before enabling default-deny in an environment.
+#
+# Recommended staged rollout (set ``mode`` to each value in turn, verify, then
+# advance):
+#   1. ``mode: allow-only``    — render the explicit frontend/backend
+#                                 allow rules. No default-deny yet, so other
+#                                 traffic still flows. Use this to confirm the
+#                                 allow rules match real traffic.
+#   2. ``mode: enforce-ingress`` — add default-deny for ingress only. Egress
+#                                 stays open. Catches inbound surprises before
+#                                 you risk breaking outbound calls.
+#   3. ``mode: enforce-all``    — add default-deny for egress as well. Locked
+#                                 down; only the explicit egress rules apply.
+networkPolicy:
+  enabled: false
+  # Rollout mode. One of: allow-only, enforce-ingress, enforce-all.
+  # Ignored when networkPolicy.enabled=false.
+  mode: "enforce-all"
+  ingressController:
+    namespace: "ingress-nginx"
+    podLabels:
+      app.kubernetes.io/name: ingress-nginx
+  # VPC/LB health-check sources allowed to reach frontend/backend Services.
+  ingressCidrs: []
+  # Control-plane endpoint ranges, commonly one /32 or a managed GKE/EKS range.
+  kubernetesApiCidrs: []
+  # Stock NetworkPolicy cannot filter Gemini by hostname. This is deliberately
+  # broad public HTTPS egress; use an egress proxy or Cilium/Calico FQDN policy
+  # for hostname-level enforcement.
+  externalHttpsCidrs:
+    - "0.0.0.0/0"
+  externalHttpsExceptCidrs:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "169.254.0.0/16"
+  # Add internal HTTPS proxies here when external traffic is proxy-routed.
+  internalHttpsCidrs: []
+  dns:
+    namespace: "kube-system"
+    podLabels:
+      k8s-app: kube-dns
+
+# ── Image pull secret (for private Artifactory) ───────────────────────────────
 imagePullSecrets: []
-# - name: registry-pull-secret
+
+# ── Agent Harness settings (Phase 6) ─────────────────────────────────────────
+agentHarness:
+  tracePersistence:
+    retentionDays: 30
+    retentionSchedule: "17 3 * * *"
+    retentionEnabled: true
+
+# ── Remote Ansible-callback diagnostics (Phase 6) ────────────────────────────
+# End-to-end SSH-based live cluster investigation for the machine agent API.
+# The full contract lives in docs/ANSIBLE_REMOTE_DIAGNOSTICS_PLAN.md — this
+# section wires the Kubernetes surface (ConfigMap, Secret mounts, env vars,
+# NetworkPolicy egress). All fields are inert until ``enabled: true`` AND
+# every referenced Secret exists in the release namespace. Startup fails
+# closed otherwise.
+#
+# Secret material (private keys, passwords, bearer tokens) is NEVER written
+# into this ConfigMap. Operators create per-target and per-caller-scope
+# Secrets out of band (sealed-secrets, external-secrets-operator, kubectl
+# create, etc.); this section only references them by name.
+remoteDiagnostics:
+  enabled: false
+
+  # These paths must line up with the Python defaults in
+  # target_registry.DEFAULT_CREDENTIAL_ROOT and
+  # caller_scopes.DEFAULT_TOKEN_MOUNT_ROOT. Overriding them requires setting
+  # AGENT_API_TARGET_CREDENTIAL_ROOT / AGENT_API_TOKEN_MOUNT_ROOT to the same
+  # value, which the template does automatically.
+  paths:
+    configRoot: /etc/agent/remote-diagnostics
+    credentialRoot: /var/run/agent-target-credentials
+    tokenMountRoot: /var/run/agent-caller-tokens
+
+  timeouts:
+    connectionSeconds: "10"
+    diagnosticPhaseSeconds: "30"
+
+  # Non-secret target registry entries — rendered into the mounted
+  # targets.yaml ConfigMap and consumed by target_registry.load_registry().
+  # Each target references a Secret by name via ``credentialSecretRef``; the
+  # Secret's projected files live under credentialRoot/<target_id>/ and hold
+  # exactly one of ``key``+optional ``passphrase`` or ``password``.
+  targets: {}
+  # Example:
+  # targets:
+  #   qa17:
+  #     enabled: true
+  #     display_name: QA 17
+  #     environment_group: qa
+  #     connection:
+  #       type: ssh
+  #       host: 10.40.17.10
+  #       port: 22
+  #       username: k8s-diagnostics
+  #       known_hosts_alias: qa17-control-plane
+  #     expected_kube_system_uid: 1c43dff0-0000-0000-0000-000000000000
+  #     diagnostic_scopes_allowed: [kubernetes]
+  #     allowed_caller_scopes: [qa-ansible]
+  #     credentialSecretRef:
+  #       name: agent-target-qa17-credentials
+
+  # Non-secret caller-scope entries — rendered into caller-scopes.yaml.
+  # Each scope references a Secret with the caller bearer tokens; the
+  # template projects ``currentTokenKey`` (and optional ``previousTokenKey``)
+  # under tokenMountRoot/<scope>/.
+  callerScopes: {}
+  # Example:
+  # callerScopes:
+  #   qa-ansible:
+  #     allowed_target_ids: [qa17]
+  #     tokenSecretRef:
+  #       name: agent-caller-token-qa-ansible
+  #     currentTokenKey: current
+  #     # Optional previous key for zero-downtime rotation. Omit or leave
+  #     # empty to run without a previous-token grace window.
+  #     previousTokenKey: previous
+
+  # Pinned SSH host keys — one entry per line in the mounted known_hosts
+  # file. Follow the OpenSSH format:
+  #   ``<alias> <keytype> <base64key>`` for port 22, or
+  #   ``[<alias>]:<port> <keytype> <base64key>`` for non-default ports.
+  # Trust these values through the out-of-band procedure in plan §7.3 —
+  # never through ssh-keyscan alone.
+  knownHostsEntries: []
+  # Example:
+  # knownHostsEntries:
+  #   - "qa17-control-plane ssh-ed25519 AAAAC3Nz..."
+
+  # Explicit SSH egress rules rendered into the backend NetworkPolicy when
+  # both networkPolicy.enabled and remoteDiagnostics.enabled are true.
+  # NEVER put ``0.0.0.0/0`` here — production SSH policy must list approved
+  # environment CIDRs or bastion /32 addresses only.
+  network:
+    targetEgress: []
+    # Example:
+    # targetEgress:
+    #   - cidr: 10.40.17.0/24
+    #     ports: [22]
+    bastionEgress: []
+    # Example:
+    # bastionEgress:
+    #   - cidr: 10.99.0.5/32
+    #     ports: [22]
+# - name: artifactory-pull-secret

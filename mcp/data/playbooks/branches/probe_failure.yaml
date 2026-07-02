@@ -1,0 +1,19 @@
+allowed_tools:
+  - describe_pod
+  - get_events
+  - get_pod_logs
+
+decision_rules:
+  - id: probe_or_readiness_blocker
+    applies_to:
+      alert_categories: [container_restart_crash, workload_availability]
+    priority: 80
+    when:
+      any:
+        - evidence.events.message contains "Readiness probe failed"
+        - evidence.events.message contains "Liveness probe failed"
+        - evidence.kubernetes.pod.ready == false
+    prefer_tools: [describe_pod, get_pod_logs, get_events]
+    prefer_steps: [describe_target_pod, collect_recent_logs, collect_recent_events, describe_unhealthy_pod, collect_unhealthy_pod_logs, collect_workload_events]
+    focus: [readiness_probe, liveness_probe, startup_probe, app_startup, health_endpoint]
+    interpretation: Pod may be running but unavailable because readiness, liveness, or startup probes are failing.

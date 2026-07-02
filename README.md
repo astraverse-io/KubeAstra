@@ -54,11 +54,19 @@ Four ways to connect — pick what fits your setup:
 
 Switch between clusters without restarting. Each session tracks its own connection.
 
-### 🔍 34 Built-in Kubernetes Tools
+### 🔍 51 Built-in Kubernetes Tools
 
-**Live cluster tools (28)** — pod/deployment/service inspection, event streams, multi-namespace discovery, rollout status, kubeconfig context switching, log retrieval with previous-container support, resource-graph topology, deployment-level investigation, namespace-wide health analysis, and safe write operations (delete, scale, restart, patch — all gated behind `confirm=true`).
+**Live cluster tools (~30)** — pod/deployment/service inspection, event streams, multi-namespace discovery, rollout status, kubeconfig context switching, log retrieval with previous-container support, resource-graph topology, deployment-level investigation, namespace-wide health analysis, and safe write operations (delete, scale, restart, patch — all gated behind `dry_run` + `confirmation_token`).
 
-**AI analysis tools (6)** — error analysis with RAG-backed similarity search, curated fix playbooks for 11 error categories, AI-generated runbooks, cluster health reports, post-incident summarization.
+**AI analysis tools (~9)** — error analysis with RAG-backed similarity search, curated fix playbooks for 11 error categories, AI-generated runbooks, cluster health reports, post-incident summarization, k8sgpt-style pattern matching, RAG knowledge-base search (`kb_search`).
+
+**Helm tools (5)** — release listing, revision diffing, release inspection, availability check, guided investigation.
+
+**Alerts + observability (2)** — Alertmanager fan-in (`get_recent_alerts`), Prometheus range/instant queries (`prom_query`).
+
+**GitOps / deployment-repo (3)** — fetch files, list paths, and grep the deployment repo directly from investigation.
+
+**Remediation plans (3)** — `propose_remediation_plan`, `get_plan`, `execute_plan_step` (multi-step fixes with per-step confirmation).
 
 ### 🤖 Agentic ReAct Investigation
 
@@ -111,8 +119,75 @@ The resource graph is an **interactive investigation surface**, not just a topol
 |---|---|
 | Chat-based Next.js interface for team-wide troubleshooting | Direct integration into Cursor, Claude Desktop, or any MCP client |
 | Connect any cluster (auto-detect, kubeconfig upload, SSH) | Debug without leaving your editor |
-| Shareable session URLs with persistent chat history (SQLite) | 34 tools available via stdio or HTTP MCP transport |
+| Shareable session URLs with persistent chat history (SQLite) | 51 tools available via stdio or HTTP MCP transport |
 | Visual resource graph with click-to-inspect | Same ReAct agent powers both surfaces |
+
+### 🚨 Alert-Driven Auto-Investigation
+
+Point Alertmanager at KubeAstra and it auto-triages incoming alerts:
+
+- **Webhook receiver** — `POST /api/v1/alerts/webhook` accepts standard Alertmanager payloads
+- **Auto-investigation** — each firing alert kicks off a scoped ReAct investigation (by namespace / workload from labels)
+- **Playbook-first routing** — hits deterministic runbooks before consulting the LLM (faster, cheaper, more predictable)
+- **Ranked notification** — findings post back to Slack / PagerDuty (or any webhook) with root cause + suggested fix
+- **Concurrency caps + LLM offload** — burst-safe: alert storms don't exhaust the model quota
+
+### 📚 RAG Runbook Cache — Cached / Grounded / Cold
+
+Every investigation runs through a 3-tier retrieval router before touching the model:
+
+| Tier | Trigger | Behavior |
+|---|---|---|
+| **Cached** | Verified runbook match ≥ 0.92 similarity | Return the runbook answer verbatim — sub-second, near-zero cost |
+| **Grounded** | Any relevant chunk ≥ 0.70 similarity | Feed retrieved docs into the LLM prompt as context |
+| **Cold** | No relevant match | Full ReAct investigation from scratch |
+
+Backed by **Qdrant** (self-hosted, no external SaaS) with a nightly ingestion CronJob for internal docs + configurable Git sources (URL-allowlisted). Every answer shows its citations — no black-box RAG.
+
+### 🧠 Multi-Step Remediation Plans
+
+Complex fixes get proposed as **atomic multi-step plans** instead of one-shot commands:
+
+- LLM proposes plan → user reviews steps → each step needs its own confirmation token
+- **Dry-run first** — every destructive step exposes its `--dry-run=server` output before real execution
+- **Atomic step state** — steps are `pending / running / done / failed` with concurrency-safe CAS transitions
+- **Fail-safe** — if step 2 fails, step 3 doesn't fire; users see the failure and decide next action
+- **Cancellable** — abandon a plan mid-execution without leaving orphaned state
+
+### 💾 Per-User Conversation Memory
+
+The assistant remembers your prior investigation context across turns:
+
+- **Auto-captured** — last 24h of namespace / pod / cluster mentions inform the next prompt
+- **Prompt preamble** — memory is stitched into the system message, not the user message (invisible but effective)
+- **Bounded** — 10 items per category, 5 rendered per turn, 24h max age, tenant-scoped
+- **Redacted** — secrets pattern-matched and stripped before persist
+
+### ✂️ Tool Result Summarization
+
+Massive `kubectl logs` outputs get compressed intelligently:
+
+- **Heuristic first** — strip ANSI, dedupe, tag errors/warnings, keep head + tail + relevant context
+- **LLM polish (optional)** — condense multi-hundred-line describes into 3-line summaries
+- **Preserved evidence** — every summary keeps the raw underlying data as an expandable "show all" section
+
+### 👍 Feedback → Runbook Promotion
+
+Thumbs-up on any answer promotes it into the cached-runbook tier:
+
+- Great answers become verified runbooks other users hit via the "cached" tier
+- Thumbs-down quarantines low-quality captures so they don't feed grounding
+- Auto-capture classifier (strict-JSON Gemini prompt) decides which answers qualify for consideration
+- Redaction runs before persist — secrets never enter the KB
+
+### 🔐 Remote Diagnostics (Air-Gapped Clusters)
+
+For clusters where you can't ship the assistant into the cluster:
+
+- **SSH + Ansible** — runs a hardened, scoped diagnostic playbook against a bastion + target nodes
+- **Read-only by default** — no writes without confirmation tokens; no shell access, only structured facts
+- **Egress-controlled** — Helm ConfigMap + NetworkPolicy pin which nodes/subnets the runner can reach
+- **Auditable** — every remote command emitted to the audit log
 
 ### 🔌 Pluggable LLM Providers
 
@@ -134,6 +209,25 @@ Pick your LLM — **Google Gemini** (default, free tier available) or **Ollama**
 - **Kind demo cluster** — `make demo` spins up a broken cluster so you can see the tool work in 60 seconds
 - **Production Helm chart** — deploy into the same clusters it monitors
 - **SSH multi-cluster** — query any remote kubeadm cluster without copying kubeconfigs
+
+---
+
+## Which feature is right for me?
+
+Match your situation to the feature that solves it:
+
+| If you… | The feature | Enable with |
+|---|---|---|
+| Just want an AI copilot for `kubectl` diagnosis | Agentic ReAct + 51 tools | Defaults — no flags needed |
+| Get paged by Alertmanager at 2 AM | Alert-Driven Auto-Investigation | `ALERTMANAGER_WEBHOOK_ENABLED=true` + set `ALERT_WEBHOOK_TOKEN` |
+| Investigate the same failure modes repeatedly | RAG Runbook Cache (Cached tier) | `RAG_ROUTER_ENABLED=true` + `👍` on great answers |
+| Read 500-line `describe` and 10K-line log outputs | Tool Result Summarization | `ENABLE_LOG_SUMMARIZATION=true` |
+| Perform multi-step fixes with strong safety gates | Multi-Step Remediation Plans | `ENABLE_RECOVERY_OPERATIONS=true` + `REQUIRE_DESTRUCTIVE_CONFIRMATION=true` (default) |
+| Have to repeat "the payments namespace" every prompt | Per-User Conversation Memory | On by default — persists 24 h per session |
+| Want cluster investigation without shipping into the cluster | Remote Diagnostics (SSH + Ansible) | Configure `remoteDiag` block in Helm values |
+| Have a team wiki that everyone should query first | Grounded RAG | Populate `RAG_INGESTION_SOURCES` and let the nightly CronJob index them |
+| Need to see the AI's evidence before trusting an answer | Synthesis Critic + Citations | On by default whenever RAG is on |
+| Run air-gapped and can't call Gemini | Ollama provider | `LLM_PROVIDER=ollama` — all inference stays local |
 
 ---
 
@@ -184,31 +278,52 @@ GEMINI_API_KEY=your-key-here          # or LLM_PROVIDER=ollama
 ALLOWED_NAMESPACES=prod,staging,default
 ```
 
-Restart your IDE — all 34 tools appear as MCP tools.
+Restart your IDE — all 51 tools appear as MCP tools.
 
 ### Option 4: Deploy to Kubernetes via Helm
+
+Baseline install — chat UI + backend, no advanced features:
 
 ```bash
 helm upgrade --install kubeastra helm/kubeastra \
   --namespace kubeastra --create-namespace \
-  --set backend.image.repository=ghcr.io/your-org/kubeastra-backend \
-  --set frontend.image.repository=ghcr.io/your-org/kubeastra-frontend \
   --set secrets.geminiApiKey="YOUR_KEY" \
   --set secrets.kubeconfig="$(cat ~/.kube/config | base64 | tr -d '\n')"
 ```
+
+Opt into every Phase 1 feature (RAG runbook cache, Qdrant, ingestion CronJob, Alertmanager webhook, remediation plans) with the bundled overlay:
+
+```bash
+helm upgrade --install kubeastra helm/kubeastra \
+  --namespace kubeastra --create-namespace \
+  -f helm/kubeastra/values-production.yaml \
+  --set secrets.geminiApiKey="YOUR_KEY" \
+  --set secrets.kubeconfig="$(cat ~/.kube/config | base64 | tr -d '\n')"
+```
+
+> **Never commit secrets.** Put `geminiApiKey`, `kubeconfig`, `alertWebhookToken`, and `qdrantApiKey` in a gitignored `values-secrets.yaml` and pass it via a second `-f` flag — see [`docs/BEST_FEATURES_QUICKSTART.md`](docs/BEST_FEATURES_QUICKSTART.md) for the full pattern.
 
 ---
 
 ## How It Works
 
+Every request flows through a fixed routing order — cheapest, most predictable paths first, LLM reasoning last:
+
 1. **Connect your cluster** — auto-detect your local kubeconfig, upload one, or enter SSH credentials. The connection is scoped to your session.
 2. **Ask a question** — *"Why are pods in checkout-service not starting?"*
-3. **ReAct investigation** — the LLM reasons step-by-step: picks a tool → executes it → observes the result → decides the next action. This continues autonomously (up to 6 iterations, 90-second timeout) until it has enough context to answer. Falls back to a keyword router if no LLM key is set.
-4. **Auto-discovery** — if you don't specify a namespace, `find_workload` searches across all namespaces. Large clusters (thousands of pods) are handled efficiently via text-format parsing instead of JSON.
-5. **Live investigation** — executes read-only `kubectl` commands against your cluster. Cluster connection flags are injected per-session automatically.
-6. **AI synthesis** — returns a severity-rated root-cause card with metrics, evidence, and either one-click fix commands or manual steps.
-7. **Persistence** — every message, tool call, and result saved to SQLite so you can pick up where you left off.
-8. **Share and collaborate** — share the session URL with your team. They see the full investigation including the root-cause card, fix commands, and evidence.
+3. **Memory injection** — the last 24 h of your investigation context (namespaces, pods, cluster) is stitched into the prompt preamble so the assistant doesn't ask you to repeat yourself.
+4. **Playbook-first check** — if the question matches a deterministic runbook pattern (e.g. `OOMKilled recovery`), the runbook answers directly. No LLM call. Sub-second.
+5. **RAG router** — if no playbook matches, embed the query and search Qdrant across `runbook`, `devops_doc`, and `session_memory` collections:
+   - **Cached** (verified runbook, similarity ≥ 0.92) → return verbatim, sub-second, near-zero cost
+   - **Grounded** (any doc, similarity ≥ 0.70) → feed retrieved chunks into the LLM prompt as context
+   - **Cold** (no relevant match) → full ReAct from scratch
+6. **ReAct investigation** — the LLM reasons step-by-step: picks a tool → executes it → observes the result → decides the next action. Runs up to 6 iterations with a 90-second wall-clock timeout. Auto-discovery via `find_workload` handles missing namespaces; large clusters use text-format parsing instead of JSON.
+7. **Tool result summarization** — 500-line describes and 10K-line log dumps get compressed via heuristic (ANSI strip, dedupe, error tagging, head+tail+context) with optional LLM polish before entering the LLM's context.
+8. **Synthesis critic** — a hallucination auditor cross-checks the final answer against the raw tool evidence. Claims not backed by evidence are flagged or removed.
+9. **AI synthesis** — returns a severity-rated root-cause card with metrics, evidence, and either one-click fix commands or manual steps. Destructive ops require a dry-run first, then a single-use confirmation token.
+10. **Persistence** — every message, tool call, and result saved to SQLite so you can pick up where you left off. Session ID lets teammates load the full investigation.
+11. **Auto-capture + promotion** — a strict-JSON classifier decides which answers qualify for the cached-runbook tier. Thumbs-up promotes; thumbs-down quarantines. Secrets are redacted before persist.
+12. **Alertmanager fan-in (optional)** — POST to `/api/v1/alerts/webhook` and every firing alert kicks off its own scoped investigation via steps 3–10 above, posting the finding back to Slack / PagerDuty.
 
 ---
 
@@ -253,6 +368,64 @@ Investigation Trail: 3/3 tools
 Fix command: kubectl delete pod mongodb-arbiter-0 -n infrastructure
 ```
 
+**Cached runbook hit** — sub-second, near-zero cost:
+```
+You: how do I recover from OOMKilled after a memory limit bump?
+
+KB Router: cached (similarity 0.94 → runbook#412 "OOMKilled recovery")
+
+Answer: Increase the memory limit on the Deployment and redeploy — the
+        pod will be recreated with the new limit. If the workload is
+        still OOMing after the bump, capture heap or profile before
+        increasing further.
+
+Citations: docs/runbooks/oom-recovery.md
+```
+
+**Alert-driven auto-investigation** — Alertmanager → root cause in under a minute:
+```
+[Alertmanager]  KubePodCrashLooping  →  POST /api/v1/alerts/webhook
+                    ↓
+KubeAstra opens an investigation session for {namespace, workload}:
+  ✓ playbook-first hit: "CrashLoop w/ ImagePullBackOff" pattern matches
+  ✓ investigate_pod → confirms ErrImagePull on payments-api:v42
+  ✓ search_deployment_repo → v42 tag doesn't exist in registry
+  ✓ synthesis critic → high-confidence finding
+
+[Slack]  Root cause: image tag `v42` was never pushed. Rollback to
+         `v41` or push the missing tag. (fix command staged for review)
+```
+
+**Multi-step remediation plan** — dry-run gate + per-step confirmation:
+```
+You: unstick the stuck Redis PVC blocking checkout-service
+
+Plan proposed (3 steps):
+  1. scale_deployment redis --replicas 0     [dry_run OK]
+  2. delete_pvc redis-data --wait            [needs confirmation]
+  3. scale_deployment redis --replicas 1     [chained to step 2]
+
+You: confirm step 1
+KubeAstra: ✓ scaled redis to 0/0 (ready in 4s)
+
+You: confirm step 2
+KubeAstra: ✓ deleted redis-data PVC (finalizer removed cleanly)
+
+You: confirm step 3
+KubeAstra: ✓ redis 1/1 running, checkout-service reconnected
+```
+
+**Memory reuse across turns** — the assistant carries context forward:
+```
+You: what's broken in the payments namespace?
+Astra: 3 pods CrashLoopBackOff in payments — checkout-api, ledger,
+       webhook-worker. Root cause: shared Redis dependency Pending.
+
+You: fix it                                    ← no need to re-specify
+Astra: [memory recalled: payments ns · redis PVC issue]
+       Proposing plan to unstick Redis PVC (see previous investigation).
+```
+
 ---
 
 ## Configuration
@@ -270,7 +443,17 @@ All settings are read from environment variables (or `.env`):
 | `KUBECTL_TIMEOUT_SECONDS` | `15` | Per-command timeout |
 | `MAX_LOG_TAIL_LINES` | `200` | Max log lines per request |
 | `ENABLE_RECOVERY_OPERATIONS` | `false` | Enables `delete_pod`, `rollout_restart`, `scale_deployment`, `apply_patch` |
-| `WEAVIATE_URL` | `http://localhost:8080` | Optional RAG vector DB |
+| `REQUIRE_DESTRUCTIVE_CONFIRMATION` | `true` | When enabled, destructive tools require `dry_run` first then a `confirmation_token` |
+| `QDRANT_URL` | `http://localhost:6333` | Vector DB for RAG (use `:memory:` for tests) |
+| `QDRANT_API_KEY` | — | Optional — required when Qdrant runs with authentication enabled |
+| `RAG_ROUTER_ENABLED` | `false` | Turns on the cached/grounded/cold retrieval router |
+| `RAG_ROUTER_CACHED_THRESHOLD` | `0.92` | Similarity ≥ this on a verified runbook returns the cached answer |
+| `RAG_ROUTER_GROUNDED_THRESHOLD` | `0.70` | Similarity ≥ this on any doc returns a grounded (RAG-fed) answer |
+| `ENABLE_LOG_SUMMARIZATION` | `false` | Compress large `kubectl logs` / `describe` output via heuristic + LLM polish |
+| `SESSION_CAPTURE_ENABLED` | `false` | Auto-classify answers for promotion to the runbook cache |
+| `ALERTMANAGER_WEBHOOK_ENABLED` | `false` | Accept Alertmanager webhooks on `/api/v1/alerts/webhook` |
+| `ALERT_WEBHOOK_TOKEN` | — | Bearer token required on incoming Alertmanager webhook requests |
+| `PROMETHEUS_URL` | — | Prometheus endpoint for `prom_query` (leave unset to disable) |
 
 ---
 
@@ -279,26 +462,45 @@ All settings are read from environment variables (or `.env`):
 ```
 kubeastra/
 ├── ui/
-│   ├── frontend/                # Next.js chat UI
+│   ├── frontend/                # Next.js chat UI (Astra Intent Light theme)
 │   │   ├── app/chat/            # Chat page + /chat/:sessionId share routes
-│   │   │   ├── page-client.tsx  # Main chat component (ReAct rendering, result cards)
-│   │   │   └── [sessionId]/     # Shareable session page
-│   │   └── components/          # ClusterConnect, ResourceGraph, RootCauseCard, etc.
+│   │   └── components/          # ClusterConnect, ResourceGraph, InvestigationTrail,
+│   │                            #   CostBreakdownOverlay, YamlProposer, ApprovalOverlay, etc.
 │   ├── backend/                 # FastAPI app + SQLite persistence
 │   │   ├── routers/
 │   │   │   ├── chat.py          # Chat flow, tool dispatch, fix execution
 │   │   │   ├── cluster.py       # Cluster connection management (4 modes)
-│   │   │   └── sessions.py      # History, SSH targets, post-mortem API
+│   │   │   ├── sessions.py      # History, SSH targets, post-mortem API
+│   │   │   ├── feedback.py      # Thumbs-up/down → runbook promotion
+│   │   │   └── alerts_router.py # Alertmanager webhook + investigation fanout
 │   │   ├── react.py             # ReAct loop orchestrator
-│   │   └── db.py                # SQLite with cluster_connections table
+│   │   ├── memory.py            # Per-user conversation memory
+│   │   └── db.py                # SQLite with cluster_connections, user_memory tables
 │   └── docker-compose.yml
 ├── mcp/
 │   ├── mcp_server/              # MCP server (stdio + HTTP transports)
+│   ├── http_mcp/                # HTTP MCP transport service
 │   ├── k8s/                     # kubectl wrappers, SSH runner, validators
 │   ├── ai_tools/                # Error analysis, fix playbooks, runbooks
-│   ├── services/                # LLM providers, Weaviate, embeddings
+│   ├── alerts/                  # Alertmanager domain, orchestrator, notifications, playbooks
+│   ├── playbooks/               # Deterministic runbook engine (playbook-first routing)
+│   ├── services/
+│   │   ├── llm/                 # Gemini + Ollama providers
+│   │   ├── rag/                 # Chunking, ingestion, router, capture, promotion
+│   │   ├── summarizer/          # Log / event / describe summarization
+│   │   ├── plans.py             # Multi-step remediation plans
+│   │   ├── confirmation.py      # Dry-run + single-use confirmation tokens
+│   │   ├── synthesis_critic.py  # Hallucination auditor
+│   │   ├── tool_envelope.py     # Structured tool-response format
+│   │   ├── error_parser.py      # kubectl error classifier
+│   │   ├── prometheus.py        # Prometheus query client
+│   │   ├── embeddings.py        # sentence-transformers wrapper
+│   │   └── vector_db.py         # Qdrant client
+│   ├── tool_registry.py         # Single source of truth: 51 tools
 │   └── config/settings.py
-├── helm/kubeastra/              # Helm chart
+├── helm/kubeastra/              # Helm chart — backend, frontend, Qdrant StatefulSet,
+│                                #   RAG ingestion CronJob, NetworkPolicies
+├── evals/                       # DeepEval baselines + eval runner
 ├── demo/                        # Kind + broken workloads for `make demo`
 └── docs/                        # Public documentation
 ```
@@ -321,13 +523,22 @@ kubeastra/
 - [x] Manual steps fallback when no automated fix is available
 - [x] Large cluster support (text-format parsing for all-namespaces queries)
 - [x] Session security hardening (path traversal prevention, cryptographic session IDs, command allowlists)
-- [ ] Team playbook engine — investigation templates that codify debugging patterns
-- [ ] Alert-driven auto-investigation (PagerDuty / OpsGenie / Alertmanager webhooks)
+- [x] Team playbook engine — deterministic runbook execution ahead of the LLM
+- [x] Alert-driven auto-investigation — Alertmanager webhook + concurrency-safe fan-out
+- [x] Multi-step remediation plans — atomic steps with per-step confirmation tokens
+- [x] RAG runbook cache — cached / grounded / cold retrieval router backed by Qdrant
+- [x] Tool result summarization — heuristic + optional LLM polish for large logs / describes
+- [x] Per-user conversation memory — 24h scoped context injected into the prompt preamble
+- [x] Feedback → runbook promotion — thumbs-up ships great answers into the cached tier
+- [x] Prometheus integration — `prom_query` for range/instant queries during investigations
+- [x] Remote diagnostics — SSH + Ansible playbook for air-gapped clusters
+- [x] Eval harness — deterministic offline + nightly LIVE regression tests for LLM decisions
 - [ ] OpenAI + Anthropic Claude adapters
-- [ ] Prometheus / Loki / Tempo observability integrations
+- [ ] Loki / Tempo observability integrations
 - [ ] "What changed?" view — recent deployments, ConfigMap/Secret mutations
 - [ ] Real-time collaborative sessions (WebSocket sync + presence indicators)
 - [ ] Slack bot integration (alert → investigation → findings in channel)
+- [ ] PagerDuty / OpsGenie native adapters (Alertmanager works today; these would skip the webhook hop)
 - [ ] CNCF Sandbox submission
 
 ---

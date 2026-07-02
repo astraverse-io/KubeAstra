@@ -1,0 +1,124 @@
+# ── values-production.yaml ────────────────────────────────────────────────────
+# Drop-in override that enables every Phase 1 feature with sensible
+# production defaults. Apply with:
+#
+#   helm upgrade k8s-devops ./helm/kubeastra \
+#     -n k8s-devops \
+#     --reuse-values \
+#     -f helm/kubeastra/values-production.yaml \
+#     --set deploymentRepo.token=ghp_xxxxxxxxxxxxxxxx
+#
+# OR, if you'd rather not pass the token on the CLI, add a line to a
+# gitignored values-secrets.yaml:
+#
+#   deploymentRepo:
+#     token: "ghp_xxxxxxxxxxxxxxxx"
+#
+# and pass it with another ``-f values-secrets.yaml`` flag. NEVER commit
+# the token to git.
+
+# ── Vector DB (Phase 1.1) ─────────────────────────────────────────────────────
+qdrant:
+  enabled: true
+  # NOTE: ``qdrant.storage.*`` fields (size, storageClassName) are
+  # deliberately NOT prescribed here. They map onto the StatefulSet's
+  # ``volumeClaimTemplates`` which is **immutable after creation** — any
+  # mismatch with the existing PVC fails the upgrade with
+  # "updates to statefulset spec are forbidden". Each cluster pins its
+  # own storage in a site-specific values file (or accepts the base
+  # values.yaml defaults: 10 Gi + cluster-default StorageClass).
+  #
+  # If you must change storage on an existing install, scale Qdrant to
+  # 0, delete the StatefulSet with --cascade=orphan, then helm upgrade.
+  networkPolicy:
+    enabled: true   # restricts Qdrant ingress to backend + ingestion CronJob
+
+# ── RAG ingestion (Phase 1.2) — turns on the nightly CronJob ──────────────────
+rag:
+  enabled: true
+  ingestion:
+    schedule: "0 2 * * *"   # nightly at 02:00 cluster-local
+  # bootstrap.enabled defaults to true (in values.yaml) — runs the first
+  # reindex automatically on helm install/upgrade. Override here only if
+  # you'd rather kick it off manually:
+  # bootstrap:
+  #   enabled: false
+
+# ── Deployment repo as KB (Phase 1.5) ─────────────────────────────────────────
+# Auto-creates the deployment-repo-token Secret from ``token`` if set.
+# Leave token empty if you'll create the Secret yourself via sealed-
+# secrets or external-secrets-operator.
+deploymentRepo:
+  enabled: true
+  url: "https://github.com/kubeastra/deployment-provisioning.git"
+  branch: "develop"   # repo's actual default branch (not "main")
+  subdir: "ansible"
+  # Set via --set or values-secrets.yaml — DO NOT commit:
+  # token: "ghp_xxxxxxxxxxxxxxxx"
+  tokenSecretName: "deployment-repo-token"
+  tokenSecretKey: "token"
+
+# ── Session capture + feedback loop (Phase 1.3 + 4.1) ─────────────────────────
+# Auto-saves resolved chats into the session_memory Qdrant collection;
+# thumbs-up in the UI promotes them to runbook (verified=true), which
+# then short-circuits future similar questions to the cached path.
+backend:
+  # Durable SQLite storage for chat history, session memory, and feedback audit
+  # records. Required for beta/prod feedback triage; otherwise thumbs-up/down
+  # audit rows disappear when the backend pod restarts.
+  persistence:
+    enabled: true
+    # GKE n4/n4d nodes reject pd-balanced/standard-rwo disks. Match the
+    # Qdrant default used by this chart for these node pools.
+    storageClass: "hyperdisk-balanced"
+    # hyperdisk-balanced requires at least 4 GiB.
+    size: 4Gi
+    accessMode: ReadWriteOnce
+    mountPath: /app/data
+
+  config:
+    # Switch from one-shot Gemini chat to multi-step ReAct. REQUIRED for the
+    # RAG router (router.py) to fire — the one-shot path bypasses it
+    # entirely. Without this you get generic LLM answers with no grounding,
+    # no kb_route SSE event, no rag_decision, no citations.
+    useReactChat: "true"
+    enableRecoveryOperations: "true"
+    # Phase 2.3 — Semantic prompt cache (L2). Reuses session_memory for
+    # near-instant answers when a teammate JUST asked the same thing.
+    # Tight 0.95 threshold + 24h lookback minimizes false-positive
+    # cache hits. Hit rate ramps as session_capture (1.3) populates the
+    # collection — expect minimal hits in the first week.
+    promptCacheEnabled: "true"
+    promptCacheThreshold: "0.95"
+    promptCacheLookbackHours: "24"
+    # Phase 3.0 — Proactive cluster triage. Emits a cluster-health
+    # greeting on the first message of a session. Off in base values; on
+    # here for production teams that want the quick context.
+    enableProactiveTriage: "true"
+    proactiveTriageNamespaces: "*"
+    proactiveTriageEventLookbackMin: "10"
+    sessionCaptureEnabled: "true"
+    sessionCaptureTtlDays: "90"
+    sessionCaptureTranscriptChars: "4000"
+    sessionCaptureRedactSecrets: "true"   # MANDATORY for production
+    # Default already includes deployment_repo — listed for clarity:
+    ragRouterCollections: "runbook,devops_doc,deployment_repo"
+    ragRouterCachedThreshold: "0.92"
+    # Lowered from 0.70 → 0.60 after direct router probing showed real
+    # Ansible-error similarity to deployment_repo content lands in the
+    # 0.55-0.75 range. 0.70 was leaving most matches in cold mode. See
+    # plan §11.5 — this is the "tune from data" moment. Revisit again
+    # after a week of audit-log data.
+    ragRouterGroundedThreshold: "0.60"
+    # Optional: enable the kubectl-output summarizer (Phase 2.1). Reduces
+    # token usage on chatty clusters. Heuristic does most of the work;
+    # the LLM polish step is opt-in.
+    enableLogSummarization: "true"
+    logSummarizationUseLlm: "true"
+
+# ── Agent Harness settings (Phase 6) ─────────────────────────────────────────
+agentHarness:
+  tracePersistence:
+    retentionDays: 30
+    retentionSchedule: "17 3 * * *"
+    retentionEnabled: true

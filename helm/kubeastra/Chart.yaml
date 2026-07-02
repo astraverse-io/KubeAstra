@@ -1,7 +1,7 @@
 apiVersion: v2
 name: kubeastra
 description: >
-  Kubeastra — AI-powered Kubernetes troubleshooting assistant. FastAPI backend (bundled with
+  AI-powered Kubernetes DevOps Assistant — FastAPI backend (bundled with
   mcp) and Next.js frontend. Provides a team chat UI backed by
   Gemini AI + live kubectl investigation tools.
 type: application

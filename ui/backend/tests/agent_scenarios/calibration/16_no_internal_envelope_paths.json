@@ -1,0 +1,13 @@
+{
+  "id": "no_internal_envelope_paths",
+  "prompt": "List all pods in the production namespace.",
+  "expected_output": "The answer should report the pod inventory result for the requested namespace without exposing internal envelope field paths.",
+  "context": "Regression coverage for synthesis answers that previously displayed internal references such as envelope[0].evidence.total_count in the Evidence section.",
+  "expected_tools": ["get_pods", "get_namespaces"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "expected_answer_contains": ["production"],
+  "must_not_contain": ["envelope[", ".evidence.", "evidence.total_count", "evidence.items"],
+  "expect_eval_retrieval_context": true,
+  "tags": ["synthesis", "remediation", "envelope_leakage", "inventory"],
+  "notes": "Targets the user-visible array/path leakage found after synthesis. This should pass even when the namespace does not exist."
+}

@@ -1,0 +1,10 @@
+{
+  "id": "event_recency_synthesis",
+  "prompt": "Check the events in prod-blue. Was there a recent crash?",
+  "expected_output": "The most recent event in prod-blue indicates a CrashLoopBackOff occurred within the last 5 minutes. While there were older CPU throttling warnings from 2 hours ago, the primary current issue is the crash.",
+  "context": "Tests that the agent prioritizes recent events. A correct answer highlights the most recent crash event and does not conflate it with older warnings.",
+  "expected_tools": ["get_events"],
+  "must_not_call": ["delete_pod", "rollout_restart"],
+  "tags": ["synthesis", "recency", "events"],
+  "notes": "Ensures the synthesis engine ranks temporal evidence correctly."
+}

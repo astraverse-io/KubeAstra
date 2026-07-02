@@ -16,6 +16,12 @@ class ValidationError(Exception):
 # and must start and end with an alphanumeric character
 K8S_NAME_PATTERN = re.compile(r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
 
+# Kubernetes node names may be DNS subdomains, so FQDN-style names with dots
+# are valid even though most resource names are single DNS labels.
+DNS_SUBDOMAIN_PATTERN = re.compile(
+    r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
+)
+
 # More permissive pattern for label selectors
 LABEL_SELECTOR_PATTERN = re.compile(r'^[a-zA-Z0-9]([-a-zA-Z0-9_.=/]*[a-zA-Z0-9])?$')
 
@@ -107,6 +113,33 @@ def validate_resource_name(name: str, resource_type: str = "resource") -> str:
             f"Examples: 'my-{resource_type}', '{resource_type}-123', 'app-v2'"
         )
     
+    return name
+
+
+def validate_node_name(name: str) -> str:
+    """Validate a Kubernetes node name, allowing DNS subdomain/FQDN names."""
+    if not name:
+        raise ValidationError(
+            "Node name cannot be empty. Please provide a valid node name."
+        )
+
+    if not isinstance(name, str):
+        raise ValidationError(
+            f"Node name must be a string, got {type(name).__name__}"
+        )
+
+    if len(name) > 253:
+        raise ValidationError(
+            f"Node name too long: {len(name)} characters (max 253)"
+        )
+
+    if not DNS_SUBDOMAIN_PATTERN.match(name):
+        raise ValidationError(
+            f"Invalid node name: '{name}'. Kubernetes node names must be valid "
+            "DNS subdomains: lowercase alphanumeric characters, '-', or '.', "
+            "and each segment must start and end with an alphanumeric character."
+        )
+
     return name
 
 

@@ -1,0 +1,93 @@
+rca_scoring:
+  version: "1.0"
+  candidates:
+    - id: container_cpu_limit_reached
+      display_name: Container CPU Limit Reached
+      description: Container CPU usage is at or near its configured CPU limit for the alerted workload.
+      applies_to_alerts:
+        - HighCPUUsage
+        - ContainerCPUThrottling
+      max_score: 100
+      confidence_thresholds:
+        high: 75
+        medium: 50
+        low: 0
+      evidence:
+        - id: cpu_usage_matches_limit
+          points: 35
+          description: Prometheus CPU usage is at or near the Kubernetes CPU limit.
+          when:
+            any:
+              - signals.cpu.usage_matches_limit == true
+              - evidence.prometheus.pod_cpu_usage_percent >= 85
+              - evidence.prometheus.cpu_usage_percent >= 85
+
+        - id: application_cpu_intensive_work
+          points: 25
+          description: Application logs or extracted signals indicate CPU-intensive loop or compute work.
+          when:
+            all:
+              - signals.application.cpu_intensive_work.present == true
+              - signals.application.cpu_intensive_work.confidence >= 0.7
+
+        - id: pod_running_without_restart
+          points: 10
+          description: Pod is running and has not recently restarted, which supports live CPU saturation over crash recovery.
+          when:
+            all:
+              - evidence.kubernetes.pod.phase == "Running"
+              - evidence.kubernetes.pod.restart_count == 0
+
+      contradictions:
+        - id: node_cpu_pressure
+          points: -20
+          description: Node-level CPU pressure may indicate the alert is caused by infrastructure contention instead of this container's CPU limit.
+          when:
+            any:
+              - signals.node.cpu_pressure.present == true
+              - evidence.prometheus.node_cpu_usage_percent >= 85
+
+    - id: application_cpu_hot_loop
+      display_name: Application CPU Hot Loop
+      description: Application behavior appears to be consuming CPU through repeated loop or compute-heavy work.
+      applies_to_alerts:
+        - HighCPUUsage
+      max_score: 100
+      confidence_thresholds:
+        high: 75
+        medium: 50
+        low: 0
+      evidence:
+        - id: application_cpu_intensive_work
+          points: 40
+          description: Logs or semantic signal extraction indicate CPU-intensive loop or compute-heavy work.
+          when:
+            all:
+              - signals.application.cpu_intensive_work.present == true
+              - signals.application.cpu_intensive_work.confidence >= 0.7
+
+        - id: pod_cpu_usage_high
+          points: 25
+          description: Prometheus confirms elevated pod CPU usage.
+          when:
+            any:
+              - evidence.prometheus.pod_cpu_usage_percent >= 85
+              - evidence.prometheus.cpu_usage_percent >= 85
+              - signals.cpu.usage_high == true
+
+        - id: node_cpu_pressure_not_indicated
+          points: 10
+          description: Available evidence does not point to node-level CPU pressure.
+          when:
+            any:
+              - signals.node.cpu_pressure.present == false
+              - evidence.prometheus.cpu_steal_percent <= 5
+
+      contradictions:
+        - id: node_level_cpu_saturation
+          points: -20
+          description: Node-level CPU saturation reduces confidence that application code is the primary root cause.
+          when:
+            any:
+              - evidence.prometheus.node_cpu_usage_percent >= 85
+              - signals.node.cpu_pressure.present == true

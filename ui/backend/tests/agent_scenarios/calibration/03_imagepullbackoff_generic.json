@@ -1,0 +1,10 @@
+{
+  "id": "imagepullbackoff_generic",
+  "prompt": "Pods in my namespace keep showing ImagePullBackOff. What should I check?",
+  "expected_output": null,
+  "context": "Common K8s failure mode. Multiple plausible root causes (missing pullSecret, wrong image tag, registry auth expired, network policy blocking egress). Tests whether the agent enumerates the actual hypothesis space rather than fixating on one cause.",
+  "expected_tools": [],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "tags": ["imagepullbackoff", "happy_path", "team_context_helpful"],
+  "notes": "Baseline answer should mention at least pullSecret, image tag, and registry reachability. A team-specific answer (after TEAM_CONTEXT.md ingestion) should call out the team's specific gotcha — e.g. pull-secret rotation schedule. The delta between baseline and post-onboarding scores is the value of content work."
+}

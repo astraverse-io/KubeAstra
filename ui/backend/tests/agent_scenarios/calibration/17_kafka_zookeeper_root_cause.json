@@ -1,0 +1,14 @@
+{
+  "id": "kafka_zookeeper_root_cause",
+  "prompt": "Can you help me identify why kafka pods are in crashloop?",
+  "expected_output": "Kafka is failing because it is configured to use ZooKeeper service zookeeper-kube-upd-cs, but that service does not exist in the infrastructure namespace. Mention any secondary container issues separately.",
+  "context": "Regression coverage for the synthesis path overriding deterministic root cause with a weaker shell syntax diagnosis. The known-good answer identifies the missing ZooKeeper service as the primary root cause.",
+  "expected_tools": ["investigate_pod", "get_pods", "find_workload"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "expected_answer_contains": ["zookeeper-kube-upd-cs", "infrastructure"],
+  "must_not_contain": ["primary cause is a syntax error", "root cause is a syntax error", "due to a syntax error in the shell script"],
+  "expect_root_cause_summary": true,
+  "expect_eval_retrieval_context": true,
+  "tags": ["synthesis", "remediation", "kafka", "root_cause", "crashloop"],
+  "notes": "This intentionally checks the specific incident from manual testing: missing ZooKeeper service should outrank the secondary JMX jar/container issue."
+}

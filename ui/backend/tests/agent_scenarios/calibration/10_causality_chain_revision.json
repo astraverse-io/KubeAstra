@@ -1,0 +1,10 @@
+{
+  "id": "causality_chain_revision",
+  "prompt": "Investigate api-pod in default. It was reported as failing earlier, what is its current status?",
+  "expected_output": "Although the api-pod in default was initially failing in step 1, a subsequent investigation in step 2 confirms it has successfully restarted and is now healthy.",
+  "context": "Causality chain and revised tool call scenario. Verifies that the agent understands the progression from failing to healthy rather than reporting the stale crash.",
+  "expected_tools": ["investigate_pod"],
+  "must_not_call": [],
+  "tags": ["synthesis", "causality", "revision"],
+  "notes": "Tests the causality chain and revised_from_step metadata logic in synthesis."
+}

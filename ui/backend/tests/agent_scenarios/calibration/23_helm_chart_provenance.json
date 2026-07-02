@@ -1,0 +1,12 @@
+{
+  "id": "helm_chart_provenance",
+  "prompt": "What Helm chart and version deployed jenkins-legacy in namespace jenkins-legacy?",
+  "expected_output": "The answer should identify the chart and version from the Helm release (e.g. chart jenkins-5.8.92), using the read-only Helm tools, without running any Helm write command.",
+  "context": "Helm provenance routing: a Helm-specific prompt should prefer the read-only Helm tools (list_helm_releases / get_helm_release) over generic kubectl-only answers.",
+  "expected_tools": ["list_helm_releases", "get_helm_release"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "expected_answer_contains": ["jenkins"],
+  "must_not_contain": ["helm upgrade", "helm rollback", "envelope["],
+  "tags": ["helm", "provenance", "routing", "read_only"],
+  "notes": "Fails if the agent does not use Helm tools for a Helm chart-provenance question, or if it emits an executable helm write command."
+}

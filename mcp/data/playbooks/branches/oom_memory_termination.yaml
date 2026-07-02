@@ -1,0 +1,184 @@
+allowed_tools:
+  - describe_pod_pvcs
+  - get_events
+  - get_pod_logs
+  - prom_query
+
+steps:
+  - id: query_memory_usage
+    tool: prom_query
+    description: Check pod/container working set memory around the restart.
+    args:
+      query: 'container_memory_working_set_bytes{namespace="{{ alert.labels.namespace }}",pod="{{ alert.labels.pod }}"}'
+  - id: query_memory_limit
+    tool: prom_query
+    description: Fetch configured container memory limit for comparison with usage.
+    args:
+      query: 'kube_pod_container_resource_limits{namespace="{{ alert.labels.namespace }}",pod="{{ alert.labels.pod }}",resource="memory"}'
+  - id: query_node_memory_pressure
+    tool: prom_query
+    description: Check whether Kubernetes reported node-level MemoryPressure.
+    args:
+      query: 'kube_node_status_condition{condition="MemoryPressure",status="true"}'
+
+decision_rules:
+  - id: container_cgroup_oom
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure]
+    priority: 100
+    when:
+      all:
+        - evidence.kubernetes.pod.last_state.reason == "OOMKilled"
+        - evidence.kubernetes.pod.last_state.exit_code == 137
+    prefer_tools: [prom_query]
+    prefer_steps: [query_memory_usage, query_memory_limit]
+    focus: [exit_code_137, memory_usage, memory_limit]
+    interpretation: Container was OOMKilled after exceeding its memory cgroup limit.
+  - id: oomkilled_in_last_state
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure]
+    priority: 95
+    when:
+      any:
+        - evidence.kubernetes.pod.last_state.reason == "OOMKilled"
+        - evidence.kubernetes.pod.last_state.exit_code == 137
+    prefer_tools: [prom_query]
+    prefer_steps: [query_memory_usage, query_memory_limit, query_node_memory_pressure]
+    focus: [memory_usage, memory_limit, restart_timestamps]
+    interpretation: Last container termination points to OOMKilled; continue with memory-focused evidence collection.
+  - id: exit_137_without_oom_reason
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure]
+    priority: 90
+    when:
+      all:
+        - evidence.kubernetes.pod.last_state.exit_code == 137
+        - evidence.kubernetes.pod.last_state.reason != "OOMKilled"
+    prefer_tools: [get_events]
+    focus: [sigkill, events, node_pressure, eviction]
+    interpretation: Container received SIGKILL, but Kubernetes did not confirm OOMKilled; verify the killer/source from events.
+  - id: node_memory_pressure_eviction
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure]
+    priority: 88
+    when:
+      any:
+        - evidence.events.reason == "Evicted"
+        - 'evidence.events.message contains "node was low on resource: memory"'
+        - evidence.events.message contains "MemoryPressure"
+    prefer_tools: [prom_query, get_events]
+    prefer_steps: [query_node_memory_pressure]
+    focus: [node_memory_pressure, eviction_events, neighboring_pods]
+    interpretation: Restart may be related to node-level memory pressure rather than only the container limit.
+  - id: app_runtime_memory_abort
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure]
+    priority: 84
+    when:
+      any:
+        - evidence.kubernetes.pod.last_state.exit_code == 134
+        - evidence.logs.previous contains "OutOfMemoryError"
+        - 'evidence.logs.previous contains "fatal error: runtime: out of memory"'
+        - evidence.logs.previous contains "MemoryError"
+    prefer_tools: [get_pod_logs, prom_query]
+    prefer_steps: [query_memory_usage, query_memory_limit]
+    focus: [application_heap, runtime_gc, app_logs]
+    interpretation: Application/runtime detected memory exhaustion and aborted before or around container termination.
+  - id: native_memory_crash
+    applies_to:
+      alert_categories: [container_restart_crash]
+    priority: 80
+    when:
+      any:
+        - evidence.kubernetes.pod.last_state.exit_code == 139
+        - evidence.logs.previous contains "segmentation fault"
+        - evidence.logs.previous contains "SIGSEGV"
+    prefer_tools: [get_pod_logs, get_events]
+    focus: [native_memory, coredump, unsafe_extension]
+    interpretation: Crash is likely native memory corruption or segfault, not normal Kubernetes OOMKilled.
+  - id: mmap_or_storage_backed_memory_issue
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure]
+    priority: 78
+    when:
+      any:
+        - evidence.kubernetes.pod.last_state.exit_code == 135
+        - evidence.logs.previous contains "bus error"
+        - evidence.logs.previous contains "SIGBUS"
+        - evidence.logs.previous contains "mmap"
+    prefer_tools: [describe_pod_pvcs, get_pod_logs]
+    prefer_steps: [describe_pod_pvcs]
+    focus: [pvc, filesystem, volume_health, storage_backend]
+    interpretation: Memory-mapped file or storage-backed access may have failed; check PVC and storage layer.
+  - id: prometheus_wal_replay_suspected
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure]
+    priority: 75
+    when:
+      all:
+        - any:
+            - evidence.logs.current contains "WAL"
+            - evidence.logs.previous contains "WAL"
+            - evidence.logs.current contains "TSDB"
+            - evidence.logs.previous contains "TSDB"
+            - evidence.logs.current contains "wal segment"
+            - evidence.logs.previous contains "wal segment"
+            - evidence.logs.current contains "replay"
+            - evidence.logs.previous contains "replay"
+        - any:
+            - evidence.logs.current contains "out of memory"
+            - evidence.logs.previous contains "out of memory"
+            - evidence.logs.current contains "OOM"
+            - evidence.logs.previous contains "OOM"
+            - evidence.logs.current contains "Killed"
+            - evidence.logs.previous contains "Killed"
+    prefer_tools: [describe_pod_pvcs, prom_query, get_pod_logs, get_events]
+    prefer_steps: [describe_pod_pvcs, query_memory_usage, query_memory_limit]
+    focus: [prometheus_wal_replay, tsdb_startup, oomkill, pvc_persisted_data]
+    interpretation: Prometheus may be restarting because persisted WAL/TSDB data is replayed from PVC during startup and causing memory exhaustion.
+  - id: loki_ingestion_or_flush_memory_pressure
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure]
+    priority: 74
+    when:
+      all:
+        - any:
+            - alert.labels.pod contains "loki"
+            - alert.labels.job contains "loki"
+            - evidence.logs.current contains "loki"
+            - evidence.logs.previous contains "loki"
+        - any:
+            - evidence.logs.current contains "flush"
+            - evidence.logs.previous contains "flush"
+            - evidence.logs.current contains "chunk"
+            - evidence.logs.previous contains "chunk"
+            - evidence.logs.current contains "ingester"
+            - evidence.logs.previous contains "ingester"
+            - evidence.logs.current contains "object store"
+            - evidence.logs.previous contains "object store"
+            - evidence.logs.current contains "too many streams"
+            - evidence.logs.previous contains "too many streams"
+    prefer_tools: [describe_pod_pvcs, prom_query, get_pod_logs]
+    prefer_steps: [query_memory_usage, query_memory_limit, describe_pod_pvcs]
+    focus: [loki_ingester_memory, chunk_flush_backlog, object_store_latency, stream_cardinality]
+    interpretation: Loki memory pressure may be related to ingestion burst, too many streams, chunk flush backlog, or storage/object-store latency.
+  - id: storage_latency_indirect_oom
+    applies_to:
+      alert_categories: [container_restart_crash, memory_pressure]
+    priority: 70
+    when:
+      any:
+        - evidence.logs.current contains "i/o timeout"
+        - evidence.logs.previous contains "i/o timeout"
+        - evidence.logs.current contains "fsync"
+        - evidence.logs.previous contains "fsync"
+        - evidence.logs.current contains "longhorn"
+        - evidence.logs.previous contains "longhorn"
+        - evidence.logs.current contains "ceph"
+        - evidence.logs.previous contains "ceph"
+        - evidence.logs.current contains "object store timeout"
+        - evidence.logs.previous contains "object store timeout"
+    prefer_tools: [describe_pod_pvcs, get_pod_logs]
+    prefer_steps: [describe_pod_pvcs]
+    focus: [pvc, longhorn_or_rook_ceph_health, write_latency, flush_backlog]
+    interpretation: Storage may not be the direct OOM cause, but slow/degraded storage can cause memory backlog.

@@ -1,0 +1,42 @@
+{{- if and .Values.qdrant.enabled .Values.qdrant.networkPolicy.enabled }}
+# Lock Qdrant to in-cluster callers only — backend pods, the ingestion
+# CronJob, and (optionally) the HTTP MCP server. Everything else is denied.
+# Honors hardening doc #5 (default-deny inside the namespace).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubeastra.qdrantServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeastra.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeastra.qdrant.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Backend pods.
+        # namespaceSelector: {} is REQUIRED on GKE Dataplane V2 (and some
+        # other Cilium-based CNIs) for same-namespace ingress to work.
+        # Without it, the implicit "same namespace" default isn't applied
+        # consistently and traffic is silently dropped despite matching
+        # podSelector. An empty {} matches all namespaces, but the
+        # podSelector still restricts to specific labels.
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              {{- include "kubeastra.backend.selectorLabels" . | nindent 14 }}
+        # RAG ingestion + bootstrap pods (both carry component=rag-ingestion).
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: rag-ingestion
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports:
+        - port: 6333
+          protocol: TCP
+        - port: 6334
+          protocol: TCP
+{{- end }}

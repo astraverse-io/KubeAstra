@@ -1,6 +1,5 @@
-# Personal overrides — ignore local-only .env files
-# .env is intentionally tracked (shared Gemini key + app config)
-# Only ignore local override files
+# Environment / secrets
+.env
 .env.local
 .env.*.local
 
@@ -26,3 +25,6 @@ venv/
 # Test / type-check caches
 .pytest_cache/
 .mypy_cache/
+
+# Local model/runtime caches
+.cache/

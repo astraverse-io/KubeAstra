@@ -1,0 +1,10 @@
+{
+  "id": "crashloop_probe_basic",
+  "prompt": "I have a pod in CrashLoopBackOff in the default namespace. How do I figure out what's wrong?",
+  "expected_output": null,
+  "context": "Generic K8s troubleshooting question. Tests whether the agent walks through standard CrashLoop investigation: describe the pod, check liveness/readiness probe state, look at previous container logs.",
+  "expected_tools": ["investigate_pod", "get_pods"],
+  "must_not_call": ["delete_pod", "rollout_restart", "scale_deployment", "apply_patch"],
+  "tags": ["crashloop", "happy_path", "no_team_context_required"],
+  "notes": "Baseline. Should score well even without team-specific RAG content because the question is generic K8s. If this scores low, the agent loop itself has a problem; if it scores well, content gaps are isolated to team-specific scenarios."
+}

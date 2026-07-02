@@ -1,0 +1,120 @@
+id: dependency_call_timeout
+version: "1.0"
+display_name: Dependency Call Timeout Investigation
+includes:
+  - rca_scoring/dependency_call_timeout_rca.yaml
+supported_alerts:
+  - pattern: DEPENDENCY_CALL_FAILURE
+    fields: [classification.category]
+  - pattern: DependencyCallTimeout, dependency timeout, upstream timeout, client timeout retry
+    fields: [name, labels.alertname, annotations.summary, annotations.description]
+allowed_tools:
+  - describe_pod
+  - get_events
+  - get_pod_logs
+  - prom_query
+safety:
+  readonly: true
+  max_steps: 6
+  blocked_verbs: [create, update, patch, delete, scale, restart, exec]
+llm_policy:
+  mode: advisory_only
+  require_structured_output: true
+  may_select_tools_only_from_allowed_tools: true
+execution_policy:
+  mode: bounded_llm
+  allow_only_playbook_steps: true
+  allow_llm_suggested_steps: true
+  auto_execute_llm_suggestions: false
+  require_human_review_for_new_steps: true
+steps:
+  - id: describe_client_pod
+    tool: describe_pod
+    description: Confirm client pod phase, readiness, restart count, and that failure is not pod-local crash.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+  - id: collect_client_logs
+    tool: get_pod_logs
+    description: Look for dependency timeout, immediate retry, and upstream URL in client logs.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.pod }}"
+      tail_lines: 100
+  - id: collect_upstream_logs
+    tool: get_pod_logs
+    description: Inspect upstream dependency logs for slow responses or errors.
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      pod_name: "{{ alert.labels.upstream_pod }}"
+      tail_lines: 50
+  - id: collect_client_events
+    tool: get_events
+    args:
+      namespace: "{{ alert.labels.namespace }}"
+      involved_object: "{{ alert.labels.pod }}"
+  - id: query_client_cpu_usage
+    tool: prom_query
+    description: Check whether CPU is actually saturated or only elevated as a secondary retry effect.
+    args:
+      template: pod_cpu_usage
+      query: 'rate(container_cpu_usage_seconds_total{namespace="{{ alert.labels.namespace }}", pod="{{ alert.labels.pod }}"}[5m])'
+decision_rules:
+  - id: dependency_timeout_retry_storm_confirmed
+    applies_to:
+      alert_categories: [dependency_call_failure]
+      alert_names: [DependencyCallTimeout]
+    priority: 100
+    when:
+      all:
+        - evidence.logs.current contains "dependency timeout"
+        - evidence.logs.current contains "retrying immediately"
+        - evidence.kubernetes.pod.phase == "Running"
+    prefer_tools: [get_pod_logs, describe_pod]
+    prefer_steps: [collect_client_logs, collect_upstream_logs, describe_client_pod]
+    focus: [client_timeout, retry_loop, upstream_latency]
+    interpretation: Client is failing dependency calls and immediately retrying, creating a retry storm.
+  - id: upstream_slow_response_suspected
+    applies_to:
+      alert_categories: [dependency_call_failure]
+    priority: 95
+    when:
+      any:
+        - evidence.logs.current contains "sleeping before response"
+        - evidence.logs.current contains "slow-dependency received request"
+    prefer_tools: [get_pod_logs]
+    prefer_steps: [collect_upstream_logs, collect_client_logs]
+    focus: [upstream_latency, response_time, dependency_health]
+    interpretation: Upstream dependency appears slow; client timeout may be shorter than upstream response time.
+  - id: cpu_not_primary_cause
+    applies_to:
+      alert_categories: [dependency_call_failure]
+    priority: 90
+    when:
+      all:
+        - evidence.prometheus.pod_cpu_usage_percent < 80
+        - evidence.logs.current contains "dependency timeout"
+    prefer_tools: [get_pod_logs, prom_query]
+    focus: [retry_amplification, timeout_mismatch, not_cpu_saturation]
+    interpretation: CPU is elevated or normal but below saturation; dependency timeout retry loop is the primary cause.
+  - id: client_pod_unhealthy_secondary
+    applies_to:
+      alert_categories: [dependency_call_failure]
+    priority: 80
+    when:
+      any:
+        - evidence.kubernetes.pod.reason in ["CrashLoopBackOff", "Error", "OOMKilled"]
+        - evidence.kubernetes.pod.ready == false
+    prefer_tools: [describe_pod, get_events, get_pod_logs]
+    focus: [pod_state, restart_reason]
+    interpretation: Dependency timeout alert may be secondary to pod health failure.
+remediation_mappings:
+  DependencyCallTimeout:
+    - Compare client timeout to measured upstream latency before changing CPU limits.
+    - Add backoff or circuit breaking instead of immediate retry on dependency failure.
+    - Fix or scale the slow upstream dependency if response time exceeds client timeout.
+    - Inspect upstream pod logs and service health for slow handlers or queue backlog.
+stop_conditions:
+  max_confidence: 0.85
+  max_steps_reached: true
+  root_cause_identified: true

@@ -1,4 +1,4 @@
-"""Merged configuration for Kubeastra MCP Server.
+"""Merged configuration for K8s DevOps MCP Server.
 
 Combines settings from both:
 - mcp-k8s-investigation-agent (kubectl, cluster access, recovery ops)
@@ -34,34 +34,148 @@ class Settings(BaseSettings):
     max_output_bytes: int = 102400  # 100 KB — enough for logs/describe; run_json uses 10 MB
     enable_k8sgpt: bool = False
     enable_audit_log: bool = True
-    audit_log_path: str = "./audit.log"
+    # The backend chart always mounts /app/data as a writable volume for UID
+    # 1000. Local development can override this with AUDIT_LOG_PATH.
+    audit_log_path: str = "/app/data/audit.log"
+    audit_log_max_bytes: int = 10 * 1024 * 1024
+    audit_log_warning_interval_seconds: int = 60
 
     # Recovery operations (disabled by default for safety)
     enable_recovery_operations: bool = False
     max_scale_replicas: int = 100
     max_grace_period_seconds: int = 300
 
+    # Destructive-op dry-run + confirmation token (Feature B).
+    # When True, destructive tools require a two-step ritual:
+    #   1. Call with dry_run=True → returns preview + short-lived token
+    #   2. Call with confirm=True + the token → executes
+    # When False, falls back to legacy confirm=True-only behavior (back-compat).
+    require_destructive_confirmation: bool = True
+    confirmation_token_ttl_seconds: int = 60
+
     # ── Deployment repository settings ────────────────────────────────────────
-    deployment_repo_url: str = "git@github.com:your-org/deployment-provisioning.git"
+    # The internal Ansible deployment repo, indexed into the
+    # ``deployment_repo`` Qdrant collection so the agent can ground its
+    # answers in the actual playbooks/roles/inventory when a user pastes
+    # an Ansible-flavored error. The reindex CronJob clones this on a
+    # schedule; runtime chat never touches GitHub. See plan §10.
+    deployment_repo_url: str = "https://github.com/kubeastra/deployment-provisioning.git"
+    deployment_repo_branch: str = "main"
+    # Walk only this directory inside the repo. Set to "" to walk the
+    # whole repo; defaults to "ansible" so we skip Jenkinsfiles, Docker,
+    # pipelines/, scripts/, powershell/ in v1.
+    deployment_repo_subdir: str = "ansible"
     github_token: Optional[str] = None
 
     # ── LLM provider selection ────────────────────────────────────────────────
-    # "gemini" (default) or "ollama". Add more providers by implementing
-    # services/llm/<name>_provider.py and registering in services/llm/__init__.py.
+    # "gemini" (default) or "ollama". Add more providers under services/llm.
     llm_provider: str = "gemini"
 
     # ── AI / Gemini settings ──────────────────────────────────────────────────
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_timeout_seconds: int = 60
+    # Kept for backwards-compatible /api/models responses; the chat UI no
+    # longer exposes a model selector.
+    gemini_available_models: str = "gemini-3.1-flash-lite"
 
     # ── Ollama settings (local / self-hosted LLM) ─────────────────────────────
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1"
+    # Fallback list when /api/tags is unavailable.
+    ollama_available_models: str = "llama3.1"
+    ollama_auth_token: str = ""
+    ollama_timeout_seconds: int = 120
+    ollama_num_ctx: Optional[int] = None
 
     # ── Vector DB / RAG settings ──────────────────────────────────────────────
-    weaviate_url: str = "http://localhost:8080"
-    weaviate_collection: str = "K8sAnsibleError"
+    # Qdrant replaces the prior Weaviate backend in Phase 1.1. The legacy
+    # WEAVIATE_URL / WEAVIATE_COLLECTION env vars are intentionally NOT
+    # honored — set QDRANT_URL / QDRANT_COLLECTION instead. Stale env vars
+    # are silently ignored thanks to `extra="ignore"` in model_config.
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
+    qdrant_collection: str = "k8s_errors"
+    qdrant_timeout_seconds: float = 10.0
+
+    # Embedding model + its native vector dimension. The dimension MUST
+    # match the model: bumping the model without bumping this number will
+    # cause Qdrant collection creation to fail (or, worse, silent search
+    # mismatches).
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_dim: int = 384
+
+    # ── RAG ingestion (Phase 1.2) ─────────────────────────────────────────────
+    # Path to the YAML config consumed by scripts/reindex.py. Only the
+    # CronJob honors this; the MCP/backend never reads it directly.
+    rag_config: str = "/etc/rag/config.yaml"
+
+    # ── RAG retrieval router (Phase 1.4) ──────────────────────────────────────
+    # Master switch + thresholds for deciding cached / grounded / cold per
+    # chat turn. Tuning these needs production data — start conservative
+    # so we don't return wrong cached answers in early days.
+    rag_router_enabled: bool = True
+    rag_router_top_k: int = 5
+    rag_router_cached_threshold: float = 0.92      # verified runbook only
+    rag_router_grounded_threshold: float = 0.70    # any high-trust collection
+    # Comma-separated list. Lower-trust collections (session_memory) are
+    # intentionally not in the default — they go in once Phase 1.3 promotion
+    # path is wired. ``deployment_repo`` is included by default (Phase 1.5);
+    # the router additionally force-includes it when an Ansible-flavored
+    # error is detected even if an operator removed it here.
+    rag_router_collections: str = "runbook,devops_doc,deployment_repo"
+
+    # ── Phase 1.3 — auto-capture from chats ──────────────────────────────────
+    # Each chat that resolves a real problem is classified by a cheap LLM
+    # call and (when worthy) written to the session_memory Qdrant collection.
+    # Human thumbs-up later promotes the entry to the runbook collection.
+    session_capture_enabled: bool = False              # opt-in until proven on staging
+    session_capture_ttl_days: int = 90                 # unverified entries fade out after this
+    # Soft cap on transcript size sent to the classifier (chars). Keeps
+    # the classifier cheap and reduces the risk of leaked secrets in the
+    # prompt.
+    session_capture_transcript_chars: int = 4000
+    # Redaction patterns are baked into services/rag/redaction.py; this
+    # setting just lets ops disable redaction in a controlled environment
+    # (almost always leave on).
+    session_capture_redact_secrets: bool = True
+
+    # ── Phase 2.3 — Semantic prompt cache (L2) ───────────────────────────────
+    # Before invoking the retrieval router or the LLM, check whether a
+    # similar question was already answered within the lookback window.
+    # If yes (similarity above the strict threshold), return that prior
+    # answer instantly — zero LLM call, zero tool calls. Reuses the
+    # session_memory collection populated by Phase 1.3 capture, so this
+    # only meaningfully kicks in after capture has been running for a
+    # while AND `session_capture_enabled` is also true.
+    prompt_cache_enabled: bool = False
+    prompt_cache_threshold: float = 0.95         # stricter than router (0.70) — we skip the LLM
+    prompt_cache_lookback_hours: int = 24        # only consider very recent captures
+    prompt_cache_top_k: int = 5                  # how many candidates to inspect before giving up
+
+    # ── Phase 3.0 — Proactive cluster triage ─────────────────────────────────
+    # When enabled, the chat stream emits a "triage_greet" event on the
+    # FIRST message of a session — a one-screen summary of CrashLooping
+    # pods, pending pods, and recent Warning events on the user's current
+    # cluster context. Reuses existing kubectl wrappers; no new pods or
+    # background workers (see [Phase 3.1 cluster watcher] for that).
+    # Off by default so existing deployments don't suddenly start
+    # emitting summaries.
+    enable_proactive_triage: bool = False
+    # Comma-separated namespace list, or "*" for all namespaces.
+    proactive_triage_namespaces: str = "*"
+    # Window (minutes) for "recent" Warning events in the greeting.
+    proactive_triage_event_lookback_min: int = 10
+
+    # ── Tool result summarization (Phase 2.1) ─────────────────────────────────
+    # When tool outputs (logs, events, describe) exceed the threshold, run them
+    # through a summarizer before they reach the main LLM context. Saves tokens
+    # and improves answer quality on noisy clusters. Raw output is always
+    # preserved for the UI; only LLM consumers should prefer the summary.
+    enable_log_summarization: bool = False
+    log_summarization_threshold_bytes: int = 2048
+    log_summarization_use_llm: bool = True   # False = heuristic-only (free, deterministic)
+    log_summarization_max_tokens: int = 400
 
     # ── Database (optional, inherited from devops-ai-assistant) ───────────────
     database_url: str = "postgresql://devops_ai:devops_ai_password@localhost:5432/devops_ai_db"
@@ -90,10 +204,18 @@ class Settings(BaseSettings):
             raise ValueError("ALLOWED_NAMESPACES must contain at least one namespace")
         if self.kubectl_timeout_seconds <= 0:
             raise ValueError("KUBECTL_TIMEOUT_SECONDS must be positive")
+        if self.ollama_timeout_seconds <= 0:
+            raise ValueError("OLLAMA_TIMEOUT_SECONDS must be positive")
+        if self.gemini_timeout_seconds <= 0:
+            raise ValueError("GEMINI_TIMEOUT_SECONDS must be positive")
         if self.max_log_tail_lines <= 0 or self.max_log_tail_lines > 1000:
             raise ValueError("MAX_LOG_TAIL_LINES must be between 1 and 1000")
         if self.max_output_bytes <= 0:
             raise ValueError("MAX_OUTPUT_BYTES must be positive")
+        if self.audit_log_max_bytes <= 0:
+            raise ValueError("AUDIT_LOG_MAX_BYTES must be positive")
+        if self.audit_log_warning_interval_seconds <= 0:
+            raise ValueError("AUDIT_LOG_WARNING_INTERVAL_SECONDS must be positive")
 
 
 @lru_cache()
