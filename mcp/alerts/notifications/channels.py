@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -33,10 +34,15 @@ class WebhookNotificationConfig:
 
 
 def _session_url(investigation_id: str) -> str:
-    """Deep link to the shareable investigation, if PUBLIC_BASE_URL is set."""
+    """Deep link to the alerts page for the investigation, if PUBLIC_BASE_URL is set.
+
+    The frontend renders investigations on the ``/alerts`` list-and-sidebar
+    page rather than a per-investigation route. The ``investigation`` query
+    param is what /alerts uses to auto-open a specific row in its sidebar.
+    """
     base = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
     if base and investigation_id:
-        return f"{base}/investigations/{investigation_id}"
+        return f"{base}/alerts?investigation={investigation_id}"
     return ""
 
 
@@ -137,7 +143,11 @@ class SlackNotificationChannel(NotificationChannel):
 
         try:
             payload = build_slack_payload(investigation)
-            _post_slack(webhook_url, payload)
+            # _post_slack uses stdlib urllib (blocking I/O). Hand it off to a
+            # thread so a slow or hung Slack webhook cannot stall the alerts
+            # event loop or block the dispatcher's iteration over other
+            # channels (PagerDuty, email, ...).
+            await asyncio.to_thread(_post_slack, webhook_url, payload)
             logger.info(
                 "slack_notify_ok",
                 extra={

@@ -110,7 +110,10 @@ def test_payload_appends_deep_link_when_public_base_url_set(monkeypatch):
     assert context["type"] == "context"
     text = context["elements"][0]["text"]
     assert "open investigation" in text
-    assert "https://kubeastra.example.com/investigations/" in text
+    # /alerts is the actual frontend route (list + sidebar drill-down); the
+    # `investigation` query param auto-opens the row. There is no
+    # /investigations/<id> route.
+    assert "https://kubeastra.example.com/alerts?investigation=inv_" in text
 
 
 def test_payload_omits_deep_link_without_public_base_url(monkeypatch):
@@ -177,3 +180,23 @@ def test_channel_strips_whitespace_webhook_url():
     with patch("alerts.notifications.channels._post_slack") as fake_post:
         _run(channel.send_investigation_summary(_make_investigation()))
     fake_post.assert_not_called()
+
+
+def test_channel_offloads_slack_post_to_thread():
+    """The Slack POST is blocking urllib — it MUST NOT run on the event loop.
+
+    A hung Slack webhook would otherwise stall the alerts dispatcher for up
+    to _SLACK_TIMEOUT_SECS (8s) per channel iteration.
+    """
+    channel = SlackNotificationChannel(
+        WebhookNotificationConfig(webhook_url="https://hooks.slack.com/services/T/B/xyz")
+    )
+    with patch(
+        "alerts.notifications.channels.asyncio.to_thread",
+        wraps=asyncio.to_thread,
+    ) as fake_to_thread:
+        with patch("alerts.notifications.channels._post_slack") as fake_post:
+            _run(channel.send_investigation_summary(_make_investigation()))
+    fake_to_thread.assert_called_once()
+    # First positional arg must be the sync _post_slack function.
+    assert fake_to_thread.call_args.args[0] is fake_post

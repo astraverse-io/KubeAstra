@@ -234,6 +234,55 @@ def test_factory_dispatches_to_openai(monkeypatch):
     assert provider.enabled is True
 
 
+# ── Pricing / per-model cache rate ────────────────────────────────────────────
+
+
+def test_pricing_uses_anthropic_cache_rate_when_specified():
+    """Claude cache reads should be billed at 10%, not the Gemini default 25%."""
+    from services.llm.pricing import TokenUsage, compute_cost
+
+    # 1000 cached input tokens on claude-opus-4-8.
+    # Fresh rate: $0.015 / 1K. 10% cache discount → $0.0015 / 1K.
+    # Expected: 1000 * 0.015 * 0.10 / 1000 = $0.0015
+    usage = TokenUsage(
+        tokens_in=1000,
+        cached_tokens_in=1000,
+        tokens_out=0,
+        model="claude-opus-4-8",
+    )
+    assert compute_cost(usage) == pytest.approx(0.0015)
+
+
+def test_pricing_uses_openai_cache_rate_when_specified():
+    """OpenAI cached prompt tokens should be billed at 50%."""
+    from services.llm.pricing import TokenUsage, compute_cost
+
+    # 1000 cached input tokens on gpt-4o.
+    # Fresh rate: $0.0025 / 1K. 50% cache discount → $0.00125 / 1K.
+    usage = TokenUsage(
+        tokens_in=1000,
+        cached_tokens_in=1000,
+        tokens_out=0,
+        model="gpt-4o",
+    )
+    assert compute_cost(usage) == pytest.approx(0.00125)
+
+
+def test_pricing_falls_back_to_default_cache_rate():
+    """Models without a `cache` key use DEFAULT_CACHE_RATE (Gemini's 25%)."""
+    from services.llm.pricing import TokenUsage, compute_cost
+
+    # gemini-2.5-flash intentionally has no `cache` key → uses default 25%.
+    # Fresh rate: $0.000075 / 1K. 25% → $0.00001875 / 1K.
+    usage = TokenUsage(
+        tokens_in=1000,
+        cached_tokens_in=1000,
+        tokens_out=0,
+        model="gemini-2.5-flash",
+    )
+    assert compute_cost(usage) == pytest.approx(0.00001875)
+
+
 def test_factory_rejects_unknown_provider(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "bogus")
     from config.settings import get_settings
