@@ -1,4 +1,4 @@
-"""Merged configuration for K8s DevOps MCP Server.
+"""Merged configuration for KubeAstra MCP Server.
 
 Combines settings from both:
 - mcp-k8s-investigation-agent (kubectl, cluster access, recovery ops)

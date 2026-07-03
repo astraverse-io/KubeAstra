@@ -1,6 +1,6 @@
 """HTTP MCP transport package.
 
-Exposes the shared K8s DevOps MCP server over Streamable HTTP.
+Exposes the shared KubeAstra MCP server over Streamable HTTP.
 
 Usage:
     from http_mcp.http_server import app, main
@@ -10,6 +10,6 @@ Usage:
 """
 
 __version__ = "1.0.0"
-__author__ = "K8s DevOps AI Assistant"
+__author__ = "KubeAstra AI Assistant"
 
 __all__ = ["http_server", "http_client"]

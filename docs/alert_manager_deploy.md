@@ -1,7 +1,7 @@
 # Alert Manager — Deployment & Operations
 
 Practical guide to deploying the alert-manager subsystem (merged into the
-K8s DevOps Assistant) in a real cluster, wiring Alertmanager to it, and
+KubeAstra Assistant) in a real cluster, wiring Alertmanager to it, and
 scraping its metrics.
 
 This guide assumes you have already deployed the assistant Helm chart at least
@@ -23,7 +23,7 @@ gated by a shared bearer token, surfaced into the backend pod via the
 openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 40 && echo
 ```
 
-Run it twice — keep one for DEV (`k8s-ai-test`) and one for PROD (`k8s-devops`).
+Run it twice — keep one for DEV (`k8s-ai-test`) and one for PROD (`kubeastra`).
 Store both in your password manager and your gitignored `values-secrets.yaml`.
 
 ### Set the tokens via namespace-driven Helm values (recommended)
@@ -35,7 +35,7 @@ single `values-secrets.yaml` covers every environment without per-env files:
 # values-secrets.yaml   (gitignored)
 secrets:
   alertWebhookToken_Dev:  "<paste DEV token>"     # used when --namespace k8s-ai-test
-  alertWebhookToken_Prod: "<paste PROD token>"    # used when --namespace k8s-devops
+  alertWebhookToken_Prod: "<paste PROD token>"    # used when --namespace kubeastra
 ```
 
 Then install/upgrade with `--namespace` as the single switch:
@@ -47,7 +47,7 @@ helm upgrade --install kubeastra ./helm/kubeastra \
 
 # PROD — same command, only the namespace changes
 helm upgrade --install kubeastra ./helm/kubeastra \
-  --namespace k8s-devops -f values-secrets.yaml
+  --namespace kubeastra -f values-secrets.yaml
 ```
 
 The lookup order honored by the `kubeastra.alertWebhookToken`

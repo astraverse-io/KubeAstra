@@ -1,4 +1,4 @@
-"""FastAPI backend for the K8s DevOps Web UI.
+"""FastAPI backend for the KubeAstra UI.
 
 Imports tool functions directly from mcp (via MCP_PATH env var)
 so there is zero code duplication.
@@ -147,7 +147,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="K8s DevOps Assistant API",
+    title="KubeAstra Assistant API",
     description="REST API exposing all 33 mcp tools for team self-service",
     version="1.0.0",
     lifespan=lifespan,

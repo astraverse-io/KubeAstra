@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage 1 DeepEval runner for the K8s DevOps Assistant.
+"""Stage 1 DeepEval runner for the KubeAstra Assistant.
 
 Sends each scenario from ``tests/agent_scenarios/calibration/`` to the live
 chat endpoint, captures the response, reads the persisted ``rag_decision``
@@ -711,7 +711,7 @@ def _check_backend(backend_url: str, timeout: float) -> bool:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="DeepEval Stage 1 runner for the K8s DevOps Assistant.",
+        description="DeepEval Stage 1 runner for the KubeAstra Assistant.",
     )
     parser.add_argument(
         "--backend-url",

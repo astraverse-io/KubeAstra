@@ -136,9 +136,9 @@ helm version --short                    # expect: v3.13.0+
 
 # 2. Cluster access
 kubectl cluster-info                    # should print the control plane URL
-kubectl auth can-i create deployments -n k8s-devops    # → "yes"
-kubectl auth can-i create cronjobs -n k8s-devops       # → "yes"
-kubectl auth can-i create statefulsets -n k8s-devops   # → "yes"
+kubectl auth can-i create deployments -n kubeastra    # → "yes"
+kubectl auth can-i create cronjobs -n kubeastra       # → "yes"
+kubectl auth can-i create statefulsets -n kubeastra   # → "yes"
 
 # 3. Default StorageClass exists (the chart needs one for Qdrant PVC)
 kubectl get storageclass
@@ -150,7 +150,7 @@ kubectl get pods -n kube-system | grep -E 'cilium|calico|gke-cilium'
 # GKE/EKS native CNIs enforce NetworkPolicy. Older kops/kubeadm may not.
 
 # 5. Image registry reachable from the cluster
-# Default chart uses: ghcr.io/kubeastra/k8s-devops-{backend,frontend}
+# Default chart uses: ghcr.io/kubeastra/kubeastra-{backend,frontend}
 # If your nodes can't pull from that, override backend.image.repository and
 # frontend.image.repository in values to a registry they CAN reach.
 ```
@@ -172,7 +172,7 @@ If the chart is already deployed and running, skip to Step 1. Otherwise:
 
 ```bash
 # Namespace
-kubectl create namespace k8s-devops
+kubectl create namespace kubeastra
 
 # Secrets: Gemini API key, kubeconfig the agent uses for kubectl, MCP bearer token.
 # These are referenced from the chart Secret template
@@ -197,7 +197,7 @@ chmod 600 values-secrets.yaml
 ```yaml
 # my-values.yaml — minimum to get the chart running. We layer feature
 # flags on top in later steps.
-namespace: k8s-devops
+namespace: kubeastra
 
 backend:
   image:
@@ -217,13 +217,13 @@ frontend:
 ### 0c. Install
 
 ```bash
-helm install k8s-devops ./helm/kubeastra \
-  -n k8s-devops \
+helm install kubeastra ./helm/kubeastra \
+  -n kubeastra \
   -f my-values.yaml \
   -f values-secrets.yaml          # only if you used Method B
 
 # Watch pods come up (~30-60s)
-kubectl get pods -n k8s-devops -w
+kubectl get pods -n kubeastra -w
 ```
 
 **Expected** after ~1 minute:
@@ -239,15 +239,15 @@ Note: no `qdrant-*` pod yet — that comes in Step 1.
 ### 0d. Get the frontend URL
 
 ```bash
-kubectl get svc -n k8s-devops kubeastra-frontend
+kubectl get svc -n kubeastra kubeastra-frontend
 # Look at EXTERNAL-IP (LoadBalancer). Browse to http://<ip>:3000
 # If still <pending>, your cloud's LB hasn't provisioned yet — wait 1-2 min
-# or use port-forward: kubectl port-forward svc/kubeastra-frontend 3000:3000 -n k8s-devops
+# or use port-forward: kubectl port-forward svc/kubeastra-frontend 3000:3000 -n kubeastra
 ```
 
 Open the URL → confirm chat works (ask anything; it'll respond using just Gemini, no RAG yet).
 
-> **Sanity check:** if you see "no LLM provider configured" or auth errors, your `geminiApiKey` secret didn't take. Re-run `kubectl describe secret kubeastra-secrets -n k8s-devops` and confirm `GEMINI_API_KEY` is listed.
+> **Sanity check:** if you see "no LLM provider configured" or auth errors, your `geminiApiKey` secret didn't take. Re-run `kubectl describe secret kubeastra-secrets -n kubeastra` and confirm `GEMINI_API_KEY` is listed.
 
 ---
 
@@ -289,33 +289,33 @@ backend:
 ### 1b. Apply
 
 ```bash
-helm upgrade k8s-devops ./helm/kubeastra \
-  -n k8s-devops -f my-values.yaml -f values-secrets.yaml
+helm upgrade kubeastra ./helm/kubeastra \
+  -n kubeastra -f my-values.yaml -f values-secrets.yaml
 
 # Wait for Qdrant
-kubectl rollout status statefulset/kubeastra-qdrant -n k8s-devops --timeout=120s
+kubectl rollout status statefulset/kubeastra-qdrant -n kubeastra --timeout=120s
 ```
 
 ### 1c. Verify Qdrant is healthy
 
 ```bash
 # Pod up
-kubectl get pods -n k8s-devops -l app.kubernetes.io/component=qdrant
+kubectl get pods -n kubeastra -l app.kubernetes.io/component=qdrant
 # NAME                              READY   STATUS    RESTARTS   AGE
 # kubeastra-qdrant-0     1/1     Running   0          1m
 
 # PVC bound
-kubectl get pvc -n k8s-devops -l app.kubernetes.io/component=qdrant
+kubectl get pvc -n kubeastra -l app.kubernetes.io/component=qdrant
 # NAME                                  STATUS   VOLUME    CAPACITY   ACCESS MODES
 # data-kubeastra-qdrant-0    Bound    pvc-xxx   5Gi        RWO
 
 # Service reachable
-kubectl exec -n k8s-devops kubeastra-qdrant-0 -- \
+kubectl exec -n kubeastra kubeastra-qdrant-0 -- \
   curl -s http://localhost:6333/readyz
 # Expected: "all shards are ready"
 
 # Collections endpoint returns empty list (we'll fill it next)
-kubectl exec -n k8s-devops kubeastra-qdrant-0 -- \
+kubectl exec -n kubeastra kubeastra-qdrant-0 -- \
   curl -s http://localhost:6333/collections | head -c 200
 # Expected: {"result":{"collections":[]},"status":"ok",...}
 ```
@@ -323,7 +323,7 @@ kubectl exec -n k8s-devops kubeastra-qdrant-0 -- \
 ### 1d. Confirm the backend can reach Qdrant
 
 ```bash
-kubectl exec -n k8s-devops deploy/kubeastra-backend -- \
+kubectl exec -n kubeastra deploy/kubeastra-backend -- \
   env | grep QDRANT
 # Expected:
 # QDRANT_URL=http://kubeastra-qdrant:6333
@@ -331,7 +331,7 @@ kubectl exec -n k8s-devops deploy/kubeastra-backend -- \
 # QDRANT_TIMEOUT_SECONDS=10
 
 # Send a chat that should produce a cold router decision (nothing indexed yet)
-kubectl port-forward -n k8s-devops svc/kubeastra-backend 8000:8000 &
+kubectl port-forward -n kubeastra svc/kubeastra-backend 8000:8000 &
 sleep 2
 curl -sS -X POST http://localhost:8000/api/chat \
   -H 'Content-Type: application/json' \
@@ -381,7 +381,7 @@ kubectl describe pod | grep -A5 Events
 EOF
 
 # Make it visible to the CronJob (chart mounts it at /knowledge)
-kubectl create configmap team-runbooks --from-file=./team-runbooks/ -n k8s-devops
+kubectl create configmap team-runbooks --from-file=./team-runbooks/ -n kubeastra
 ```
 
 ### Add to `my-values.yaml`
@@ -416,7 +416,7 @@ Skip the ConfigMap. Instead:
 # 1. Create a Secret holding your GitHub PAT (only needed for private repos)
 kubectl create secret generic runbooks-token \
   --from-literal=token=ghp_xxx \
-  -n k8s-devops
+  -n kubeastra
 ```
 
 ```yaml
@@ -444,24 +444,24 @@ rag:
 ### 2c. Apply and trigger the first ingest
 
 ```bash
-helm upgrade k8s-devops ./helm/kubeastra \
-  -n k8s-devops -f my-values.yaml -f values-secrets.yaml
+helm upgrade kubeastra ./helm/kubeastra \
+  -n kubeastra -f my-values.yaml -f values-secrets.yaml
 
 # Confirm the CronJob was created
-kubectl get cronjob -n k8s-devops
+kubectl get cronjob -n kubeastra
 # NAME                                       SCHEDULE     SUSPEND   ACTIVE
 # kubeastra-rag-ingestion         0 2 * * *    False     0
 
 # Confirm the rag-config ConfigMap was rendered correctly
-kubectl get configmap -n k8s-devops kubeastra-rag-config -o yaml | tail -20
+kubectl get configmap -n kubeastra kubeastra-rag-config -o yaml | tail -20
 # Should show your source list plus chunking section
 
 # Don't wait for 02:00 — fire the bootstrap run now
 kubectl create job --from=cronjob/kubeastra-rag-ingestion \
-  rag-bootstrap-docs -n k8s-devops
+  rag-bootstrap-docs -n kubeastra
 
 # Watch logs
-kubectl logs -f -n k8s-devops job/rag-bootstrap-docs
+kubectl logs -f -n kubeastra job/rag-bootstrap-docs
 ```
 
 **Expected log progression:**
@@ -480,7 +480,7 @@ The first run downloads the ~85 MB embedding model. Subsequent runs use the cach
 ### 2d. Try a chat — confirm router fires
 
 ```bash
-kubectl port-forward -n k8s-devops svc/kubeastra-backend 8000:8000 &
+kubectl port-forward -n kubeastra svc/kubeastra-backend 8000:8000 &
 sleep 2
 curl -sS -X POST http://localhost:8000/api/chat \
   -H 'Content-Type: application/json' \
@@ -508,7 +508,7 @@ kill %1
 You can also watch the audit log live:
 
 ```bash
-kubectl exec -n k8s-devops deploy/kubeastra-backend -- \
+kubectl exec -n kubeastra deploy/kubeastra-backend -- \
   tail -f /app/audit.log | grep RAG_ROUTE
 ```
 
@@ -519,8 +519,8 @@ kubectl exec -n k8s-devops deploy/kubeastra-backend -- \
 If you don't want to walk through every step below, the chart now ships with `values-production.yaml` that flips every Phase 1 feature on in one go. After Step 0 (chart bootstrapped + namespace + base secrets), this single command replaces Steps 1–5 below:
 
 ```bash
-helm upgrade k8s-devops ./helm/kubeastra \
-  -n k8s-devops --reuse-values \
+helm upgrade kubeastra ./helm/kubeastra \
+  -n kubeastra --reuse-values \
   -f helm/kubeastra/values-production.yaml \
   --set deploymentRepo.token=ghp_xxxxxxxxxxxxxxxxxxxx
 ```
@@ -534,7 +534,7 @@ What it does automatically:
 - Enables session capture + feedback flywheel (`sessionCaptureEnabled=true`)
 - Fires a one-shot **bootstrap Job** as a post-install/post-upgrade hook so the first reindex starts immediately. Watch with:
   ```bash
-  kubectl logs -f -n k8s-devops job/kubeastra-rag-bootstrap
+  kubectl logs -f -n kubeastra job/kubeastra-rag-bootstrap
   ```
 
 Use the manual steps below if you'd rather enable features piecemeal, or to learn the underlying knobs.
@@ -562,10 +562,10 @@ Then:
 ```bash
 kubectl create secret generic deployment-repo-token \
   --from-literal=token=ghp_xxxxxxxxxxxxxxxxxxxxxxxx \
-  -n k8s-devops
+  -n kubeastra
 
 # Confirm
-kubectl describe secret deployment-repo-token -n k8s-devops | grep token
+kubectl describe secret deployment-repo-token -n kubeastra | grep token
 # token:  44 bytes      ← length will vary by token type
 ```
 
@@ -584,17 +584,17 @@ deploymentRepo:
 ### 3c. Apply
 
 ```bash
-helm upgrade k8s-devops ./helm/kubeastra \
-  -n k8s-devops -f my-values.yaml -f values-secrets.yaml
+helm upgrade kubeastra ./helm/kubeastra \
+  -n kubeastra -f my-values.yaml -f values-secrets.yaml
 
 # Verify the rag-config ConfigMap now includes the deployment-repo source
-kubectl get cm kubeastra-rag-config -n k8s-devops -o jsonpath='{.data.config\.yaml}'
+kubectl get cm kubeastra-rag-config -n kubeastra -o jsonpath='{.data.config\.yaml}'
 # Expected: sources: list now contains a git_repo entry with
 #   url, branch, subdir: ansible, emit_role_aggregates: true,
 #   collection: deployment_repo
 
 # Verify the CronJob env now includes GITHUB_TOKEN
-kubectl get cronjob kubeastra-rag-ingestion -n k8s-devops \
+kubectl get cronjob kubeastra-rag-ingestion -n kubeastra \
   -o yaml | grep -A4 GITHUB_TOKEN
 # Should show secretKeyRef -> deployment-repo-token / token
 ```
@@ -603,9 +603,9 @@ kubectl get cronjob kubeastra-rag-ingestion -n k8s-devops \
 
 ```bash
 kubectl create job --from=cronjob/kubeastra-rag-ingestion \
-  rag-bootstrap-deployrepo -n k8s-devops
+  rag-bootstrap-deployrepo -n kubeastra
 
-kubectl logs -f -n k8s-devops job/rag-bootstrap-deployrepo
+kubectl logs -f -n kubeastra job/rag-bootstrap-deployrepo
 ```
 
 **Expected progression** (this run is ~10–15 minutes):
@@ -624,12 +624,12 @@ INGEST_SUMMARY {"discovered": 1365, "chunks_seen": 4240, "new": 4240, "skipped":
 
 ```bash
 # Point count
-kubectl exec -n k8s-devops kubeastra-qdrant-0 -- \
+kubectl exec -n kubeastra kubeastra-qdrant-0 -- \
   curl -s http://localhost:6333/collections/deployment_repo | jq '.result.points_count'
 # Expected: ~4200
 
 # Try an Ansible error paste
-kubectl port-forward -n k8s-devops svc/kubeastra-backend 8000:8000 &
+kubectl port-forward -n kubeastra svc/kubeastra-backend 8000:8000 &
 sleep 2
 curl -sS -X POST http://localhost:8000/api/chat \
   -H 'Content-Type: application/json' \
@@ -678,12 +678,12 @@ backend:
 ### 4b. Apply
 
 ```bash
-helm upgrade k8s-devops ./helm/kubeastra \
-  -n k8s-devops -f my-values.yaml -f values-secrets.yaml
+helm upgrade kubeastra ./helm/kubeastra \
+  -n kubeastra -f my-values.yaml -f values-secrets.yaml
 
 # Backend picks up env changes on pod restart
-kubectl rollout restart deploy/kubeastra-backend -n k8s-devops
-kubectl rollout status deploy/kubeastra-backend -n k8s-devops --timeout=60s
+kubectl rollout restart deploy/kubeastra-backend -n kubeastra
+kubectl rollout status deploy/kubeastra-backend -n kubeastra --timeout=60s
 ```
 
 ### 4c. How the flywheel works at runtime
@@ -703,11 +703,11 @@ kubectl rollout status deploy/kubeastra-backend -n k8s-devops --timeout=60s
 # Generate some chat traffic via the UI
 
 # Track session_memory growth
-watch -n 10 'kubectl exec -n k8s-devops kubeastra-qdrant-0 -- \
+watch -n 10 'kubectl exec -n kubeastra kubeastra-qdrant-0 -- \
   curl -s http://localhost:6333/collections/session_memory | jq .result.points_count'
 
 # After a few thumbs-ups, watch runbook grow + session_memory shrink
-watch -n 10 'kubectl exec -n k8s-devops kubeastra-qdrant-0 -- \
+watch -n 10 'kubectl exec -n kubeastra kubeastra-qdrant-0 -- \
   bash -c "curl -s http://localhost:6333/collections/runbook | jq .result.points_count; \
            curl -s http://localhost:6333/collections/session_memory | jq .result.points_count"'
 ```
@@ -755,7 +755,7 @@ sqlite3 /app/data/chat_history.db \
 
 **To verify it's hitting:** after the team uses it for a few days, grep backend logs:
 ```bash
-kubectl logs -n k8s-devops -l app.kubernetes.io/component=backend \
+kubectl logs -n kubeastra -l app.kubernetes.io/component=backend \
   --since=24h | grep -E "prompt_cache_hit|kb_route.*cached"
 ```
 
@@ -790,7 +790,7 @@ Two things happen automatically at backend pod startup that affect Phase 1-3 fea
 **1. RAG collection bootstrap.** `main.py:_bootstrap_rag_collections` runs in the FastAPI lifespan hook. It connects to Qdrant and calls `ensure_collection_for` on `runbook`, `devops_doc`, `deployment_repo`, `session_memory`. Without this, the first chat used to spam 404s for any collection that hadn't been touched yet (e.g. `runbook` is empty until the first thumbs-up). Now they always exist.
 
 ```
-kubectl logs -n k8s-devops -l app.kubernetes.io/component=backend | grep "RAG bootstrap"
+kubectl logs -n kubeastra -l app.kubernetes.io/component=backend | grep "RAG bootstrap"
 # Expect: "RAG bootstrap: ensured runbook, devops_doc, deployment_repo, session_memory"
 ```
 
@@ -821,11 +821,11 @@ qdrant:
 ```
 
 ```bash
-helm upgrade k8s-devops ./helm/kubeastra \
-  -n k8s-devops -f my-values.yaml -f values-secrets.yaml
+helm upgrade kubeastra ./helm/kubeastra \
+  -n kubeastra -f my-values.yaml -f values-secrets.yaml
 
 # Verify the policy exists
-kubectl get networkpolicy -n k8s-devops
+kubectl get networkpolicy -n kubeastra
 # NAME                              POD-SELECTOR
 # kubeastra-qdrant       app.kubernetes.io/component=qdrant
 ```
@@ -834,11 +834,11 @@ kubectl get networkpolicy -n k8s-devops
 
 ```bash
 kubectl run -it --rm test --image=curlimages/curl --restart=Never \
-  -n k8s-devops -- curl -m 5 http://kubeastra-qdrant:6333/readyz
+  -n kubeastra -- curl -m 5 http://kubeastra-qdrant:6333/readyz
 # Should hang and exit with timeout — that's correct (denied)
 
 # Confirm the backend can still reach it
-kubectl exec -n k8s-devops deploy/kubeastra-backend -- \
+kubectl exec -n kubeastra deploy/kubeastra-backend -- \
   curl -s -m 5 http://kubeastra-qdrant:6333/readyz
 # Should print: "all shards are ready"
 ```
@@ -849,7 +849,7 @@ kubectl exec -n k8s-devops deploy/kubeastra-backend -- \
 
 ```bash
 kubectl create secret generic qdrant-api-key \
-  --from-literal=apiKey=$(openssl rand -hex 32) -n k8s-devops
+  --from-literal=apiKey=$(openssl rand -hex 32) -n kubeastra
 ```
 
 ```yaml
@@ -881,7 +881,7 @@ If you want belt-and-braces backups:
 
 ```bash
 # One-off snapshot of a collection (writes to the PVC)
-kubectl exec -n k8s-devops kubeastra-qdrant-0 -- \
+kubectl exec -n kubeastra kubeastra-qdrant-0 -- \
   curl -X POST http://localhost:6333/collections/devops_doc/snapshots
 # Snapshots land in /qdrant/storage/snapshots/<collection>/
 # Copy them out via kubectl cp, or use Velero for cluster-wide PVC snapshots.
@@ -895,7 +895,7 @@ Defaults are conservative guesses. Tune from actual traffic.
 
 ```bash
 # Collect a week of decisions
-kubectl exec -n k8s-devops deploy/kubeastra-backend -- \
+kubectl exec -n kubeastra deploy/kubeastra-backend -- \
   tail -10000 /app/audit.log | grep RAG_ROUTE > /tmp/router.log
 
 # How often is mode=cold despite a high top_score? Those are misses you
@@ -905,7 +905,7 @@ awk -F'|' '/mode=cold/ {print $4}' /tmp/router.log | \
 
 # If that count is high (>10% of total cold decisions), drop the threshold:
 kubectl set env deploy/kubeastra-backend \
-  RAG_ROUTER_GROUNDED_THRESHOLD=0.65 -n k8s-devops
+  RAG_ROUTER_GROUNDED_THRESHOLD=0.65 -n kubeastra
 # Env-driven; no restart needed.
 
 # For Phase 1.5 specifically, watch for ansible_detected=true | mode=cold —
@@ -919,10 +919,10 @@ grep 'ansible_detected=true.*mode=cold' /tmp/router.log | wc -l
 
 | Check | Command | Pass criterion |
 |---|---|---|
-| All pods Running | `kubectl get pods -n k8s-devops` | backend, frontend, qdrant-0 all `1/1 Running` |
+| All pods Running | `kubectl get pods -n kubeastra` | backend, frontend, qdrant-0 all `1/1 Running` |
 | Qdrant ready | `kubectl exec ... qdrant-0 -- curl -s localhost:6333/readyz` | `all shards are ready` |
 | Collections exist | `kubectl exec ... -- curl -s localhost:6333/collections` | JSON includes `devops_doc`, `deployment_repo` (+ `runbook` / `session_memory` after captures) |
-| Doc ingestion ran | `kubectl get jobs -n k8s-devops` | Last `rag-*` job: `1/1` completed |
+| Doc ingestion ran | `kubectl get jobs -n kubeastra` | Last `rag-*` job: `1/1` completed |
 | Deployment repo populated | `... /collections/deployment_repo \| jq .result.points_count` | `> 4000` |
 | Backend env wired | `kubectl exec ... backend -- env \| grep QDRANT_URL` | `http://kubeastra-qdrant:6333` |
 | Router is firing | tail audit log, grep `RAG_ROUTE` | Mix of `mode=grounded` / `mode=cold` |
@@ -930,7 +930,7 @@ grep 'ansible_detected=true.*mode=cold' /tmp/router.log | wc -l
 | Capture is working | `... /collections/session_memory \| jq .result.points_count` after some chats | `> 0` |
 | Cached path fires | After thumbs-ups, repeat the question, grep `mode=cached` | Match |
 | NetworkPolicy enforced | `kubectl run test ... -- curl qdrant:6333/readyz` from unrelated pod | Hangs/timeouts |
-| CronJob scheduled | `kubectl get cronjob -n k8s-devops` | `SCHEDULE` shows `0 2 * * *`, `SUSPEND False` |
+| CronJob scheduled | `kubectl get cronjob -n kubeastra` | `SCHEDULE` shows `0 2 * * *`, `SUSPEND False` |
 
 ---
 
@@ -940,7 +940,7 @@ Here's what your `my-values.yaml` should look like with everything enabled. Drop
 
 ```yaml
 # ── my-values.yaml — full Phase 1 config ──────────────────────────────────────
-namespace: k8s-devops
+namespace: kubeastra
 
 # ── Backend ───────────────────────────────────────────────────────────────────
 backend:
@@ -1031,7 +1031,7 @@ secrets:
 #!/usr/bin/env bash
 # Run from the repo root. Idempotent — re-running is safe.
 set -euo pipefail
-NS=k8s-devops
+NS=kubeastra
 CHART=./helm/kubeastra
 
 # ── Prereqs ─────────────────────────────────────────────────────────────────
@@ -1075,7 +1075,7 @@ kubectl create secret generic deployment-repo-token \
 
 # ── 1-5. Full values ────────────────────────────────────────────────────────
 cat > /tmp/my-values.yaml <<'EOF'
-namespace: k8s-devops
+namespace: kubeastra
 backend:
   image: { repository: ghcr.io/kubeastra/kubeastra-backend, tag: "main-b174261" }
   config:
@@ -1107,7 +1107,7 @@ deploymentRepo:
 EOF
 
 # ── Install / upgrade ───────────────────────────────────────────────────────
-helm upgrade --install k8s-devops "$CHART" \
+helm upgrade --install kubeastra "$CHART" \
   -n "$NS" -f /tmp/my-values.yaml -f /tmp/values-secrets.yaml
 
 # ── Wait for pods ───────────────────────────────────────────────────────────
@@ -1138,19 +1138,19 @@ kubectl get svc kubeastra-frontend -n "$NS" \
 ### "Pod stuck in Pending" — Qdrant won't schedule
 
 ```bash
-kubectl describe pod -n k8s-devops kubeastra-qdrant-0 | tail -30
+kubectl describe pod -n kubeastra kubeastra-qdrant-0 | tail -30
 ```
 
 Most likely causes:
 
 - **No default StorageClass.** Set explicitly: `--set qdrant.storage.storageClassName=<your-sc-name>`. Find candidates with `kubectl get sc`.
-- **PVC can't bind** — `kubectl get pvc -n k8s-devops` shows `Pending`. Your StorageClass may require manual provisioning (older NFS provisioners). Switch to a dynamic provisioner.
+- **PVC can't bind** — `kubectl get pvc -n kubeastra` shows `Pending`. Your StorageClass may require manual provisioning (older NFS provisioners). Switch to a dynamic provisioner.
 - **Node selectors / taints** — if you set `qdrant.nodeSelector`, confirm a matching node exists with `kubectl get nodes --show-labels`.
 
 ### "Pod stuck in ImagePullBackOff"
 
 ```bash
-kubectl describe pod -n k8s-devops <pod> | grep -A5 Events
+kubectl describe pod -n kubeastra <pod> | grep -A5 Events
 ```
 
 - Default chart points at `ghcr.io/kubeastra/...`. If your nodes can't reach that registry, set `backend.image.repository` / `frontend.image.repository` to a registry they CAN reach.
@@ -1162,20 +1162,20 @@ Two flavors:
 
 1. **No source documents found.** The CronJob's source path doesn't match the mount path. With `knowledgeVolume.mountPath: /knowledge`, your rag config source path must be `/knowledge`. Confirm:
    ```bash
-   kubectl get cm kubeastra-rag-config -n k8s-devops -o yaml | grep -A2 sources
+   kubectl get cm kubeastra-rag-config -n kubeastra -o yaml | grep -A2 sources
    ```
 2. **All docs were skipped as duplicates.** Re-runs are idempotent (content hash). To force a fresh ingest:
    ```bash
-   kubectl exec -n k8s-devops kubeastra-qdrant-0 -- \
+   kubectl exec -n kubeastra kubeastra-qdrant-0 -- \
      curl -X DELETE http://localhost:6333/collections/devops_doc
    kubectl create job --from=cronjob/kubeastra-rag-ingestion \
-     rag-reindex-$(date +%s) -n k8s-devops
+     rag-reindex-$(date +%s) -n kubeastra
    ```
 
 ### "Deployment repo bootstrap fails with `Authentication failed`"
 
 ```bash
-kubectl logs -n k8s-devops job/rag-bootstrap-deployrepo | grep -A3 'clone failed'
+kubectl logs -n kubeastra job/rag-bootstrap-deployrepo | grep -A3 'clone failed'
 # Token is auto-scrubbed from this log; you'll see <redacted> not the PAT.
 ```
 
@@ -1197,7 +1197,7 @@ Your `RAG_ROUTER_GROUNDED_THRESHOLD` (default 0.70) is above the typical similar
 
 ```bash
 kubectl set env deploy/kubeastra-backend \
-  RAG_ROUTER_GROUNDED_THRESHOLD=0.60 -n k8s-devops
+  RAG_ROUTER_GROUNDED_THRESHOLD=0.60 -n kubeastra
 # Env-driven; no restart needed (pydantic-settings re-reads on next request).
 ```
 
@@ -1207,10 +1207,10 @@ After enabling `qdrant.networkPolicy.enabled=true`, the backend's chats start fa
 
 ```bash
 # Confirm the policy's spec.ingress.from matches your backend pod labels
-kubectl get networkpolicy -n k8s-devops -o yaml | grep -A20 ingress
+kubectl get networkpolicy -n kubeastra -o yaml | grep -A20 ingress
 
 # Confirm the backend pods carry app.kubernetes.io/component=backend
-kubectl get pod -n k8s-devops -l app.kubernetes.io/component=backend
+kubectl get pod -n kubeastra -l app.kubernetes.io/component=backend
 ```
 
 If labels don't match, the chart's selector is stale. Pin to a known-good chart version or report the mismatch.

@@ -40,7 +40,7 @@ from services import vector_db as vdb_module  # noqa: E402
 
 
 DEFAULT_REPO = (
-    "/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/"
+    "/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/"
     "deployment-provisioning/ansible"
 )
 DEFAULT_EVAL = _PROJECT_ROOT / "tests" / "rag" / "eval_deployment_repo.jsonl"

@@ -317,7 +317,7 @@ Integration tests:
 
 Manual tests:
 
-- `analyze namespace k8s-devops`
+- `analyze namespace kubeastra`
 - `are there any issues in default?`
 - `why are pods pending in namespace X?`
 - `check node k8s-worker-01 health`

@@ -1,6 +1,6 @@
 # API Documentation
 
-**K8s DevOps AI Assistant** — Complete API reference for REST endpoints, MCP tools, and integrations.
+**KubeAstra AI Assistant** — Complete API reference for REST endpoints, MCP tools, and integrations.
 
 ---
 
@@ -50,7 +50,7 @@ After starting, both servers should be accessible:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                  K8s DevOps AI Assistant                    │
+│                  KubeAstra AI Assistant                    │
 ├─────────────────────┬───────────────────────────────────────┤
 │   FastAPI Backend   │       MCP HTTP Server                 │
 │   (port 8000)       │       (port 8001)                     │
@@ -559,7 +559,7 @@ Edit `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "k8s-devops-http": {
+    "kubeastra-http": {
       "type": "http",
       "url": "http://127.0.0.1:8001/mcp/"
     }

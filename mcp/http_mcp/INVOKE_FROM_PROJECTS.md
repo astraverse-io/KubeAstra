@@ -1,11 +1,11 @@
 # Using The HTTP MCP Server From Another Project
 
-This repo now exposes the shared K8s DevOps MCP toolset over a real Streamable HTTP endpoint.
+This repo now exposes the shared KubeAstra MCP toolset over a real Streamable HTTP endpoint.
 
 ## Start The Server
 
 ```bash
-cd /Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/mcp
+cd /Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/mcp
 make run-http
 ```
 
@@ -22,7 +22,7 @@ Example remote MCP config:
 ```json
 {
   "mcpServers": {
-    "k8s-devops-http": {
+    "kubeastra-http": {
       "url": "http://127.0.0.1:8001/mcp/"
     }
   }
@@ -34,7 +34,7 @@ With auth:
 ```json
 {
   "mcpServers": {
-    "k8s-devops-http": {
+    "kubeastra-http": {
       "url": "http://127.0.0.1:8001/mcp/",
       "headers": {
         "Authorization": "Bearer dev-local-token"
@@ -47,7 +47,7 @@ With auth:
 ## Option 2: Use The Example Python Client
 
 ```bash
-cd /Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/mcp
+cd /Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/mcp
 PYTHONPATH=. venv/bin/python http_mcp/http_client.py \
   --url http://127.0.0.1:8001/mcp/
 ```

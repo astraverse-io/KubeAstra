@@ -1,6 +1,6 @@
 # Unified Roadmap: From Alert Investigation to a Kubernetes Reliability Platform
 
-**Status:** Planning · **Scope:** the merged `k8s-devops-ai-assistant` (interactive assistant + MCP) and the integrated `alerts/` investigation engine.
+**Status:** Planning · **Scope:** the merged `kubeastra-ai-assistant` (interactive assistant + MCP) and the integrated `alerts/` investigation engine.
 
 This document synthesizes two inputs:
 

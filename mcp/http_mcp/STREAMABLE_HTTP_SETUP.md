@@ -27,7 +27,7 @@ python http_mcp/http_server.py --port 8001
 
 You should see:
 ```
-INFO  Starting K8s DevOps MCP HTTP server
+INFO  Starting KubeAstra MCP HTTP server
 INFO  Health:      http://127.0.0.1:8001/health
 INFO  Debug tools: http://127.0.0.1:8001/debug/tools
 INFO  MCP (HTTP):  http://127.0.0.1:8001/mcp/
@@ -58,7 +58,7 @@ Edit `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "k8s-devops-http": {
+    "kubeastra-http": {
       "type": "http",
       "url": "http://127.0.0.1:8001/mcp/"
     }
@@ -70,11 +70,11 @@ Edit `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "k8s-devops": {
+    "kubeastra": {
       "command": "/path/to/venv/bin/python",
       "args": ["/path/to/mcp_server/server.py"]
     },
-    "k8s-devops-http": {
+    "kubeastra-http": {
       "type": "http",
       "url": "http://127.0.0.1:8001/mcp/"
     }

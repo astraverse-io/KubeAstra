@@ -11,7 +11,7 @@ that does not buffer streaming responses.
 
 Cursor config (after exposing externally):
   "mcpServers": {
-    "k8s-devops": {
+    "kubeastra": {
       "type": "http",
       "url": "http://<ilb-ip>:8001/mcp/",
       "headers": { "Authorization": "Bearer <mcpAuthToken>" }

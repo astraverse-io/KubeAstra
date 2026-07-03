@@ -131,7 +131,7 @@ Resolve the loadBalancerIP for a Service based on .Release.Namespace, so a
 single install can target dev or prod without separate values files:
 
     helm install ... --namespace k8s-ai-test   -> dev IP
-    helm install ... --namespace k8s-devops    -> prod IP
+    helm install ... --namespace kubeastra    -> prod IP
 
 Lookup order, first non-empty wins:
   1. Per-service explicit override (.Values.<component>.service.loadBalancerIP)
@@ -162,14 +162,14 @@ Resolve ALERT_WEBHOOK_TOKEN for the current install based on
 values file (no env-specific overrides at the CLI):
 
     helm install ... --namespace k8s-ai-test   -> dev token
-    helm install ... --namespace k8s-devops    -> prod token
+    helm install ... --namespace kubeastra    -> prod token
 
 Lookup order, first non-empty wins:
   1. .Values.secrets.alertWebhookToken            (single-env / legacy)
   2. .Values.secrets.alertWebhookTokensByNamespace[<ns>]   (per-env map)
   3. Convenience aliases that match the two named environments:
        k8s-ai-test -> alertWebhookToken_Dev
-       k8s-devops  -> alertWebhookToken_Prod
+       kubeastra  -> alertWebhookToken_Prod
 
 The third path lets a values-secrets.yaml carry the two tokens under
 human-readable field names without forcing the user to build a map.
@@ -184,7 +184,7 @@ the Secret template skips the key entirely).
 {{- $alias := "" -}}
 {{- if eq $ns "k8s-ai-test" -}}
 {{- $alias = .Values.secrets.alertWebhookToken_Dev | default "" -}}
-{{- else if eq $ns "k8s-devops" -}}
+{{- else if eq $ns "kubeastra" -}}
 {{- $alias = .Values.secrets.alertWebhookToken_Prod | default "" -}}
 {{- end -}}
 {{- if $explicit -}}{{- $explicit -}}

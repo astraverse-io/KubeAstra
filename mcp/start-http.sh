@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start the K8s DevOps MCP server over Streamable HTTP for Cursor.
+# Start the KubeAstra MCP server over Streamable HTTP for Cursor.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,7 +33,7 @@ from pathlib import Path
 config = json.loads(Path(sys.argv[1]).read_text())
 header = (
     config.get("mcpServers", {})
-    .get("k8s-devops", {})
+    .get("kubeastra", {})
     .get("headers", {})
     .get("Authorization", "")
 )
@@ -49,7 +49,7 @@ from pathlib import Path
 config = json.loads(Path(sys.argv[1]).read_text())
 header = (
     config.get("mcpServers", {})
-    .get("k8s-devops", {})
+    .get("kubeastra", {})
     .get("headers", {})
     .get("Authorization", "")
 )
@@ -59,7 +59,7 @@ PY
     fi
 fi
 
-echo "Starting K8s DevOps MCP HTTP server..."
+echo "Starting KubeAstra MCP HTTP server..."
 echo "  Endpoint: http://$HOST:$PORT$MCP_PATH/"
 if [ -n "${MCP_HTTP_AUTH_TOKEN:-}" ]; then
     echo "  Auth: enabled"

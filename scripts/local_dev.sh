@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# local_dev.sh — one-command local dev environment for the K8s DevOps Assistant.
+# local_dev.sh — one-command local dev environment for the KubeAstra Assistant.
 #
 # Brings up the full stack on your laptop:
 #   1. Qdrant (Docker)
@@ -358,7 +358,7 @@ cmd_restart() {
 
 cmd_help() {
   cat <<EOF
-local_dev.sh — local dev environment for the K8s DevOps Assistant
+local_dev.sh — local dev environment for the KubeAstra Assistant
 
 USAGE:
   ./scripts/local_dev.sh [command] [args]

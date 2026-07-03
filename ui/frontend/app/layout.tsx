@@ -15,7 +15,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "KubeAstra K8s DevOps Assistant",
+  title: "KubeAstra KubeAstra Assistant",
   description: "AI-powered Kubernetes assistant — ask a question or paste an error.",
 };
 

@@ -39,7 +39,7 @@ def send_password_reset_email(to_email: str, reset_url: str, ttl_minutes: int) -
     or delivery fails. The reset link is logged only for the unconfigured-dev
     path, never after a configured SMTP delivery failure. Never raises.
     """
-    subject = "Reset your K8s DevOps Assistant password"
+    subject = "Reset your KubeAstra Assistant password"
     body = (
         "We received a request to reset your password.\n\n"
         f"Reset it using this link (valid for {ttl_minutes} minutes):\n{reset_url}\n\n"

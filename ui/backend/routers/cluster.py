@@ -25,7 +25,7 @@ import db
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_TEMP_DIR = Path(tempfile.gettempdir()) / "k8s-devops-kubeconfigs"
+_TEMP_DIR = Path(tempfile.gettempdir()) / "kubeastra-kubeconfigs"
 _TEMP_DIR.mkdir(exist_ok=True)
 
 
@@ -90,7 +90,7 @@ def _sanitize_session_id(session_id: str) -> str:
 
 def _write_temp_kubeconfig(session_id: str, content: str) -> str:
     safe_id = _sanitize_session_id(session_id)
-    path = _TEMP_DIR / f"k8s-devops-{safe_id}.yaml"
+    path = _TEMP_DIR / f"kubeastra-{safe_id}.yaml"
     if path.resolve().parent != _TEMP_DIR.resolve():
         raise ValueError("Invalid session path")
     path.write_text(content)
@@ -156,7 +156,7 @@ def _is_in_cluster() -> bool:
 
 def _cleanup_temp_files() -> None:
     try:
-        for path in _TEMP_DIR.glob("k8s-devops-*.yaml"):
+        for path in _TEMP_DIR.glob("kubeastra-*.yaml"):
             path.unlink()
     except Exception as e:
         logger.warning("Cluster temp cleanup failed: %s", e)

@@ -1,4 +1,4 @@
-# K8s DevOps Web UI
+# KubeAstra UI
 
 A self-hosted web application that gives your team access to the 36 `mcp` tools through a conversational chat interface, without requiring Cursor or another AI IDE.
 
@@ -90,7 +90,7 @@ The frontend now proxies backend calls through its own `/api/*` route, so browse
 ### 1. Run setup
 
 ```bash
-cd k8s-devops-ai-assistant/ui
+cd kubeastra-ai-assistant/ui
 bash setup.sh
 ```
 
@@ -133,7 +133,7 @@ For a standalone Ollama deployment on Rocky Linux, see `docs/internal_docs/OLLAM
 Requires Docker Desktop running.
 
 ```bash
-cd k8s-devops-ai-assistant/ui
+cd kubeastra-ai-assistant/ui
 
 # Copy and edit .env
 cp backend/.env.example backend/.env
@@ -337,8 +337,8 @@ Deploy on any Linux server with Docker and kubectl access:
 
 ```bash
 # 1. Clone the repo on the server
-git clone <your-repo> /opt/k8s-devops-ai-assistant
-cd /opt/k8s-devops-ai-assistant/ui
+git clone <your-repo> /opt/kubeastra-ai-assistant
+cd /opt/kubeastra-ai-assistant/ui
 
 # 2. For local cluster access — copy kubeconfig to server
 scp ~/.kube/config server:/root/.kube/config

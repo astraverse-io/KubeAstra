@@ -127,10 +127,10 @@ def test_prompt_routes_pod_images_to_focused_pod_inventory():
 
 
 def test_prompt_routes_pod_resources_to_focused_pod_inventory():
-    route = _keyword_route("show resource requests and limits for pods in k8s-devops")
+    route = _keyword_route("show resource requests and limits for pods in kubeastra")
 
     assert route["tool"] == "get_pods"
-    assert route["params"]["namespace"] == "k8s-devops"
+    assert route["params"]["namespace"] == "kubeastra"
     assert route["params"]["resources_only"] is True
 
 
@@ -158,7 +158,7 @@ def test_prompt_keeps_kafka_crashloop_root_cause_in_investigation_path():
         ("show taints for all nodes", "get_nodes", {"taints_only": True}),
         ("show node addresses for all nodes", "get_nodes", {"addresses_only": True}),
         ("what images are running in all pods", "get_pods", {"namespace": "*", "images_only": True}),
-        ("show resource requests and limits for pods in k8s-devops", "get_pods", {"namespace": "k8s-devops", "resources_only": True}),
+        ("show resource requests and limits for pods in kubeastra", "get_pods", {"namespace": "kubeastra", "resources_only": True}),
         ("show pods in infrastructure namespace", "get_pods", {"namespace": "infrastructure"}),
         ("any pods in CrashLoopBackOff state", "get_pods", {"namespace": "*", "status_filter": "CrashLoopBackOff"}),
         ("show pods in imagepullbackoff", "get_pods", {"namespace": "*", "status_filter": "ImagePullBackOff"}),

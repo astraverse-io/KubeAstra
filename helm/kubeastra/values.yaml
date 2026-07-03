@@ -1,4 +1,4 @@
-# ── values.yaml — K8s DevOps Assistant Helm Chart ────────────────────────────
+# ── values.yaml — KubeAstra Assistant Helm Chart ────────────────────────────
 #
 # This file contains chart defaults and a complete record of every knob.
 # **NO secret values live here.** Secret material (Gemini API key,
@@ -7,8 +7,8 @@
 #
 # Recommended install pattern:
 #
-#   helm install k8s-devops . \
-#     --namespace k8s-devops --create-namespace \
+#   helm install kubeastra . \
+#     --namespace kubeastra --create-namespace \
 #     -f values.yaml \
 #     -f values-production.yaml      # opt in to every Phase 1 feature
 #     -f values-secrets.yaml         # gitignored — holds Gemini key + tokens
@@ -19,7 +19,7 @@
 # ── Global ────────────────────────────────────────────────────────────────────
 nameOverride: ""
 # Shorten pod names: "kubeastra-backend-xxx" / "kubeastra-frontend-xxx"
-# Without this, Helm combines release name + chart name → "k8s-devops-kubeastra-..."
+# Without this, Helm combines release name + chart name → "kubeastra-kubeastra-..."
 fullnameOverride: "kubeastra"
 
 # Namespace is automatically set by helm install -n flag
@@ -31,7 +31,7 @@ fullnameOverride: "kubeastra"
 # separate values files:
 #
 #   helm install ... --namespace k8s-ai-test   -> dev IP applied to LBs
-#   helm install ... --namespace k8s-devops    -> prod IP applied to LBs
+#   helm install ... --namespace kubeastra    -> prod IP applied to LBs
 #
 # Both the frontend Service (:3000) and the backend Service (:8000, when
 # type=LoadBalancer) read this map via the
@@ -59,7 +59,7 @@ backend:
   service:
     # Empty (the default) means: let the chart infer the right type from
     # .Release.Namespace. If the namespace is in
-    # networking.loadBalancerIPByNamespace (k8s-ai-test / k8s-devops by
+    # networking.loadBalancerIPByNamespace (k8s-ai-test / kubeastra by
     # default), the backend Service is automatically promoted to
     # LoadBalancer with the GCP Internal LB annotation — matching the
     # frontend service — so `helm install --namespace <env>` just works.
@@ -235,7 +235,7 @@ backend:
     authCookieSecure: "false"
     authPasswordMinLength: "12"
     # Comma-separated frontend origins for Origin checks, e.g.
-    # "https://k8s-devops.example.com"
+    # "https://kubeastra.example.com"
     authAllowedOrigins: ""
     # Public HTTPS origin used for password reset links.
     appBaseUrl: "http://localhost:3000"
@@ -501,11 +501,11 @@ secrets:
   #      when you have more than two environments, e.g.:
   #        alertWebhookTokensByNamespace:
   #          k8s-ai-test:  "<DEV_TOKEN>"
-  #          k8s-devops:   "<PROD_TOKEN>"
+  #          kubeastra:   "<PROD_TOKEN>"
   #          k8s-staging:  "<STAGING_TOKEN>"
   #
   #   3. alertWebhookToken_Dev / alertWebhookToken_Prod — convenience aliases
-  #      that match the two named environments (k8s-ai-test, k8s-devops). Put
+  #      that match the two named environments (k8s-ai-test, kubeastra). Put
   #      these in your gitignored values-secrets.yaml so a single `helm install
   #      --namespace <ns>` picks the right one with zero per-env files:
   #        secrets:
@@ -531,7 +531,7 @@ secrets:
 #
 # MCP client config example (Cursor, Claude Desktop, VS Code, etc.):
 #   "mcpServers": {
-#     "k8s-devops": {
+#     "kubeastra": {
 #       "type": "http",
 #       "url": "http://<ilb-ip>:8001/mcp/",
 #       "headers": { "Authorization": "Bearer <mcpAuthToken>" }
@@ -589,14 +589,14 @@ ingress:
     # nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     # nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
   # Frontend host — serves the chat UI
-  frontendHost: "k8s-devops.example.com"
+  frontendHost: "kubeastra.example.com"
   # Backend host — serves the API (optional: use path-based routing instead)
-  backendHost: "k8s-devops-api.example.com"
+  backendHost: "kubeastra-api.example.com"
   tls: []
-  # - secretName: k8s-devops-tls
+  # - secretName: kubeastra-tls
   #   hosts:
-  #     - k8s-devops.example.com
-  #     - k8s-devops-api.example.com
+  #     - kubeastra.example.com
+  #     - kubeastra-api.example.com
 
 # ── Frontend/backend NetworkPolicies ─────────────────────────────────────────
 # Disabled by default because API-server CIDRs, ingress-controller labels, and

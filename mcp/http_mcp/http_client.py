@@ -1,4 +1,4 @@
-"""Small Streamable HTTP client example for the K8s DevOps MCP server."""
+"""Small Streamable HTTP client example for the KubeAstra MCP server."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ async def mcp_http_session(url: str, auth_token: str | None = None):
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Test the K8s DevOps HTTP MCP server")
+    parser = argparse.ArgumentParser(description="Test the KubeAstra HTTP MCP server")
     parser.add_argument("--url", default="http://127.0.0.1:8001/mcp/", help="Streamable HTTP MCP endpoint")
     parser.add_argument("--auth-token", default=None, help="Optional bearer token")
     parser.add_argument("--tool", default=None, help="Optional tool name to call after listing tools")

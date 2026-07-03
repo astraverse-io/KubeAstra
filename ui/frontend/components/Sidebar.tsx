@@ -88,7 +88,7 @@ export default function Sidebar({ active, onChange, health }: Props) {
       <div style={{ padding: "1.25rem", borderBottom: "1px solid var(--rule)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" }}>
           <Activity size={20} color="var(--brand)" />
-          <span style={{ fontWeight: "bold", color: "var(--ink)", fontSize: "0.875rem", letterSpacing: "0.025em" }}>K8s DevOps</span>
+          <span style={{ fontWeight: "bold", color: "var(--ink)", fontSize: "0.875rem", letterSpacing: "0.025em" }}>KubeAstra</span>
         </div>
         <p style={{ color: "var(--ink-3)", fontSize: "0.75rem" }}>Team Self-Service Portal</p>
       </div>

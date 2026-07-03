@@ -1,8 +1,8 @@
-# K8s DevOps Assistant — Kubernetes Deployment Guide
+# KubeAstra Assistant — Kubernetes Deployment Guide
 
 This guide covers everything needed to build Docker images, push them to your local Artifactory registry, and deploy the full AI DevOps Assistant stack onto a Kubernetes cluster using the Helm chart at `helm/kubeastra/`.
 
-> **Workspace root:** All paths in this guide are relative to `AI_DevOps_Assistant/k8s-devops-ai-assistant/` unless stated otherwise.
+> **Workspace root:** All paths in this guide are relative to `AI_DevOps_Assistant/kubeastra-ai-assistant/` unless stated otherwise.
 
 ---
 
@@ -10,10 +10,10 @@ This guide covers everything needed to build Docker images, push them to your lo
 
 ```
 Artifactory (your registry)
-  ├── k8s-devops-backend:main-<SHA>   ← FastAPI :8000 + HTTP MCP :8001 + mcp
-  └── k8s-devops-frontend:main-<SHA>  ← Next.js standalone
+  ├── kubeastra-backend:main-<SHA>   ← FastAPI :8000 + HTTP MCP :8001 + mcp
+  └── kubeastra-frontend:main-<SHA>  ← Next.js standalone
 
-Kubernetes namespace: k8s-devops
+Kubernetes namespace: kubeastra
   ├── Deployment/backend                       (FastAPI :8000 + HTTP MCP :8001)
   ├── Deployment/frontend                      (Next.js :3000, server-side proxy)
   ├── Service/backend                          (ClusterIP :8000)
@@ -66,18 +66,18 @@ Kubernetes namespace: k8s-devops
 
 ## Step 1 — Build the backend Docker image
 
-The backend image bundles both `ui/backend` and `mcp` into a single image. The build context **must be `k8s-devops-ai-assistant/`** so Docker can COPY both subdirectories.
+The backend image bundles both `ui/backend` and `mcp` into a single image. The build context **must be `kubeastra-ai-assistant/`** so Docker can COPY both subdirectories.
 
 ```bash
-# Navigate to the repo root (k8s-devops-ai-assistant/)
-cd /path/to/AI_DevOps_Assistant/k8s-devops-ai-assistant
+# Navigate to the repo root (kubeastra-ai-assistant/)
+cd /path/to/AI_DevOps_Assistant/kubeastra-ai-assistant
 
 # Build the backend image — convention is to tag with main-<short-SHA>
 # Replace 'your-artifactory.example.com' with your actual Artifactory hostname
 SHA=$(git rev-parse --short HEAD)
 docker build \
   -f ui/backend/Dockerfile \
-  -t your-artifactory.example.com/k8s-devops-backend:main-${SHA} \
+  -t your-artifactory.example.com/kubeastra-backend:main-${SHA} \
   .
 ```
 
@@ -97,7 +97,7 @@ docker build \
 
 **Verify the build:**
 ```bash
-docker run --rm your-artifactory.example.com/k8s-devops-backend:main-${SHA} python -c "import fastapi, paramiko, qdrant_client, sentence_transformers; print('OK')"
+docker run --rm your-artifactory.example.com/kubeastra-backend:main-${SHA} python -c "import fastapi, paramiko, qdrant_client, sentence_transformers; print('OK')"
 ```
 
 ---
@@ -113,12 +113,12 @@ The frontend includes a **server-side proxy** at `app/api/[...path]/route.ts`.
 
 ```bash
 # Navigate to the frontend directory
-cd /path/to/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/frontend
+cd /path/to/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/frontend
 
 # Build the frontend image — same SHA convention as the backend
 SHA=$(git rev-parse --short HEAD)
 docker build \
-  -t your-artifactory.example.com/k8s-devops-frontend:main-${SHA} \
+  -t your-artifactory.example.com/kubeastra-frontend:main-${SHA} \
   .
 ```
 
@@ -132,7 +132,7 @@ from its environment.
 
 **Verify the build:**
 ```bash
-docker run --rm -p 3000:3000 your-artifactory.example.com/k8s-devops-frontend:main-${SHA}
+docker run --rm -p 3000:3000 your-artifactory.example.com/kubeastra-frontend:main-${SHA}
 # Open http://localhost:3000 — you should see the chat UI
 ```
 
@@ -145,15 +145,15 @@ docker run --rm -p 3000:3000 your-artifactory.example.com/k8s-devops-frontend:ma
 docker login your-artifactory.example.com
 
 # Push backend + frontend images (whatever SHA tag you built)
-docker push your-artifactory.example.com/k8s-devops-backend:main-${SHA}
-docker push your-artifactory.example.com/k8s-devops-frontend:main-${SHA}
+docker push your-artifactory.example.com/kubeastra-backend:main-${SHA}
+docker push your-artifactory.example.com/kubeastra-frontend:main-${SHA}
 ```
 
 If your cluster needs an image pull secret to access Artifactory:
 
 ```bash
 kubectl create secret docker-registry artifactory-pull-secret \
-  --namespace k8s-devops \
+  --namespace kubeastra \
   --docker-server=your-artifactory.example.com \
   --docker-username=YOUR_USERNAME \
   --docker-password=YOUR_PASSWORD \
@@ -187,22 +187,22 @@ This creates a minimal kubeconfig with only the permissions the app needs:
 
 ```bash
 # 1. Create a service account in the TARGET cluster the app will query
-kubectl create serviceaccount k8s-devops-app -n kube-system
+kubectl create serviceaccount kubeastra-app -n kube-system
 
 # 2. Create a ClusterRoleBinding for it (reuse the role from the Helm chart)
-kubectl create clusterrolebinding k8s-devops-app \
+kubectl create clusterrolebinding kubeastra-app \
   --clusterrole=cluster-reader \
-  --serviceaccount=kube-system:k8s-devops-app
+  --serviceaccount=kube-system:kubeastra-app
 
 # 3. Create a long-lived token (K8s 1.24+)
-kubectl create token k8s-devops-app -n kube-system --duration=8760h > /tmp/k8s-devops-token.txt
+kubectl create token kubeastra-app -n kube-system --duration=8760h > /tmp/kubeastra-token.txt
 
 # 4. Build a minimal kubeconfig using the token
 CLUSTER_SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 CLUSTER_CA=$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
-TOKEN=$(cat /tmp/k8s-devops-token.txt)
+TOKEN=$(cat /tmp/kubeastra-token.txt)
 
-cat > /tmp/k8s-devops-kubeconfig.yaml << EOF
+cat > /tmp/kubeastra-kubeconfig.yaml << EOF
 apiVersion: v1
 kind: Config
 clusters:
@@ -213,17 +213,17 @@ clusters:
 contexts:
 - context:
     cluster: target-cluster
-    user: k8s-devops-app
-  name: k8s-devops
-current-context: k8s-devops
+    user: kubeastra-app
+  name: kubeastra
+current-context: kubeastra
 users:
-- name: k8s-devops-app
+- name: kubeastra-app
   user:
     token: ${TOKEN}
 EOF
 
 # 5. Base64-encode it
-cat /tmp/k8s-devops-kubeconfig.yaml | base64 | tr -d '\n'
+cat /tmp/kubeastra-kubeconfig.yaml | base64 | tr -d '\n'
 ```
 
 ---
@@ -232,16 +232,16 @@ cat /tmp/k8s-devops-kubeconfig.yaml | base64 | tr -d '\n'
 
 ```bash
 # Navigate to the Helm chart directory
-cd /path/to/AI_DevOps_Assistant/k8s-devops-ai-assistant/helm/kubeastra
+cd /path/to/AI_DevOps_Assistant/kubeastra-ai-assistant/helm/kubeastra
 
 # Dry-run first to check everything renders correctly
-helm install k8s-devops . \
-  --namespace k8s-devops \
+helm install kubeastra . \
+  --namespace kubeastra \
   --create-namespace \
   --dry-run \
-  --set backend.image.repository=your-artifactory.example.com/k8s-devops-backend \
+  --set backend.image.repository=your-artifactory.example.com/kubeastra-backend \
   --set backend.image.tag=1.0.0 \
-  --set frontend.image.repository=your-artifactory.example.com/k8s-devops-frontend \
+  --set frontend.image.repository=your-artifactory.example.com/kubeastra-frontend \
   --set frontend.image.tag=1.0.0 \
   --set secrets.geminiApiKey="YOUR_GEMINI_API_KEY" \
   --set secrets.kubeconfig="PASTE_BASE64_KUBECONFIG_HERE"
@@ -250,12 +250,12 @@ helm install k8s-devops . \
 If the dry-run output looks correct, install for real:
 
 ```bash
-helm install k8s-devops . \
-  --namespace k8s-devops \
+helm install kubeastra . \
+  --namespace kubeastra \
   --create-namespace \
-  --set backend.image.repository=your-artifactory.example.com/k8s-devops-backend \
+  --set backend.image.repository=your-artifactory.example.com/kubeastra-backend \
   --set backend.image.tag=main-${SHA} \
-  --set frontend.image.repository=your-artifactory.example.com/k8s-devops-frontend \
+  --set frontend.image.repository=your-artifactory.example.com/kubeastra-frontend \
   --set frontend.image.tag=main-${SHA} \
   --set secrets.geminiApiKey="YOUR_GEMINI_API_KEY" \
   --set secrets.kubeconfig="PASTE_BASE64_KUBECONFIG_HERE"
@@ -268,12 +268,12 @@ Create `my-values.yaml` (do not commit this file):
 ```yaml
 backend:
   image:
-    repository: your-artifactory.example.com/k8s-devops-backend
+    repository: your-artifactory.example.com/kubeastra-backend
     tag: "main-abcdef0"      # set to the SHA you actually built
 
 frontend:
   image:
-    repository: your-artifactory.example.com/k8s-devops-frontend
+    repository: your-artifactory.example.com/kubeastra-frontend
     tag: "main-abcdef0"
 
 secrets:
@@ -307,8 +307,8 @@ For the full operator playbook (every knob, hardening, the deployment-repo KB wa
 Then install with:
 
 ```bash
-helm install k8s-devops . \
-  --namespace k8s-devops \
+helm install kubeastra . \
+  --namespace kubeastra \
   -f my-values.yaml
 ```
 
@@ -317,7 +317,7 @@ helm install k8s-devops . \
 ## Step 5b — Multi-environment deployment (DEV/PROD)
 
 If you deploy to **multiple environments** (e.g. `k8s-ai-test` for DEV and
-`k8s-devops` for PROD), the chart resolves several per-env knobs
+`kubeastra` for PROD), the chart resolves several per-env knobs
 automatically from `.Release.Namespace`, so you don't need a
 `values-dev.yaml`/`values-prod.yaml` pair. Just change `--namespace`.
 
@@ -339,7 +339,7 @@ each accept overrides but default-pick by namespace:
 networking:
   loadBalancerIPByNamespace:
     k8s-ai-test: "10.0.0.100"   # DEV — kubeastra-dev.example.com
-    k8s-devops:  "10.0.0.101"   # PROD — kubeastra-prod.example.com
+    kubeastra:  "10.0.0.101"   # PROD — kubeastra-prod.example.com
 
 backend:
   service:
@@ -363,7 +363,7 @@ helm upgrade --install kubeastra . \
 
 # PROD
 helm upgrade --install kubeastra . \
-  --namespace k8s-devops \
+  --namespace kubeastra \
   -f values.yaml -f values-secrets.yaml
 ```
 
@@ -400,22 +400,22 @@ helm-install side.
 
 ```bash
 # Check all pods are Running
-kubectl get pods -n k8s-devops
+kubectl get pods -n kubeastra
 
 # Expected output:
 # NAME                                         READY   STATUS    RESTARTS   AGE
-# k8s-devops-kubeastra-backend-...  1/1     Running   0          60s
-# k8s-devops-kubeastra-frontend-... 1/1     Running   0          60s
+# kubeastra-kubeastra-backend-...  1/1     Running   0          60s
+# kubeastra-kubeastra-frontend-... 1/1     Running   0          60s
 
 # Check services
-kubectl get services -n k8s-devops
+kubectl get services -n kubeastra
 
 # Check backend logs
-kubectl logs -n k8s-devops deployment/k8s-devops-kubeastra-backend --follow
+kubectl logs -n kubeastra deployment/kubeastra-kubeastra-backend --follow
 
 # Verify kubectl works inside the backend pod
-kubectl exec -n k8s-devops \
-  deployment/k8s-devops-kubeastra-backend \
+kubectl exec -n kubeastra \
+  deployment/kubeastra-kubeastra-backend \
   -- kubectl get nodes
 ```
 
@@ -429,10 +429,10 @@ Open two terminal windows:
 
 ```bash
 # Terminal 1 — backend
-kubectl port-forward -n k8s-devops service/k8s-devops-kubeastra-backend 8000:8000
+kubectl port-forward -n kubeastra service/kubeastra-kubeastra-backend 8000:8000
 
 # Terminal 2 — frontend
-kubectl port-forward -n k8s-devops service/k8s-devops-kubeastra-frontend 3000:3000
+kubectl port-forward -n kubeastra service/kubeastra-kubeastra-frontend 3000:3000
 ```
 
 Open `http://localhost:3000` in your browser.
@@ -444,12 +444,12 @@ The browser talks to the frontend on port `3000`, and the frontend server proxie
 Enable Ingress in your values and upgrade:
 
 ```bash
-helm upgrade k8s-devops . \
-  --namespace k8s-devops \
+helm upgrade kubeastra . \
+  --namespace kubeastra \
   -f my-values.yaml \
   --set ingress.enabled=true \
-  --set ingress.frontendHost=k8s-devops.your-company.com \
-  --set ingress.backendHost=k8s-devops-api.your-company.com \
+  --set ingress.frontendHost=kubeastra.your-company.com \
+  --set ingress.backendHost=kubeastra-api.your-company.com \
   --set ingress.className=nginx
 ```
 
@@ -460,15 +460,15 @@ helm upgrade k8s-devops . \
 ## Step 8 — Upgrading after a code change
 
 ```bash
-# Run from k8s-devops-ai-assistant/
+# Run from kubeastra-ai-assistant/
 # 1. Rebuild and push images with a new tag
-docker build -f ui/backend/Dockerfile -t your-artifactory.example.com/k8s-devops-backend:1.0.1 .
-docker push your-artifactory.example.com/k8s-devops-backend:1.0.1
+docker build -f ui/backend/Dockerfile -t your-artifactory.example.com/kubeastra-backend:1.0.1 .
+docker push your-artifactory.example.com/kubeastra-backend:1.0.1
 
 # 2. Upgrade the Helm release with the new image tag
 cd helm/kubeastra
-helm upgrade k8s-devops . \
-  --namespace k8s-devops \
+helm upgrade kubeastra . \
+  --namespace kubeastra \
   -f my-values.yaml \
   --set backend.image.tag=1.0.1
 ```
@@ -480,7 +480,7 @@ helm upgrade k8s-devops . \
 For local development, use the provided `start.sh` script (no Docker or Helm needed):
 
 ```bash
-cd k8s-devops-ai-assistant/ui
+cd kubeastra-ai-assistant/ui
 ./start.sh
 ```
 
@@ -516,7 +516,7 @@ If `persistence.enabled` is false (default), the backend still works — users l
 ## Complete file structure
 
 ```
-k8s-devops-ai-assistant/
+kubeastra-ai-assistant/
 ├── docs/
 │   ├── ARCHITECTURE_DIAGRAM.md          ← Repo-level mermaid diagrams + component table
 │   ├── K8S_DEPLOYMENT_GUIDE.md          ← This file
@@ -598,12 +598,12 @@ The init container runs `kubectl config view` to verify the kubeconfig is readab
 
 ```bash
 # Check init container logs
-kubectl logs -n k8s-devops \
-  $(kubectl get pod -n k8s-devops -l app.kubernetes.io/component=backend -o name) \
+kubectl logs -n kubeastra \
+  $(kubectl get pod -n kubeastra -l app.kubernetes.io/component=backend -o name) \
   -c kubeconfig-check
 
 # Verify the Secret was created with the kubeconfig key
-kubectl get secret -n k8s-devops k8s-devops-kubeastra-secrets -o yaml
+kubectl get secret -n kubeastra kubeastra-kubeastra-secrets -o yaml
 ```
 
 Common causes:
@@ -615,8 +615,8 @@ Common causes:
 
 ```bash
 # Shell into the backend pod
-kubectl exec -it -n k8s-devops \
-  deployment/k8s-devops-kubeastra-backend \
+kubectl exec -it -n kubeastra \
+  deployment/kubeastra-kubeastra-backend \
   -- bash
 
 # Inside the pod:
@@ -630,18 +630,18 @@ kubectl get pods -A       # Test namespace access
 
 ```bash
 # Check the secret is set
-kubectl exec -n k8s-devops \
-  deployment/k8s-devops-kubeastra-backend \
+kubectl exec -n kubeastra \
+  deployment/kubeastra-kubeastra-backend \
   -- env | grep GEMINI
 
 # If empty, update the secret
-kubectl patch secret k8s-devops-kubeastra-secrets \
-  -n k8s-devops \
+kubectl patch secret kubeastra-kubeastra-secrets \
+  -n kubeastra \
   --type='json' \
   -p='[{"op":"replace","path":"/data/GEMINI_API_KEY","value":"'$(echo -n "YOUR_KEY" | base64)'"}]'
 
 # Restart the backend pod to pick up the new secret
-kubectl rollout restart deployment/k8s-devops-kubeastra-backend -n k8s-devops
+kubectl rollout restart deployment/kubeastra-kubeastra-backend -n kubeastra
 ```
 
 ### SSH cluster connection fails
@@ -650,12 +650,12 @@ SSH remote cluster support uses `paramiko` (already in `backend/requirements.txt
 
 ```bash
 # Verify paramiko is installed inside the backend pod
-kubectl exec -n k8s-devops \
-  deployment/k8s-devops-kubeastra-backend \
+kubectl exec -n kubeastra \
+  deployment/kubeastra-kubeastra-backend \
   -- python -c "import paramiko; print(paramiko.__version__)"
 
 # Check backend logs for SSH errors
-kubectl logs -n k8s-devops deployment/k8s-devops-kubeastra-backend | grep -i ssh
+kubectl logs -n kubeastra deployment/kubeastra-kubeastra-backend | grep -i ssh
 ```
 
 Common causes:
@@ -671,12 +671,12 @@ This means the frontend server cannot reach the backend target or the browser ca
 
 ```bash
 # Check the runtime backend target inside the frontend container
-kubectl exec -n k8s-devops \
-  deployment/k8s-devops-kubeastra-frontend \
+kubectl exec -n kubeastra \
+  deployment/kubeastra-kubeastra-frontend \
   -- env | grep API_BASE_URL
 
 # Check frontend logs
-kubectl logs -n k8s-devops deployment/k8s-devops-kubeastra-frontend --follow
+kubectl logs -n kubeastra deployment/kubeastra-kubeastra-frontend --follow
 ```
 
 Common causes:
@@ -701,10 +701,10 @@ The collection was queried before it existed. Fixed by the lifespan bootstrap in
 
 ```bash
 # Confirm bootstrap ran (line should appear once near pod start)
-kubectl logs -n k8s-devops -l app.kubernetes.io/component=backend | grep "RAG bootstrap"
+kubectl logs -n kubeastra -l app.kubernetes.io/component=backend | grep "RAG bootstrap"
 
 # Check Qdrant directly from inside the backend pod
-kubectl exec -n k8s-devops -l app.kubernetes.io/component=backend -c backend -- \
+kubectl exec -n kubeastra -l app.kubernetes.io/component=backend -c backend -- \
   python3 -c "import httpx,os; r=httpx.get(os.environ['QDRANT_URL']+'/collections', timeout=5); print(r.json())"
 ```
 
@@ -724,15 +724,15 @@ GKE's Dataplane V2 enforces NetworkPolicy stricter than the typical Calico setup
 
 ```bash
 # Confirm both pods are running and have the expected labels
-kubectl get pods -n k8s-devops --show-labels | grep -E "backend|qdrant"
+kubectl get pods -n kubeastra --show-labels | grep -E "backend|qdrant"
 
 # Check the policy
-kubectl describe networkpolicy -n k8s-devops qdrant
+kubectl describe networkpolicy -n kubeastra qdrant
 ```
 
 If a namespaceSelector fix doesn't work on your cluster, disable the policy temporarily and rely on Service-level controls until you can debug Dataplane V2 specifics:
 ```bash
-helm upgrade k8s-devops . -f my-values.yaml --set qdrant.networkPolicy.enabled=false
+helm upgrade kubeastra . -f my-values.yaml --set qdrant.networkPolicy.enabled=false
 ```
 
 ### HuggingFace unauthenticated warning
@@ -746,15 +746,15 @@ Cosmetic. The sentence-transformer model is cached in `/tmp/hf-cache` after the 
 ### Checking the Helm release status
 
 ```bash
-helm status k8s-devops -n k8s-devops
-helm get values k8s-devops -n k8s-devops
+helm status kubeastra -n kubeastra
+helm get values kubeastra -n kubeastra
 ```
 
 ### Uninstalling
 
 ```bash
-helm uninstall k8s-devops -n k8s-devops
-kubectl delete namespace k8s-devops
+helm uninstall kubeastra -n kubeastra
+kubectl delete namespace kubeastra
 ```
 
 ---
@@ -768,8 +768,8 @@ The chart ships a **Qdrant StatefulSet** by default (Phase 1.1+). No extra step 
 **Disabling the chart-managed Qdrant** (e.g. you have a shared Qdrant elsewhere):
 
 ```bash
-helm upgrade k8s-devops helm/kubeastra \
-  --namespace k8s-devops \
+helm upgrade kubeastra helm/kubeastra \
+  --namespace kubeastra \
   -f my-values.yaml \
   --set qdrant.enabled=false \
   --set qdrant.externalUrl=http://your-qdrant.example:6333

@@ -2,7 +2,7 @@
 
 **Audience:** engineering team reviewing the current system and planning next steps.
 **Status:** working document for a team review session.
-**Scope:** how detection works *today* in the merged `k8s-devops-ai-assistant` (assistant + MCP + integrated `alerts/` engine), how it does/doesn't scale to many clusters, how it compares to HolmesGPT, and the decisions we need to make.
+**Scope:** how detection works *today* in the merged `kubeastra-ai-assistant` (assistant + MCP + integrated `alerts/` engine), how it does/doesn't scale to many clusters, how it compares to HolmesGPT, and the decisions we need to make.
 
 > Companion doc: [`unified_investigation_platform_roadmap.md`](./unified_investigation_platform_roadmap.md) holds the full feature backlog. This doc explains the *detection/architecture* foundation those features build on.
 
@@ -51,7 +51,7 @@ This distinction drives every multi-cluster decision below.
                                               │  Authorization: Bearer <token>
                                               ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  THE AGENT (k8s-devops-ai-assistant backend)                                 │
+│  THE AGENT (kubeastra-ai-assistant backend)                                 │
 │                                                                              │
 │  POST /api/v1/alerts/webhook                                                  │
 │    1. Token check        → _verify_webhook_token (ALERT_WEBHOOK_TOKEN)        │

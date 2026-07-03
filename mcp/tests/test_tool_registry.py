@@ -1,4 +1,4 @@
-"""Regression tests for the K8s DevOps tool registry."""
+"""Regression tests for the KubeAstra tool registry."""
 
 from pathlib import Path
 import sys

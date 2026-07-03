@@ -1,4 +1,4 @@
-"""Run the K8s DevOps MCP server over Streamable HTTP.
+"""Run the KubeAstra MCP server over Streamable HTTP.
 
 This exposes the same shared MCP toolset over a spec-compliant Streamable HTTP
 transport (MCP March 2025+ protocol) that Cursor v1.0+ and other MCP clients
@@ -216,7 +216,7 @@ def _render_catalog_html(categories: dict[str, list[Any]]) -> str:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>K8s DevOps Tool Catalog</title>
+    <title>KubeAstra Tool Catalog</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -354,7 +354,7 @@ def _render_catalog_html(categories: dict[str, list[Any]]) -> str:
 <body>
     <div class="container">
         <header>
-            <h1>🛠️ K8s DevOps Tool Catalog</h1>
+            <h1>🛠️ KubeAstra Tool Catalog</h1>
             <p>Unified API for Kubernetes investigation, diagnosis, and remediation</p>
             <div class="stats">
 """
@@ -521,8 +521,8 @@ def create_app(http_config: HTTPConfig | None = None) -> FastAPI:
     http_config.mcp_path = _normalize_mcp_path(http_config.mcp_path)
 
     app = FastAPI(
-        title="K8s DevOps MCP Server (HTTP)",
-        description="Streamable HTTP transport for the shared K8s DevOps MCP toolset.",
+        title="KubeAstra MCP Server (HTTP)",
+        description="Streamable HTTP transport for the shared KubeAstra MCP toolset.",
         version="1.0.0",
         lifespan=lifespan,
     )
@@ -538,7 +538,7 @@ def create_app(http_config: HTTPConfig | None = None) -> FastAPI:
     async def root():
         cfg = app.state.http_config
         return {
-            "name": "K8s DevOps MCP Server (HTTP)",
+            "name": "KubeAstra MCP Server (HTTP)",
             "transport": "streamable-http",
             "protocol": "MCP March 2025+",
             "mcp_endpoint": cfg.mcp_path,
@@ -560,7 +560,7 @@ def create_app(http_config: HTTPConfig | None = None) -> FastAPI:
             },
             "cursor_config_example": {
                 "mcpServers": {
-                    "k8s-devops-http": {
+                    "kubeastra-http": {
                         "type": "http",
                         "url": f"http://{cfg.host}:{cfg.port}{cfg.mcp_path}",
                     }
@@ -736,7 +736,7 @@ def main() -> None:
     """Parse CLI args and start the HTTP MCP server."""
     defaults = HTTPConfig()
 
-    parser = ArgumentParser(description="K8s DevOps MCP Server — Streamable HTTP transport")
+    parser = ArgumentParser(description="KubeAstra MCP Server — Streamable HTTP transport")
     parser.add_argument("--host", default=defaults.host,
                         help="Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network access)")
     parser.add_argument("--port", type=int, default=defaults.port,
@@ -762,7 +762,7 @@ def main() -> None:
         stateless=args.stateless,
     )
 
-    logger.info("Starting K8s DevOps MCP HTTP server")
+    logger.info("Starting KubeAstra MCP HTTP server")
     logger.info("  Health:      http://%s:%s/health", cfg.host, cfg.port)
     logger.info("  Debug tools: http://%s:%s/debug/tools", cfg.host, cfg.port)
     logger.info("  MCP (HTTP):  http://%s:%s%s", cfg.host, cfg.port, _normalize_mcp_path(cfg.mcp_path))

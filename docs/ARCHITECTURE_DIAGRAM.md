@@ -1,4 +1,4 @@
-# K8s DevOps Assistant — Architecture Diagram
+# KubeAstra Assistant — Architecture Diagram
 
 This document explains how the repository fits together, which components call which other components, and when each path is used.
 
@@ -311,7 +311,7 @@ flowchart LR
     DEV["Developer / CI"] --> JEN["Jenkins build<br/>tags image main-&lt;SHA&gt;"]
     JEN --> REG2["Artifactory<br/>backend + frontend images"]
 
-    REG2 --> HELM["helm upgrade k8s-devops"]
+    REG2 --> HELM["helm upgrade kubeastra"]
 
     HELM --> SEC["Secret<br/>GEMINI_API_KEY + kubeconfig +<br/>deploymentRepo.token"]
     HELM --> CFG["ConfigMap<br/>RAG flags, triage flags,<br/>capture knobs, KB_CONFIG_YAML"]

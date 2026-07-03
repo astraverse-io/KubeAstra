@@ -15,11 +15,11 @@ When Cursor starts, it reads `~/.cursor/mcp.json` and connects to every server l
 ```json
 {
   "mcpServers": {
-    "k8s-devops": {
+    "kubeastra": {
       "command": "/path/to/venv/bin/python",
       "args": ["/path/to/mcp_server/server.py"]
     },
-    "k8s-devops-http": {
+    "kubeastra-http": {
       "type": "http",
       "url": "http://127.0.0.1:8001/mcp/"
     }
@@ -29,8 +29,8 @@ When Cursor starts, it reads `~/.cursor/mcp.json` and connects to every server l
 
 **What Cursor does:**
 ```
-1. Starts stdio process for "k8s-devops"
-2. Connects to HTTP server for "k8s-devops-http"
+1. Starts stdio process for "kubeastra"
+2. Connects to HTTP server for "kubeastra-http"
 3. Calls tools/list on BOTH servers
 4. Builds a unified tool registry
 ```
@@ -38,14 +38,14 @@ When Cursor starts, it reads `~/.cursor/mcp.json` and connects to every server l
 ### Step 2: Cursor Discovers Tools from Each Server
 
 ```
-k8s-devops (stdio):
+kubeastra (stdio):
   ✓ get_pods
   ✓ describe_pod
   ✓ investigate_pod
   ✓ analyze_error
   ... (48 tools total)
 
-k8s-devops-http (HTTP):
+kubeastra-http (HTTP):
   ✓ get_pods
   ✓ describe_pod
   ✓ investigate_pod
@@ -70,8 +70,8 @@ Cursor AI analyzes the question:
   - Checks: Which server(s) have "analyze_error"?
   
 Available options:
-  1. k8s-devops (stdio) → analyze_error
-  2. k8s-devops-http (HTTP) → analyze_error
+  1. kubeastra (stdio) → analyze_error
+  2. kubeastra-http (HTTP) → analyze_error
   
 Cursor picks ONE (typically the first available or most reliable)
 ```
@@ -85,7 +85,7 @@ Cursor calls: analyze_error(
   environment="unknown"
 )
 
-Via: k8s-devops-http (HTTP)
+Via: kubeastra-http (HTTP)
   ↓
 POST http://127.0.0.1:8001/mcp//
 {
@@ -134,7 +134,7 @@ Both expose the same MCP protocol, so Cursor doesn't care about the transport.
 
 ### 3. If Both Servers Have the Same Tool
 
-**Scenario:** Both `k8s-devops` (stdio) and `k8s-devops-http` (HTTP) expose `get_pods`.
+**Scenario:** Both `kubeastra` (stdio) and `kubeastra-http` (HTTP) expose `get_pods`.
 
 **What happens:**
 - Cursor sees TWO `get_pods` tools
@@ -173,7 +173,7 @@ curl http://127.0.0.1:8001/mcp//  # HTTP server
 ```json
 {
   "mcpServers": {
-    "k8s-devops": {
+    "kubeastra": {
       "command": "/path/to/venv/bin/python",
       "args": ["/path/to/mcp_server/server.py"]
     }
@@ -189,7 +189,7 @@ curl http://127.0.0.1:8001/mcp//  # HTTP server
 ```json
 {
   "mcpServers": {
-    "k8s-devops-http": {
+    "kubeastra-http": {
       "type": "http",
       "url": "http://your-server:8002"
     }
@@ -205,11 +205,11 @@ curl http://127.0.0.1:8001/mcp//  # HTTP server
 ```json
 {
   "mcpServers": {
-    "k8s-devops-local": {
+    "kubeastra-local": {
       "command": "/path/to/venv/bin/python",
       "args": ["/path/to/mcp_server/server.py"]
     },
-    "k8s-devops-remote": {
+    "kubeastra-remote": {
       "type": "http",
       "url": "http://127.0.0.1:8001/mcp/"
     }
@@ -240,18 +240,18 @@ curl http://127.0.0.1:8001/mcp//  # HTTP server
 ┌─────────────────────────────────────────────────────────────┐
 │  Available Servers (from ~/.cursor/mcp.json)                │
 │                                                             │
-│  Option 1: k8s-devops (stdio)                               │
+│  Option 1: kubeastra (stdio)                               │
 │    ├─ analyze_error ✓                                       │
 │    └─ 47 other tools                                        │
 │                                                             │
-│  Option 2: k8s-devops-http (HTTP)                           │
+│  Option 2: kubeastra-http (HTTP)                           │
 │    ├─ analyze_error ✓                                       │
 │    └─ 47 other tools                                        │
 └────────────────────────┬────────────────────────────────────┘
                          │
                          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│  Cursor picks ONE server (e.g., k8s-devops-http)            │
+│  Cursor picks ONE server (e.g., kubeastra-http)            │
 └────────────────────────┬────────────────────────────────────┘
                          │
                          ↓

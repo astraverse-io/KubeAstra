@@ -26,7 +26,7 @@ The same toolset is available through two MCP transports:
 7. **Session-scoped kubeconfig/context support** — `KubectlRunner` can be constructed with a selected kubeconfig path and context so web sessions target the right cluster.
 8. **All-namespace queries** — `get_events` and `get_pods` accept `namespace="*"` to search across all namespaces.
 9. **Tool registry metadata** — `tool_registry.py` centralizes tool names, aliases, surfaces, schemas, ReAct visibility, and write-operation safety metadata.
-10. **Single Cursor config entry** — one `k8s-devops` entry in `~/.cursor/mcp.json` replaces two.
+10. **Single Cursor config entry** — one `kubeastra` entry in `~/.cursor/mcp.json` replaces two.
 11. **Unified settings** — one `.env` file covers kubectl tuning, Gemini, self-hosted Ollama, and RAG settings.
 
 ---
@@ -34,7 +34,7 @@ The same toolset is available through two MCP transports:
 ## Quick Start
 
 ```bash
-cd k8s-devops-ai-assistant/mcp
+cd kubeastra-ai-assistant/mcp
 ./setup.sh
 ```
 
@@ -49,7 +49,7 @@ GEMINI_API_KEY=your_key_here
 ALLOWED_NAMESPACES=prod,staging,dev,default
 ```
 
-Restart Cursor — the `k8s-devops` MCP server will be active with all 48 tools.
+Restart Cursor — the `kubeastra` MCP server will be active with all 48 tools.
 
 If you want to replace Gemini with a standalone Ollama VM, the Rocky Linux runbook lives in `docs/internal_docs/OLLAMA_ROCKY_LINUX_VM_SETUP.md` (internal — not shipped with the repo; ask a maintainer if you need it).
 
@@ -325,11 +325,11 @@ EMBEDDING_DIM=384                              # must match the embedding model
 ```json
 {
   "mcpServers": {
-    "k8s-devops": {
-      "command": "<absolute-path>/k8s-devops-ai-assistant/mcp/venv/bin/python",
-      "args": ["<absolute-path>/k8s-devops-ai-assistant/mcp/mcp_server/server.py"],
+    "kubeastra": {
+      "command": "<absolute-path>/kubeastra-ai-assistant/mcp/venv/bin/python",
+      "args": ["<absolute-path>/kubeastra-ai-assistant/mcp/mcp_server/server.py"],
       "env": {
-        "PYTHONPATH": "<absolute-path>/k8s-devops-ai-assistant/mcp",
+        "PYTHONPATH": "<absolute-path>/kubeastra-ai-assistant/mcp",
         "ALLOWED_NAMESPACES": "prod,staging,dev,default"
       }
     }
@@ -337,14 +337,14 @@ EMBEDDING_DIM=384                              # must match the embedding model
 }
 ```
 
-Replace `<absolute-path>` with the output of `pwd` run from inside `k8s-devops-ai-assistant/`.
+Replace `<absolute-path>` with the output of `pwd` run from inside `kubeastra-ai-assistant/`.
 
 ## HTTP MCP Config (`~/.cursor/mcp.json` or another IDE)
 
 Run the HTTP transport locally:
 
 ```bash
-cd k8s-devops-ai-assistant/mcp
+cd kubeastra-ai-assistant/mcp
 make run-http
 ```
 
@@ -353,7 +353,7 @@ Then use this remote MCP config:
 ```json
 {
   "mcpServers": {
-    "k8s-devops-http": {
+    "kubeastra-http": {
       "url": "http://127.0.0.1:8001/mcp/"
     }
   }
@@ -370,7 +370,7 @@ make run-http
 ```json
 {
   "mcpServers": {
-    "k8s-devops-http": {
+    "kubeastra-http": {
       "url": "http://127.0.0.1:8001/mcp/",
       "headers": {
         "Authorization": "Bearer dev-local-token"

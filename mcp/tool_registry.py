@@ -1,4 +1,4 @@
-"""Unified tool registry — single source of truth for all K8s DevOps tools.
+"""Unified tool registry — single source of truth for all KubeAstra tools.
 
 Every tool across all surfaces (MCP stdio, HTTP MCP, REST chat, ReAct loop)
 is defined here with its metadata, schema, and handler adapter. Entry points

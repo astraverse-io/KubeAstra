@@ -349,7 +349,7 @@ function AuthPanel({ status, onAuthenticated }: { status: AuthStatus; onAuthenti
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1.25rem" }}>
           <KubeAstraEmblem size={36} />
           <div>
-            <h1 style={{ margin: 0, fontSize: "1rem", fontWeight: 700 }}>K8s DevOps Assistant</h1>
+            <h1 style={{ margin: 0, fontSize: "1rem", fontWeight: 700 }}>KubeAstra Assistant</h1>
             <p style={{ margin: "0.125rem 0 0 0", color: "var(--ink-3)", fontSize: "0.75rem" }}>Sign in to load your chat history</p>
           </div>
         </div>
@@ -1375,7 +1375,7 @@ export default function ChatPage() {
           <span style={{ width: "1px", height: "1.5rem", flexShrink: 0, background: "var(--rule)" }} />
           <div>
             <p style={{ fontSize: "0.75rem", fontWeight: 500, lineHeight: 1, color: "var(--ink-2)", margin: 0 }}>
-              K8s DevOps Assistant
+              KubeAstra Assistant
             </p>
             <p style={{ fontSize: "10px", marginTop: "0.125rem", lineHeight: 1, color: "var(--ink-3)", margin: "0.125rem 0 0 0" }}>
               Paste an error or ask a question

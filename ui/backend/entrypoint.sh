@@ -9,7 +9,7 @@
 
 set -e
 
-echo "[entrypoint] Starting K8s DevOps Assistant"
+echo "[entrypoint] Starting KubeAstra Assistant"
 echo "[entrypoint]   Chat backend  → :8000"
 echo "[entrypoint]   HTTP MCP      → :8001 (path: /mcp/)"
 if [ "${MCP_HTTP_JSON_RESPONSE:-false}" = "true" ]; then

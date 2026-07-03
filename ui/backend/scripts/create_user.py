@@ -21,7 +21,7 @@ import db  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Create a local K8s DevOps Assistant user")
+    parser = argparse.ArgumentParser(description="Create a local KubeAstra Assistant user")
     parser.add_argument("--username", required=True)
     parser.add_argument("--display-name", default=None)
     parser.add_argument("--role", default="user", choices=["user", "admin"])

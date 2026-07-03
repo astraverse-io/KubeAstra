@@ -12,7 +12,7 @@
 sources:
   # Per-file ingestion: walks the local clone of the deployment repo.
   - kind: local_path
-    path: /Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/deployment-provisioning/ansible
+    path: /Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/deployment-provisioning/ansible
     collection: deployment_repo
 
   # Per-role aggregate pass (plan §11.3): one synthetic doc per role
@@ -20,7 +20,7 @@ sources:
   # ``branch`` / ``path_prefix`` are used to compute GitHub blob URLs
   # so citations match what the production CronJob produces.
   - kind: role_aggregate
-    path: /Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/deployment-provisioning/ansible
+    path: /Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/deployment-provisioning/ansible
     repo_url: https://github.com/kubeastra/deployment-provisioning.git
     branch: main
     path_prefix: ansible

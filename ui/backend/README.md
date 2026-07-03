@@ -1,6 +1,6 @@
 # Backend
 
-FastAPI backend for the K8s DevOps Web UI.
+FastAPI backend for the KubeAstra UI.
 
 This service exposes the REST API used by the Next.js frontend and imports logic directly from `mcp` so there is no duplicated Kubernetes or AI execution layer.
 
@@ -38,25 +38,25 @@ Browser
 
 ## Key Files
 
-- [main.py](/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/backend/main.py)
+- [main.py](/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/backend/main.py)
   App setup, middleware, request logging, lifespan init
-- [db.py](/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/backend/db.py)
+- [db.py](/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/backend/db.py)
   SQLite persistence (users, auth_sessions, sessions, messages, ssh_targets, cluster_connections, user_memory, feedback_events)
-- [auth.py](/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/backend/auth.py)
+- [auth.py](/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/backend/auth.py)
   Local auth helpers, cookie/session validation, and session ownership checks
-- [memory.py](/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/backend/memory.py)
+- [memory.py](/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/backend/memory.py)
   Per-user conversation memory (Phase 2.2): entity capture from tool params + preamble builder
-- [react.py](/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/backend/react.py)
+- [react.py](/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/backend/react.py)
   Multi-step ReAct loop with `on_event` callback (for streaming) and `memory_preamble` parameter (Phase 2.2). Runs a separate streaming LLM call for the final answer.
-- [routers/chat.py](/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/backend/routers/chat.py)
+- [routers/chat.py](/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/backend/routers/chat.py)
   Main chat router + SSE streaming endpoint + memory-capturing dispatch wrapper
-- [routers/health.py](/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/backend/routers/health.py)
+- [routers/health.py](/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/backend/routers/health.py)
   Health endpoints
-- [routers/sessions.py](/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/backend/routers/sessions.py)
+- [routers/sessions.py](/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/backend/routers/sessions.py)
   Chat history and SSH target endpoints (clear-history also wipes per-user memory)
-- [routers/auth.py](/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/backend/routers/auth.py)
+- [routers/auth.py](/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/backend/routers/auth.py)
   Local signup/login/logout/current-user endpoints
-- [routers/feedback.py](/Users/pruthvidavineni/AI_DevOps_Assistant/k8s-devops-ai-assistant/ui/backend/routers/feedback.py)
+- [routers/feedback.py](/Users/pruthvidavineni/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/backend/routers/feedback.py)
   Phase 1.3 — `POST /api/feedback` promotes/quarantines captured sessions and writes feedback audit events
 
 ## Local Run

@@ -2,8 +2,8 @@
 # Drop-in override that enables every Phase 1 feature with sensible
 # production defaults. Apply with:
 #
-#   helm upgrade k8s-devops ./helm/kubeastra \
-#     -n k8s-devops \
+#   helm upgrade kubeastra ./helm/kubeastra \
+#     -n kubeastra \
 #     --reuse-values \
 #     -f helm/kubeastra/values-production.yaml \
 #     --set deploymentRepo.token=ghp_xxxxxxxxxxxxxxxx

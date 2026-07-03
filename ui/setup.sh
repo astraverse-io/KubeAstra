@@ -1,12 +1,12 @@
 #!/bin/bash
-# One-command local setup for K8s DevOps Web UI (no Docker required)
+# One-command local setup for KubeAstra UI (no Docker required)
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MCP_DIR="$(cd "$SCRIPT_DIR/../mcp" && pwd)"
 
 echo "==========================================="
-echo "  K8s DevOps Web UI — Local Setup"
+echo "  KubeAstra UI — Local Setup"
 echo "==========================================="
 
 # ── Check dependencies ────────────────────────────────────────────────────────
@@ -79,7 +79,7 @@ cat > "$SCRIPT_DIR/start.sh" << STARTEOF
 SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 MCP_DIR="\$(cd "\$SCRIPT_DIR/../mcp" && pwd)"
 
-echo "Starting K8s DevOps Web UI..."
+echo "Starting KubeAstra UI..."
 
 # Turbopack can exhaust macOS file descriptors on some local setups.
 # Raise the per-shell limit when allowed; frontend dev uses webpack by default.

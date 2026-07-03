@@ -1,6 +1,6 @@
-# ── Build context: k8s-devops-ai-assistant/ ───────────────────────────────────
-# Build command (run from k8s-devops-ai-assistant/):
-#   docker build -f ui/backend/Dockerfile -t <registry>/k8s-devops-backend:latest .
+# ── Build context: kubeastra-ai-assistant/ ───────────────────────────────────
+# Build command (run from kubeastra-ai-assistant/):
+#   docker build -f ui/backend/Dockerfile -t <registry>/kubeastra-backend:latest .
 
 FROM python:3.11-slim
 
