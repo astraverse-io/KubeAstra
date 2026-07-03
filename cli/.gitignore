@@ -1,0 +1,11 @@
+# Build artifacts
+*.egg-info/
+build/
+dist/
+__pycache__/
+*.pyc
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

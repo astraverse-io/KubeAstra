@@ -280,7 +280,27 @@ ALLOWED_NAMESPACES=prod,staging,default
 
 Restart your IDE — all 51 tools appear as MCP tools.
 
-### Option 4: Deploy to Kubernetes via Helm
+### Option 4: Use the CLI
+
+For terminal-first workflows: a thin HTTP + SSE client for the backend, published as a standalone Python package.
+
+```bash
+pipx install kubeastra                # or: cd cli && pip install -e .
+
+# assuming the backend from Option 2 is running on localhost:8000
+kubeastra ask "why is checkout-service crashlooping in production?"
+kubeastra investigate --pod api-gateway --ns production
+kubeastra doctor                      # health-check CLI + backend + kubeconfig
+```
+
+Config lives at `~/.config/kubeastra/config.toml`. Point at a remote backend with:
+```bash
+kubeastra config set backend-url https://kubeastra.mycompany.com
+```
+
+Full command reference in [`cli/README.md`](cli/README.md).
+
+### Option 5: Deploy to Kubernetes via Helm
 
 Baseline install — chat UI + backend, no advanced features:
 
