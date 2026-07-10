@@ -1,28 +1,57 @@
-/* ── Astra Intent Light — Design Tokens (KubeAstra default) ──────────────
-   Warm-paper palette + cyan accent. Every component references these vars,
-   so a theme swap is a single-file change. Internal dark palette lives
-   under [data-theme="dark"] for users who prefer it. */
+/* ── Design Tokens ────────────────────────────────────────────────────────
+   Two themes: light (warm paper) and dark (cosmic navy). Both carry the
+   full token vocabulary the mission-control components expect
+   (--bg-*, --line-*, --cyan-*, --mag-*) so the same components render
+   under either palette — theme just swaps colors, never the UI. */
 :root, [data-theme="light"] {
   /* Surfaces — warm terminal paper */
   --paper:     #F8F7F4;
   --paper-2:   #F0EEE9;
   --paper-3:   #E8E5DE;
 
+  --bg-0:      #F8F7F4;
+  --bg-1:      #F0EEE9;
+  --bg-2:      #E8E5DE;
+  --bg-3:      #DCD9D1;
+  --bg-4:      #CFCBC1;
+
   /* Text */
   --ink:       #1A1A18;
   --ink-2:     #3D3D39;
   --ink-3:     #6B6B65;
   --ink-4:     #9B9B93;
+  --ink-5:     #B8B8B0;
+  --fg-0:      var(--ink);
+  --fg-1:      var(--ink-2);
+  --fg-2:      var(--ink-2);
+  --fg-3:      var(--ink-3);
+  --fg-4:      var(--ink-4);
 
   /* Borders */
   --rule:      #E0DDD6;
   --rule-2:    #D0CCC4;
+  --line:      #E0DDD6;
+  --line-2:    #D0CCC4;
+  --line-3:    #B8B4A9;
 
   /* Brand accent — KubeAstra cyan (darker for contrast on light bg) */
   --brand:        #0891B2;
   --brand-bright: #22D3EE;
   --brand-bg:     rgba(8, 145, 178, 0.08);
   --brand-bd:     rgba(8, 145, 178, 0.25);
+  --cyan:         #0891B2;
+  --cyan-2:       #22D3EE;
+  --cyan-3:       #0E7490;
+  --cyan-glow:    rgba(8, 145, 178, 0.20);
+  --cyan-bg:      rgba(8, 145, 178, 0.08);
+  --cyan-bd:      rgba(8, 145, 178, 0.25);
+
+  /* Magenta accent — AI moments (reasoning trace, promoted answers) */
+  --mag:          #7E22CE;
+  --mag-2:        #A855F7;
+  --mag-3:        #6B21A8;
+  --mag-bg:       rgba(126, 34, 206, 0.08);
+  --mag-bd:       rgba(126, 34, 206, 0.25);
 
   /* Status */
   --red:       #DC2626;  --red-bg:    #FEF2F2;  --red-bd:    #FECACA;
@@ -45,31 +74,106 @@
   --foreground:    var(--ink);
 }
 
-/* ── Dark theme (opt-in via data-theme="dark") ──────────────────────────── */
-[data-theme="dark"] {
-  --paper:     #0E0E0D;
-  --paper-2:   #181816;
-  --paper-3:   #232320;
+/* ── Dark theme (cosmic navy — the "mission control" aesthetic) ────────── */
+[data-theme="dark"], [data-theme="mission-control"] {
+  --paper:     #07090F;
+  --paper-2:   #0C1019;
+  --paper-3:   #131927;
 
-  --ink:       #F2F0EA;
-  --ink-2:     #C8C5BD;
-  --ink-3:     #8E8B83;
-  --ink-4:     #5E5C56;
+  --bg-0:      #07090F;
+  --bg-1:      #0C1019;
+  --bg-2:      #131927;
+  --bg-3:      #1A2236;
+  --bg-4:      #232D45;
 
-  --rule:      #2A2A26;
-  --rule-2:    #3A3A35;
+  --ink:       #ECEFF7;
+  --ink-2:     #C1C9DC;
+  --ink-3:     #8995B0;
+  --ink-4:     #5E6B86;
+  --ink-5:     #3D485F;
+  --fg-0:      var(--ink);
+  --fg-1:      var(--ink-2);
+  --fg-2:      var(--ink-2);
+  --fg-3:      var(--ink-3);
+  --fg-4:      var(--ink-4);
 
-  /* Brighter cyan pops on dark */
-  --brand:        #22D3EE;
-  --brand-bright: #67E8F9;
-  --brand-bg:     rgba(34, 211, 238, 0.10);
-  --brand-bd:     rgba(34, 211, 238, 0.30);
+  --rule:      #1F2738;
+  --rule-2:    #2C3650;
+  --line:      #1F2738;
+  --line-2:    #2C3650;
+  --line-3:    #3F4E70;
 
-  --red:   #F87171;  --red-bg:   rgba(248,113,113,0.10);  --red-bd:   rgba(248,113,113,0.30);
-  --amber: #FBBF24;  --amber-bg: rgba(251,191,36,0.10);   --amber-bd: rgba(251,191,36,0.32);
-  --green: #4ADE80;  --green-bg: rgba(74,222,128,0.10);   --green-bd: rgba(74,222,128,0.30);
+  /* Bright cyan pops on dark */
+  --brand:        #5EEAD4;
+  --brand-bright: #2DD4BF;
+  --brand-bg:     rgba(94, 234, 212, 0.10);
+  --brand-bd:     rgba(94, 234, 212, 0.30);
+  --cyan:         #5EEAD4;
+  --cyan-2:       #2DD4BF;
+  --cyan-3:       #0F766E;
+  --cyan-glow:    rgba(94, 234, 212, 0.35);
+  --cyan-bg:      rgba(94, 234, 212, 0.10);
+  --cyan-bd:      rgba(94, 234, 212, 0.30);
 
-  --logo-filter: invert(1) hue-rotate(180deg);
+  --mag:          #D8B4FE;
+  --mag-2:        #C084FC;
+  --mag-3:        #7E22CE;
+  --mag-bg:       rgba(216, 180, 254, 0.10);
+  --mag-bd:       rgba(216, 180, 254, 0.30);
+
+  --red:   #FB7185;  --red-bg:   rgba(251, 113, 133, 0.10);  --red-bd:   rgba(251, 113, 133, 0.30);
+  --amber: #FBBF24;  --amber-bg: rgba(251, 191, 36, 0.10);   --amber-bd: rgba(251, 191, 36, 0.30);
+  --green: #34D399;  --green-bg: rgba( 52, 211, 153, 0.10);  --green-bd: rgba( 52, 211, 153, 0.30);
+
+  --logo-filter: none;
+}
+
+/* Cosmic starfield backdrop for dark theme — subtle, doesn't interfere. */
+[data-theme="dark"] body,
+[data-theme="mission-control"] body {
+  background-image:
+    radial-gradient(1px 1px at 12% 23%, rgba(255, 255, 255, 0.40) 50%, transparent 50%),
+    radial-gradient(1px 1px at 67% 78%, rgba(255, 255, 255, 0.25) 50%, transparent 50%),
+    radial-gradient(1px 1px at 42% 41%, rgba(255, 255, 255, 0.30) 50%, transparent 50%),
+    radial-gradient(1px 1px at 85% 14%, rgba(255, 255, 255, 0.20) 50%, transparent 50%),
+    radial-gradient(1px 1px at 23% 67%, rgba(255, 255, 255, 0.30) 50%, transparent 50%),
+    radial-gradient(1px 1px at 92% 56%, rgba(255, 255, 255, 0.25) 50%, transparent 50%),
+    radial-gradient(circle at 80% 20%, rgba(94, 234, 212, 0.04), transparent 60%),
+    radial-gradient(circle at 10% 90%, rgba(216, 180, 254, 0.03), transparent 60%);
+  background-size:
+    720px 540px, 540px 360px, 480px 360px, 360px 240px,
+    600px 480px, 420px 540px, 100% 100%, 100% 100%;
+  background-attachment: fixed;
+}
+
+/* Hex-grid backdrop — cyan-tinted on dark, muted on light. */
+.mc-grid-bg {
+  background-image:
+    linear-gradient(rgba(8, 145, 178, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(8, 145, 178, 0.05) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+[data-theme="dark"] .mc-grid-bg,
+[data-theme="mission-control"] .mc-grid-bg {
+  background-image:
+    linear-gradient(rgba(94, 234, 212, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(94, 234, 212, 0.04) 1px, transparent 1px);
+}
+
+/* Compact-mode overrides for the classic header controls hosted inside
+   the 52-px MissionControlHeader row. Applies in all themes. */
+.mc-header-controls .sym-btn-ghost {
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+  border-radius: 4px !important;
+}
+.mc-header-controls button[title*="theme" i] {
+  width: 26px !important;
+  height: 26px !important;
+  padding: 0 !important;
+}
+.mc-header-controls span[style*="font-size: 0.75rem"] {
+  font-size: 10px !important;
 }
 
 /* ── Base ──────────────────────────────────────────────────────────────── */
@@ -87,21 +191,8 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Scanline overlay (dark theme only — subtle CRT texture) ───────────── */
-[data-theme="dark"] body::before {
-  content: "";
-  position: fixed;
-  top: 0; left: 0; width: 100vw; height: 100vh;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(255, 255, 255, 0.015) 2px,
-    rgba(255, 255, 255, 0.015) 4px
-  );
-  z-index: 9999;
-}
+/* Scanline overlay removed — the starfield backdrop provides enough
+   texture on dark, and the scanline was too busy layered on top. */
 
 /* ── Custom scrollbar ──────────────────────────────────────────────────── */
 ::-webkit-scrollbar       { width: 6px; height: 6px; }
@@ -223,6 +314,68 @@ button { font-family: var(--sans); }
   50%      { opacity: 1; }
 }
 .logo-core-pulse { animation: logo-pulse 3s ease-in-out infinite; }
+
+/* ── Mission Control animations ──────────────────────────────────────────
+   All are opt-in via keyframe name (no global side effects). The
+   reduced-motion block at the bottom of this file zeroes their duration. */
+@keyframes mcRingExpand {
+  0%   { transform: scale(0.7); opacity: 0.8; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+@keyframes mcScanLine {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(100%); opacity: 0; }
+}
+@keyframes mcOrbit {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes mcGlow {
+  0%, 100% { filter: drop-shadow(0 0 4px var(--cyan-glow, rgba(94,234,212,0.35))); }
+  50%      { filter: drop-shadow(0 0 12px var(--cyan-glow, rgba(94,234,212,0.35))); }
+}
+@keyframes mcStreamIn {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes mcFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes mcOverlayCard {
+  from { opacity: 0; transform: translateY(16px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+@keyframes mcBlink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* Mission-control caret used inside ReasoningStream */
+.mc-caret {
+  display: inline-block;
+  width: 6px;
+  height: 12px;
+  vertical-align: -1px;
+  background: var(--cyan, currentColor);
+  animation: mcBlink 1s steps(1, end) infinite;
+  margin-left: 2px;
+}
+
+/* Reduced-motion opt-out: kill mission-control keyframes.
+   Also zeroes existing app keyframes so users with reduced-motion get
+   a consistent still experience across themes. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration:    0.001ms !important;
+    animation-iteration-count: 1   !important;
+    transition-duration:   0.001ms !important;
+    scroll-behavior:       auto    !important;
+  }
+  .mc-caret { animation: none; opacity: 1; }
+}
 
 /* ── Markdown styling — clean cards for LLM responses ──────────────────── */
 .markdown-body {

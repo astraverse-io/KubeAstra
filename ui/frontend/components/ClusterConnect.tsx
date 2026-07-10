@@ -110,30 +110,37 @@ export default function ClusterConnect({
     }
   };
 
-  if (status?.connected) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.75rem" }}>
-        <span
-          style={{
-            display: "flex", alignItems: "center", gap: "0.375rem", padding: "0.25rem 0.625rem", borderRadius: "0.5rem",
-            border: "1px solid var(--brand-bd)", background: "var(--brand-bg)", color: "var(--brand)"
-          }}
-        >
-          <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: "var(--brand)" }} />
-          {status.context_name || status.cluster_name || "cluster"}
-        </span>
-        <button onClick={handleDisconnect} disabled={busy} className="sym-btn-ghost" style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem" }}>
-          Disconnect
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <div style={{ position: "relative" }}>
-      <button onClick={() => setOpen(!open)} className="sym-btn-ghost" style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}>
-        Connect Cluster
-      </button>
+    <div style={{ position: "relative", display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.75rem" }}>
+      {status?.connected ? (
+        <>
+          <span
+            style={{
+              display: "flex", alignItems: "center", gap: "0.375rem", padding: "0.25rem 0.625rem", borderRadius: "0.5rem",
+              border: "1px solid var(--brand-bd)", background: "var(--brand-bg)", color: "var(--brand)"
+            }}
+          >
+            <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: "var(--brand)" }} />
+            {status.context_name || status.cluster_name || "cluster"}
+          </span>
+          <button
+            onClick={() => setOpen(!open)}
+            disabled={busy}
+            className="sym-btn-ghost"
+            style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem" }}
+            title="Switch to a different cluster context"
+          >
+            Switch
+          </button>
+          <button onClick={handleDisconnect} disabled={busy} className="sym-btn-ghost" style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem" }}>
+            Disconnect
+          </button>
+        </>
+      ) : (
+        <button onClick={() => setOpen(!open)} className="sym-btn-ghost" style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}>
+          Connect Cluster
+        </button>
+      )}
 
       {open && (
         <div

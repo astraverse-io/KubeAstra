@@ -15,6 +15,14 @@ import { ApprovalOverlay } from "../../components/ApprovalOverlay";
 import { CostBreakdownOverlay } from "../../components/CostBreakdownOverlay";
 import { YamlProposer } from "../../components/YamlProposer";
 import { SuggestedActions, firstExecutableAction, type SuggestedAction } from "../../components/SuggestedActions";
+import { AstraGlyph } from "../../components/AstraGlyph";
+import { MissionControlHeader } from "../../components/MissionControlHeader";
+import { MissionControlLeftRail } from "../../components/MissionControlLeftRail";
+import { MissionControlDiagnosis } from "../../components/MissionControlDiagnosis";
+import { MissionControlApprovalOverlay } from "../../components/MissionControlApprovalOverlay";
+import { MissionControlToolTrail } from "../../components/MissionControlToolTrail";
+import { CommandBar } from "../../components/CommandBar";
+import { resultToMissionControlDiagnosis } from "../../lib/missionControlAdapters";
 import {
   sendChat,
   sendChatStream,
@@ -611,9 +619,26 @@ export default function ChatPage() {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<{ messageId: string; action: SuggestedAction } | null>(null);
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  // Read the theme synchronously from the DOM on first render. The inline
+  // script in layout.tsx sets data-theme from localStorage before hydration,
+  // so this returns the correct value on the client. On the server document
+  // is undefined and we fall back to "dark". suppressHydrationWarning on
+  // <html> silences the resulting mismatch — it's intentional.
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    if (typeof document === "undefined") return "dark";
+    const attr = document.documentElement.getAttribute("data-theme");
+    // Legacy "mission-control" migrates to dark — the aesthetic is baked
+    // into dark now.
+    if (attr === "mission-control") return "dark";
+    if (attr === "light" || attr === "dark") return attr;
+    return "dark";
+  });
   const [costBreakdownRunId, setCostBreakdownRunId] = useState<string | null>(null);
-  const [mounted, setMounted] = useState(false);
+  // `mounted` starts true on the client (theme is already correct via the
+  // lazy initializer + layout script), so isMissionControl is right from
+  // paint 1. On the server it stays false so we don't render mission-control
+  // markup that would mismatch on hydration.
+  const [mounted, setMounted] = useState(() => typeof document !== "undefined");
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -721,11 +746,10 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
+    // Belt-and-suspenders: if for some reason (JS disabled, script blocked)
+    // the layout init script didn't run, mounted may still be false — force
+    // it here. Theme was already read from data-theme in the state initializer.
     setMounted(true);
-    const stored = localStorage.getItem("theme") as "dark" | "light";
-    if (stored) {
-      setTheme(stored);
-    }
   }, []);
 
   useEffect(() => {
@@ -1323,6 +1347,183 @@ export default function ChatPage() {
     return <AuthPanel status={authStatus} onAuthenticated={handleAuthenticated} />;
   }
 
+  // The new mission-control UI is now the only UI — light/dark just swap
+  // colors within the same components. We keep this variable as `true`
+  // to preserve the branch shape for a future re-fork if we ever want a
+  // classic-UI fallback; today it collapses to a single code path.
+  const isMissionControl = true;
+
+  const themePickerButton = (
+    <button
+      onClick={() => setTheme(t => t === "light" ? "dark" : "light")}
+      className="sym-btn-ghost"
+      style={{ width: "2rem", height: "2rem", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}
+      title={!mounted ? "Switch theme" : `Switch to ${theme === "light" ? "dark" : "light"} mode`}
+      aria-label={!mounted ? "Switch theme" : `Current theme: ${theme}. Click to switch to ${theme === "light" ? "dark" : "light"}.`}
+    >
+      {!mounted ? (
+        <div style={{ width: "16px", height: "16px" }} />
+      ) : theme === "light" ? (
+        // Preview next state (dark) — moon
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+      ) : (
+        // Preview next state (light) — sun
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+      )}
+    </button>
+  );
+
+  const exportPMButton = (
+    <button
+      onClick={handleExportPM}
+      disabled={!isOwnedSession || exportingPM || messages.length === 0}
+      className="sym-btn-ghost"
+      style={{ display: "flex", alignItems: "center", gap: "0.375rem", padding: "0.375rem 0.625rem", borderRadius: "0.375rem", fontSize: "0.75rem", fontWeight: 500, color: "var(--ink)", opacity: (!isOwnedSession || exportingPM || messages.length === 0) ? 0.5 : 1, transition: "background 0.15s, opacity 0.15s" }}
+      title={isOwnedSession ? "Generate Post-Mortem Report from this session" : "Export is disabled for read-only shared chats"}
+    >
+      {exportingPM ? (
+        <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      )}
+      <span>Export PM</span>
+    </button>
+  );
+
+  const healthPills = (
+    !healthLoaded ? (
+      <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
+        <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: "var(--rule)", animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" }} />
+        Checking…
+      </span>
+    ) : !health ? (
+      <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.75rem", color: "var(--danger)" }}>
+        <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: "var(--danger)" }} />
+        Backend offline
+      </span>
+    ) : (
+      <>
+        <span
+          style={{ display: "flex", alignItems: "center", gap: "0.375rem", color: health.kubectl_available ? "var(--success)" : "var(--warning)" }}
+          title={
+            health.kubectl_available
+              ? `kubectl connected (${health.kubectl_mode ?? "unknown mode"}${health.kubectl_context ? `, context: ${health.kubectl_context}` : ""})`
+              : "No cluster configured — use SSH Cluster to connect"
+          }
+        >
+          <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: health.kubectl_available ? "var(--success)" : "var(--warning)" }} />
+          {health.kubectl_available ? "kubectl" : "no cluster"}
+          {health.kubectl_available && health.kubectl_mode && (
+            <span style={{ fontSize: "0.6875rem", color: "var(--ink-3)", fontFamily: "var(--font-mono, monospace)" }}>
+              [{health.kubectl_mode === "in_cluster" ? "in-cluster" : "kubeconfig"}]
+            </span>
+          )}
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", color: health.ai_enabled ? "var(--brand)" : "var(--ink-3)" }}>
+          <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: health.ai_enabled ? "var(--brand)" : "var(--rule)" }} />
+          AI
+        </span>
+      </>
+    )
+  );
+
+  const alertsButton = !isDeniedSharedSession && (
+    <button
+      onClick={() => {
+        if (typeof window !== "undefined") {
+          sessionStorage.setItem("k8s_chat_return_session", sessionId);
+        }
+        window.location.href = "/alerts";
+      }}
+      className="sym-btn-ghost"
+      style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem", marginLeft: "0.5rem" }}
+      title="View triggered investigations and RCAs"
+    >
+      Alerts
+    </button>
+  );
+
+  const shareAndNewChat = (messages.length > 0 || !isOwnedSession) && (
+    <>
+      {messages.length > 0 && !isDeniedSharedSession && (
+        <button
+          onClick={handleShare}
+          className="sym-btn-ghost"
+          style={{ marginLeft: "0.5rem", padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
+        >
+          {shareCopied ? "Copied" : "Share"}
+        </button>
+      )}
+      <button
+        onClick={handleNewChat}
+        className="sym-btn-ghost"
+        style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
+      >
+        New chat
+      </button>
+    </>
+  );
+
+  const accountControls = authIsEnabled && currentUser && (
+    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginLeft: "0.5rem" }}>
+      <span style={{ color: "var(--ink-3)", fontSize: "0.75rem" }}>
+        {currentUser.display_name || currentUser.username}
+      </span>
+      <button
+        className="sym-btn-ghost"
+        style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
+        onClick={() => setAccountOpen(true)}
+      >
+        Account
+      </button>
+      <button
+        className="sym-btn-ghost"
+        style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
+        onClick={async () => {
+          await logout();
+          setAuthStatus({ auth_enabled: true, allow_signup: authStatus?.allow_signup ?? false, user: null });
+          setMessages([]);
+          setSessions([]);
+          setClusterConn(null);
+          setSshCreds(null);
+          setHistoryLoaded(true);
+        }}
+      >
+        Logout
+      </button>
+    </div>
+  );
+
+  const headerRightControls = (
+    <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", fontSize: "0.75rem" }}>
+      {themePickerButton}
+      {exportPMButton}
+      {isOwnedSession && (
+        <>
+          <ClusterConnect
+            sessionId={sessionId}
+            status={clusterConn}
+            onStatusChange={(status) => setClusterConn(status?.connected ? status : null)}
+            isOpen={activePopover === "cluster"}
+            onToggle={(open) => setActivePopover(open ? "cluster" : "none")}
+          />
+          <SSHPanel
+            sessionId={sessionId}
+            connected={sshCreds}
+            onConnect={handleConnect}
+            onDisconnect={handleDisconnect}
+            isOpen={activePopover === "ssh"}
+            onToggle={(open) => setActivePopover(open ? "ssh" : "none")}
+          />
+        </>
+      )}
+      {healthPills}
+      {alertsButton}
+      {shareAndNewChat}
+      {accountControls}
+    </div>
+  );
+
   return (
     <div style={{ display: "flex", width: "100vw", height: "100vh", overflow: "hidden", background: "var(--paper)", color: "var(--ink)" }}>
       {accountOpen && currentUser && (
@@ -1332,36 +1533,109 @@ export default function ChatPage() {
           onAuthChanged={(status) => setAuthStatus(status)}
         />
       )}
-      <SessionSidebar
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-        sessions={sessions}
-        currentSessionId={sessionId}
-        onSelectSession={(id) => {
-          resetSharedViewState();
-          setSessionId(id);
-          if (!authIsEnabled && typeof window !== "undefined") localStorage.setItem("k8s_session_id", id);
-          setMessages([]);
-          setHistoryLoaded(false);
-        }}
-        onNewSession={handleNewChat}
-        onDeleteSession={handleDeleteSession}
-      />
+      {isMissionControl ? (
+        <MissionControlLeftRail
+          sessions={sessions.map((s) => ({ id: s.id, title: s.title, timestamp: s.timestamp }))}
+          currentSessionId={sessionId}
+          onSelectSession={(id) => {
+            resetSharedViewState();
+            setSessionId(id);
+            if (!authIsEnabled && typeof window !== "undefined") localStorage.setItem("k8s_session_id", id);
+            setMessages([]);
+            setHistoryLoaded(false);
+          }}
+          onNewSession={handleNewChat}
+          onDeleteSession={handleDeleteSession}
+          clusterStatus={clusterConn}
+          onEditCluster={() => {
+            // The ClusterConnect popover is anchored inside the header
+            // (top-right). If we only flip activePopover state, the popover
+            // opens far from the LeftRail click and users don't notice it.
+            // Programmatically click the actual header button so its popover
+            // opens in-place with the same interaction affordance the user
+            // gets when clicking the header button directly.
+            if (typeof document === "undefined") return;
+            const headerBtn = Array.from(document.querySelectorAll<HTMLButtonElement>("header button, [role='banner'] button, .mc-header-controls button")).find(
+              // Match either the disconnected "Connect Cluster" button or the
+              // connected-state "Switch" button — both open the same picker.
+              (b) => /^(connect cluster|switch)$/i.test((b.textContent || "").trim()),
+            );
+            if (headerBtn) {
+              headerBtn.click();
+              headerBtn.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            } else {
+              // Fallback if the header button couldn't be located (e.g.
+              // read-only shared session). Still open via state so at least
+              // the popover renders.
+              setActivePopover("cluster");
+            }
+          }}
+        />
+      ) : (
+        <SessionSidebar
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+          sessions={sessions}
+          currentSessionId={sessionId}
+          onSelectSession={(id) => {
+            resetSharedViewState();
+            setSessionId(id);
+            if (!authIsEnabled && typeof window !== "undefined") localStorage.setItem("k8s_session_id", id);
+            setMessages([]);
+            setHistoryLoaded(false);
+          }}
+          onNewSession={handleNewChat}
+          onDeleteSession={handleDeleteSession}
+        />
+      )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {isOwnedSession && pendingApproval && (
+          isMissionControl ? (
+            <MissionControlApprovalOverlay
+              onClose={() => setPendingApproval(null)}
+              onConfirm={approvePendingAction}
+              title={pendingApproval.action.label || "Review and execute fix"}
+              coordinates={[
+                { label: "cluster", value: sshCreds?.host || clusterConn?.cluster_name || clusterConn?.context_name || "Local Cluster" },
+                ...(pendingApproval.action.risk ? [{ label: "risk", value: pendingApproval.action.risk }] : []),
+              ]}
+              preflightChecks={[
+                "AI DevOps Assistant requires your approval before running this recovery action.",
+              ]}
+              diffFileHeader={pendingApproval.action.command ?? ""}
+              diffLines={[
+                { kind: "context", text: pendingApproval.action.command ?? "" },
+                ...(pendingApproval.action.stdin
+                  ? [{ kind: "context" as const, text: "── stdin ──" }].concat(
+                      pendingApproval.action.stdin.split("\n").map((line) => ({ kind: "context" as const, text: line })),
+                    )
+                  : []),
+              ]}
+              executionCommand={pendingApproval.action.command}
+            />
+          ) : (
             <ApprovalOverlay
               onClose={() => setPendingApproval(null)}
               onConfirm={approvePendingAction}
-              commandInfo={{ 
+              commandInfo={{
                 command: pendingApproval.action.command ?? "",
                 explanation: `${pendingApproval.action.label || "Review and execute fix"}${pendingApproval.action.risk ? ` (${pendingApproval.action.risk} risk)` : ""}. AI DevOps Assistant requires your approval before running this recovery action.`,
                 stdin: pendingApproval.action.stdin
               }}
               contextName={sshCreds?.host || clusterConn?.context_name || "Local Cluster"}
             />
+          )
         )}
 
-        {/* ── header ── */}
+        {isMissionControl ? (
+          <div className="mc-header-controls">
+            <MissionControlHeader
+              clusterStatus={clusterConn}
+              busy={loading}
+              rightSlot={headerRightControls}
+            />
+          </div>
+        ) : (
         <header
           style={{ flexShrink: 0, padding: "1rem 1.5rem", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--rule)", background: "var(--paper-2)" }}
         >
@@ -1383,168 +1657,9 @@ export default function ChatPage() {
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", fontSize: "0.75rem" }}>
-          <button
-            onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}
-            className="sym-btn-ghost"
-            style={{ width: "2rem", height: "2rem", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}
-            title={!mounted ? "Switch theme" : `Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-          >
-            {!mounted ? (
-              <div style={{ width: "16px", height: "16px" }} />
-            ) : theme === "dark" ? (
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-            ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-            )}
-          </button>
-
-          <button
-            onClick={handleExportPM}
-            disabled={!isOwnedSession || exportingPM || messages.length === 0}
-            className="sym-btn-ghost"
-            style={{ display: "flex", alignItems: "center", gap: "0.375rem", padding: "0.375rem 0.625rem", borderRadius: "0.375rem", fontSize: "0.75rem", fontWeight: 500, color: "var(--ink)", opacity: (!isOwnedSession || exportingPM || messages.length === 0) ? 0.5 : 1, transition: "background 0.15s, opacity 0.15s" }}
-            title={isOwnedSession ? "Generate Post-Mortem Report from this session" : "Export is disabled for read-only shared chats"}
-          >
-            {exportingPM ? (
-              <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            )}
-            <span>Export PM</span>
-          </button>
-
-          {isOwnedSession && (
-            <>
-              <ClusterConnect
-                sessionId={sessionId}
-                status={clusterConn}
-                onStatusChange={(status) => setClusterConn(status?.connected ? status : null)}
-                isOpen={activePopover === "cluster"}
-                onToggle={(open) => setActivePopover(open ? "cluster" : "none")}
-              />
-              <SSHPanel
-                sessionId={sessionId}
-                connected={sshCreds}
-                onConnect={handleConnect}
-                onDisconnect={handleDisconnect}
-                isOpen={activePopover === "ssh"}
-                onToggle={(open) => setActivePopover(open ? "ssh" : "none")}
-              />
-            </>
-          )}
-
-          {!healthLoaded ? (
-            /* Still loading — brief spinner dot */
-            <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
-              <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: "var(--rule)", animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" }} />
-              Checking…
-            </span>
-          ) : !health ? (
-            /* Backend unreachable */
-            <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.75rem", color: "var(--danger)" }}>
-              <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: "var(--danger)" }} />
-              Backend offline
-            </span>
-          ) : (
-            <>
-              {/* kubectl: green = cluster active, yellow = no cluster configured */}
-              <span
-                style={{ display: "flex", alignItems: "center", gap: "0.375rem", color: health.kubectl_available ? "var(--success)" : "var(--warning)" }}
-                title={
-                  health.kubectl_available
-                    ? `kubectl connected (${health.kubectl_mode ?? "unknown mode"}${health.kubectl_context ? `, context: ${health.kubectl_context}` : ""})`
-                    : "No cluster configured — use SSH Cluster to connect"
-                }
-              >
-                <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: health.kubectl_available ? "var(--success)" : "var(--warning)" }} />
-                {health.kubectl_available ? "kubectl" : "no cluster"}
-                {health.kubectl_available && health.kubectl_mode && (
-                  <span style={{ fontSize: "0.6875rem", color: "var(--ink-3)", fontFamily: "var(--font-mono, monospace)" }}>
-                    [{health.kubectl_mode === "in_cluster" ? "in-cluster" : "kubeconfig"}]
-                  </span>
-                )}
-              </span>
-              <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", color: health.ai_enabled ? "var(--brand)" : "var(--ink-3)" }}>
-                <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: health.ai_enabled ? "var(--brand)" : "var(--rule)" }} />
-                AI
-              </span>
-            </>
-          )}
-
-          {/* Alerts dashboard — always available, including on an empty chat,
-              so users can browse past investigations without first typing
-              anything. Hidden only when the user is viewing a denied shared
-              session (no header chrome there at all). */}
-          {!isDeniedSharedSession && (
-            <button
-              onClick={() => {
-                // Remember the session so /alerts' "Back to chat" returns here
-                // (the chat [sessionId] page redirects back into /chat with
-                // the session restored).
-                if (typeof window !== "undefined") {
-                  sessionStorage.setItem("k8s_chat_return_session", sessionId);
-                }
-                window.location.href = "/alerts";
-              }}
-              className="sym-btn-ghost"
-              style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem", marginLeft: "0.5rem" }}
-              title="View triggered investigations and RCAs"
-            >
-              Alerts
-            </button>
-          )}
-          {(messages.length > 0 || !isOwnedSession) && (
-            <>
-              {messages.length > 0 && !isDeniedSharedSession && (
-                <button
-                  onClick={handleShare}
-                  className="sym-btn-ghost"
-                  style={{ marginLeft: "0.5rem", padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
-                >
-                  {shareCopied ? "Copied" : "Share"}
-                </button>
-              )}
-              <button
-                onClick={handleNewChat}
-                className="sym-btn-ghost"
-                style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
-              >
-                New chat
-              </button>
-            </>
-          )}
-          {authIsEnabled && currentUser && (
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginLeft: "0.5rem" }}>
-              <span style={{ color: "var(--ink-3)", fontSize: "0.75rem" }}>
-                {currentUser.display_name || currentUser.username}
-              </span>
-              <button
-                className="sym-btn-ghost"
-                style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
-                onClick={() => setAccountOpen(true)}
-              >
-                Account
-              </button>
-              <button
-                className="sym-btn-ghost"
-                style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
-                onClick={async () => {
-                  await logout();
-                  setAuthStatus({ auth_enabled: true, allow_signup: authStatus?.allow_signup ?? false, user: null });
-                  setMessages([]);
-                  setSessions([]);
-                  setClusterConn(null);
-                  setSshCreds(null);
-                  setHistoryLoaded(true);
-                }}
-              >
-                Logout
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
+          {headerRightControls}
+        </header>
+        )}
 
       {(isReadonlySharedSession || isDeniedSharedSession) && (
         <div style={{
@@ -1592,23 +1707,46 @@ export default function ChatPage() {
           {isEmpty && (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", minHeight: "60vh", textAlign: "center", gap: "1.5rem" }}>
               <div>
-                {/* Large KubeAstra emblem */}
-                <div style={{ margin: "0 auto 1.25rem auto", width: "max-content" }}>
-                  <KubeAstraEmblem size={60} />
-                </div>
-                <h2 style={{ fontSize: "1.5rem", fontWeight: 600, color: "var(--ink)", margin: 0 }}>
-                  {isReadonlySharedSession ? "This shared chat has no messages yet" : "How can I help you today?"}
-                </h2>
-                <p style={{ marginTop: "0.5rem", fontSize: "0.875rem", maxWidth: "28rem", margin: "0.5rem auto 0 auto", color: "var(--ink-2)" }}>
-                  {isReadonlySharedSession
-                    ? "You can view this chat as an admin, but cannot add messages to it."
-                    : "Ask about Kubernetes errors, pod status, logs, or events. I'll route to the right tool automatically."}
-                </p>
-                {isOwnedSession && !sshCreds && (
-                  <p style={{ marginTop: "0.5rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
-                    Connect to a remote cluster via the{" "}
-                    <span style={{ color: "var(--brand)" }}>SSH Cluster</span> button above.
-                  </p>
+                {isMissionControl ? (
+                  <>
+                    <div style={{ margin: "0 auto 1rem auto", width: "max-content" }}>
+                      <AstraGlyph size={56} animate />
+                    </div>
+                    <div style={{ fontFamily: "var(--sans)", fontSize: 20, fontWeight: 600, color: "var(--ink, var(--fg-0))" }}>
+                      {isReadonlySharedSession ? "Empty shared chat" : "Astra is online"}
+                    </div>
+                    <div style={{ marginTop: 6, fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-3, var(--fg-3))", letterSpacing: "0.05em" }}>
+                      {isReadonlySharedSession
+                        ? "read-only · no messages"
+                        : "Ready to investigate · standing by"}
+                    </div>
+                    {isOwnedSession && !sshCreds && !clusterConn?.connected && (
+                      <div style={{ marginTop: 12, fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-3, var(--fg-3))" }}>
+                        No cluster attached — use the sidebar to connect.
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {/* Large KubeAstra emblem */}
+                    <div style={{ margin: "0 auto 1.25rem auto", width: "max-content" }}>
+                      <KubeAstraEmblem size={60} />
+                    </div>
+                    <h2 style={{ fontSize: "1.5rem", fontWeight: 600, color: "var(--ink)", margin: 0 }}>
+                      {isReadonlySharedSession ? "This shared chat has no messages yet" : "How can I help you today?"}
+                    </h2>
+                    <p style={{ marginTop: "0.5rem", fontSize: "0.875rem", maxWidth: "28rem", margin: "0.5rem auto 0 auto", color: "var(--ink-2)" }}>
+                      {isReadonlySharedSession
+                        ? "You can view this chat as an admin, but cannot add messages to it."
+                        : "Ask about Kubernetes errors, pod status, logs, or events. I'll route to the right tool automatically."}
+                    </p>
+                    {isOwnedSession && !sshCreds && (
+                      <p style={{ marginTop: "0.5rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
+                        Connect to a remote cluster via the{" "}
+                        <span style={{ color: "var(--brand)" }}>SSH Cluster</span> button above.
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -1661,18 +1799,20 @@ export default function ChatPage() {
               style={{ display: "flex", gap: "0.75rem", flexDirection: m.role === "user" ? "row-reverse" : "row" }}
             >
 
-              {/* avatar */}
-              <div
-                style={{
-                  flexShrink: 0, width: "2rem", height: "2rem", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.75rem", fontWeight: "bold",
-                  ...(m.role === "user"
-                    ? { background: "var(--brand)", color: "#000" }
-                    : { background: "var(--paper-3)", color: "var(--ink-2)", border: "1px solid var(--rule)" }
-                  )
-                }}
-              >
-                {m.role === "user" ? "U" : "⎈"}
-              </div>
+              {/* avatar — hidden in mission-control (terminal-style prefixes replace it) */}
+              {!isMissionControl && (
+                <div
+                  style={{
+                    flexShrink: 0, width: "2rem", height: "2rem", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.75rem", fontWeight: "bold",
+                    ...(m.role === "user"
+                      ? { background: "var(--brand)", color: "#000" }
+                      : { background: "var(--paper-3)", color: "var(--ink-2)", border: "1px solid var(--rule)" }
+                    )
+                  }}
+                >
+                  {m.role === "user" ? "U" : "⎈"}
+                </div>
+              )}
 
               <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", maxWidth: "85%", minWidth: 0, alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
 
@@ -1683,25 +1823,56 @@ export default function ChatPage() {
                 )}
 
                 {m.role === "assistant" && !m.loading && m.reactSteps && m.reactSteps.length > 0 && (
-                  <InvestigationTrail steps={m.reactSteps} thinking={false} />
+                  isMissionControl
+                    ? <MissionControlToolTrail steps={m.reactSteps} thinking={false} />
+                    : <InvestigationTrail steps={m.reactSteps} thinking={false} />
                 )}
 
                 {m.role === "assistant" && !m.loading && m.result && m.tool && m.tool !== "none" && m.text && (
                   <div
-                    style={{
-                      borderRadius: "1rem",
-                      borderTopLeftRadius: "0.125rem",
-                      padding: "0.75rem 1rem",
-                      fontSize: "0.875rem",
-                      lineHeight: 1.6,
-                      background: "var(--paper-2)",
-                      color: "var(--ink)",
-                      border: "1px solid var(--rule)",
-                      wordBreak: "break-word",
-                      overflowWrap: "break-word",
-                      maxWidth: "100%",
-                    }}
+                    style={
+                      isMissionControl
+                        ? {
+                            borderRadius: 6,
+                            padding: "10px 14px",
+                            fontFamily: "var(--sans)",
+                            fontSize: 12.5,
+                            lineHeight: 1.55,
+                            background: "var(--bg-1, var(--paper-2))",
+                            color: "var(--ink, var(--fg-1))",
+                            border: "1px solid var(--line, var(--rule))",
+                            borderLeft: "2px solid var(--cyan, var(--brand))",
+                            wordBreak: "break-word",
+                            overflowWrap: "break-word",
+                            maxWidth: "100%",
+                          }
+                        : {
+                            borderRadius: "1rem",
+                            borderTopLeftRadius: "0.125rem",
+                            padding: "0.75rem 1rem",
+                            fontSize: "0.875rem",
+                            lineHeight: 1.6,
+                            background: "var(--paper-2)",
+                            color: "var(--ink)",
+                            border: "1px solid var(--rule)",
+                            wordBreak: "break-word",
+                            overflowWrap: "break-word",
+                            maxWidth: "100%",
+                          }
+                    }
                   >
+                    {isMissionControl && (
+                      <div aria-hidden="true" style={{
+                        fontFamily: "var(--mono)",
+                        fontSize: 9,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.10em",
+                        color: "var(--cyan, var(--brand))",
+                        marginBottom: 6,
+                      }}>
+                        astra›
+                      </div>
+                    )}
                     <MarkdownMessage text={m.text} onApplyYaml={isOwnedSession ? (yaml) => {
                       handleExecuteAction(m.id, {
                         label: "Apply YAML Patch",
@@ -1714,23 +1885,41 @@ export default function ChatPage() {
                   </div>
                 )}
 
-                {m.role === "assistant" && !m.loading && m.result && m.tool && m.tool !== "none" && m.tool !== "proactive_triage" && (
-                  <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-                    {(m.tool === "investigate_pod" || m.tool === "investigate_workload" || m.tool === "analyze_namespace") && (() => {
-                      // Only wire the card's execute button to a real executable action.
-                      // A manual "Trace source/config" follow-up has no command and must
-                      // not be routed into executeCommand (would run an empty command).
-                      const executable = firstExecutableAction(m.suggestedActions);
-                      return (
-                        <RootCauseCard
-                          result={m.result}
-                          onReviewExecute={isOwnedSession && executable ? () => handleExecuteAction(m.id, executable) : undefined}
+                {m.role === "assistant" && !m.loading && m.result && m.tool && m.tool !== "none" && m.tool !== "proactive_triage" && (() => {
+                  const isInvestigation = m.tool === "investigate_pod" || m.tool === "investigate_workload" || m.tool === "analyze_namespace";
+                  const executable = firstExecutableAction(m.suggestedActions);
+                  const onExec = isOwnedSession && executable ? () => handleExecuteAction(m.id, executable) : undefined;
+                  const missionControlDiagnosis = isMissionControl && isInvestigation ? resultToMissionControlDiagnosis(m.result) : null;
+                  return (
+                    <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                      {missionControlDiagnosis ? (
+                        // Mission Control mode: the diagnosis card is the whole
+                        // presentation. Skip ResultCard — it duplicates evidence,
+                        // metrics, and next-actions that Diagnosis already covers.
+                        <MissionControlDiagnosis
+                          severity={missionControlDiagnosis.severity}
+                          title={missionControlDiagnosis.title}
+                          summary={missionControlDiagnosis.summary}
+                          confidence={missionControlDiagnosis.confidence}
+                          metrics={missionControlDiagnosis.metrics}
+                          diff={missionControlDiagnosis.diff}
+                          diffMeta={missionControlDiagnosis.diffMeta}
+                          onAuthorize={onExec}
                         />
-                      );
-                    })()}
-                    <ResultCard tool={m.tool} result={m.result} footerSlot={renderFeedbackControls(m, "footer")} />
-                  </div>
-                )}
+                      ) : (
+                        <>
+                          {isInvestigation && !isMissionControl && (
+                            <RootCauseCard
+                              result={m.result}
+                              onReviewExecute={onExec}
+                            />
+                          )}
+                          <ResultCard tool={m.tool} result={m.result} footerSlot={renderFeedbackControls(m, "footer")} />
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* ── User message ── */}
                 {m.role === "user" && (
@@ -1821,20 +2010,39 @@ export default function ChatPage() {
                         )}
                       </div>
                       <div
-                        style={{
-                          borderRadius: "1rem",
-                          borderTopRightRadius: "0.125rem",
-                          padding: "0.75rem 1rem",
-                          fontSize: "0.875rem",
-                          lineHeight: 1.6,
-                          background: "var(--brand)",
-                          color: "#000",
-                          wordBreak: "break-word",
-                          overflowWrap: "break-word",
-                          maxWidth: "100%",
-                        }}
+                        style={
+                          isMissionControl
+                            ? {
+                                borderRadius: 6,
+                                padding: "10px 14px",
+                                fontFamily: "var(--mono)",
+                                fontSize: 12,
+                                lineHeight: 1.55,
+                                background: "var(--cyan-bg, var(--brand-bg))",
+                                color: "var(--ink, var(--fg-0))",
+                                border: "1px solid var(--cyan-bd, var(--brand-bd))",
+                                wordBreak: "break-word",
+                                overflowWrap: "break-word",
+                                maxWidth: "100%",
+                              }
+                            : {
+                                borderRadius: "1rem",
+                                borderTopRightRadius: "0.125rem",
+                                padding: "0.75rem 1rem",
+                                fontSize: "0.875rem",
+                                lineHeight: 1.6,
+                                background: "var(--brand)",
+                                color: "#000",
+                                wordBreak: "break-word",
+                                overflowWrap: "break-word",
+                                maxWidth: "100%",
+                              }
+                        }
                       >
-                        <p style={{ whiteSpace: "pre-wrap", margin: 0 }}>{m.text}</p>
+                        {isMissionControl && (
+                          <span aria-hidden="true" style={{ color: "var(--cyan, var(--brand))", marginRight: 6 }}>you›</span>
+                        )}
+                        <span style={{ whiteSpace: "pre-wrap" }}>{m.text}</span>
                       </div>
                     </div>
                   )
@@ -1843,26 +2051,54 @@ export default function ChatPage() {
                 {/* ── Assistant bubble ── */}
                 {m.role === "assistant" && (m.loading || !m.result || !m.tool || m.tool === "none") && (
                   m.loading ? (
-                    // Pass live reactSteps so the pills update in real time
-                    // while the backend is still working. The bubble falls
-                    // back to its static placeholder list when steps is empty.
-                    <InvestigationTrail steps={m.reactSteps || []} thinking={true} />
+                    isMissionControl
+                      ? <MissionControlToolTrail steps={m.reactSteps || []} thinking={true} />
+                      : <InvestigationTrail steps={m.reactSteps || []} thinking={true} />
                   ) : (
                     <div
-                      style={{
-                        borderRadius: "1rem",
-                        borderTopLeftRadius: "0.125rem",
-                        padding: "0.75rem 1rem",
-                        fontSize: "0.875rem",
-                        lineHeight: 1.6,
-                        background: "var(--paper-2)",
-                        color: "var(--ink)",
-                        border: "1px solid var(--rule)",
-                        wordBreak: "break-word",
-                        overflowWrap: "break-word",
-                        maxWidth: "100%",
-                      }}
+                      style={
+                        isMissionControl
+                          ? {
+                              borderRadius: 6,
+                              padding: "10px 14px",
+                              fontFamily: "var(--sans)",
+                              fontSize: 12.5,
+                              lineHeight: 1.55,
+                              background: "var(--bg-1, var(--paper-2))",
+                              color: "var(--ink, var(--fg-1))",
+                              border: "1px solid var(--line, var(--rule))",
+                              borderLeft: "2px solid var(--cyan, var(--brand))",
+                              wordBreak: "break-word",
+                              overflowWrap: "break-word",
+                              maxWidth: "100%",
+                            }
+                          : {
+                              borderRadius: "1rem",
+                              borderTopLeftRadius: "0.125rem",
+                              padding: "0.75rem 1rem",
+                              fontSize: "0.875rem",
+                              lineHeight: 1.6,
+                              background: "var(--paper-2)",
+                              color: "var(--ink)",
+                              border: "1px solid var(--rule)",
+                              wordBreak: "break-word",
+                              overflowWrap: "break-word",
+                              maxWidth: "100%",
+                            }
+                      }
                     >
+                      {isMissionControl && (
+                        <div aria-hidden="true" style={{
+                          fontFamily: "var(--mono)",
+                          fontSize: 9,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.10em",
+                          color: "var(--cyan, var(--brand))",
+                          marginBottom: 6,
+                        }}>
+                          astra›
+                        </div>
+                      )}
                       <MarkdownMessage text={m.text} onApplyYaml={isOwnedSession ? (yaml) => {
                         handleExecuteAction(m.id, {
                           label: "Apply YAML Patch",
@@ -1974,12 +2210,21 @@ export default function ChatPage() {
 
       {/* ── input bar ── */}
       {isOwnedSession ? (
-        <IntentBar
-          onSend={(text) => submit(text)}
-          listening={loading}
-          onStop={handleStop}
-          contextName={sshCreds?.host || clusterConn?.context_name || "Local Cluster"}
-        />
+        isMissionControl ? (
+          <CommandBar
+            onSend={(text) => submit(text)}
+            busy={loading}
+            clusterLabel={sshCreds?.host || clusterConn?.cluster_name || clusterConn?.context_name || "Local Cluster"}
+            clusterConnected={!!(clusterConn?.connected || sshCreds)}
+          />
+        ) : (
+          <IntentBar
+            onSend={(text) => submit(text)}
+            listening={loading}
+            onStop={handleStop}
+            contextName={sshCreds?.host || clusterConn?.context_name || "Local Cluster"}
+          />
+        )
       ) : (
         <div style={{ flexShrink: 0, borderTop: "1px solid var(--rule)", padding: "0.875rem 1rem", textAlign: "center", fontSize: "0.875rem", color: "var(--ink-3)", background: "var(--paper-2)" }}>
           {isDeniedSharedSession
