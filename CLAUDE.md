@@ -71,8 +71,22 @@ helm/kubeastra/     server-mode deployment
 
 ## Git
 
+**`main` is protected — never push to it directly.** The `main-protection`
+ruleset requires pull requests, linear history, and blocks force-pushes and
+deletion. A repo-admin bypass exists, so a direct push *appears* to succeed
+while printing `Bypassed rule violations` — do not treat that as permission.
+
+Work on a branch and open a PR. Zero approvals are required, so a solo
+maintainer can merge immediately:
+
+```bash
+git checkout -b feat/thing && git push -u origin feat/thing
+gh pr create --fill && gh pr merge --squash --delete-branch
+```
+
 Pushes to `astraverse-io` need the right GitHub account — the active one
-drifts back to a work account and pushes then fail with 403:
+drifts back to a work account, and pushes then fail with 403 (or, on the
+private planning repo, a misleading `Repository not found`):
 
 ```bash
 gh auth switch --user pruthviraja
