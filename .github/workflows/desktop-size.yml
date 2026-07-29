@@ -1,0 +1,56 @@
+name: Desktop bundle size
+
+# The desktop app ships a bundled Python runtime, so dependency weight is
+# installer weight. The failure mode this guards is not a deliberate addition
+# but a small package quietly pulling a large transitive one — re-adding torch
+# would be +770MB and nothing in a diff would say so.
+#
+# Compares against desktop/size-baseline.json and fails on relative growth. A
+# fixed ceiling would not catch a change that doubles the size and still fits.
+
+on:
+  pull_request:
+    paths:
+      - "desktop/requirements.txt"
+      - "mcp/requirements-core.txt"
+      - "ui/backend/requirements.txt"
+      - "desktop/size-baseline.json"
+      - "desktop/check_size.py"
+      - ".github/workflows/desktop-size.yml"
+  push:
+    branches: [main]
+    paths:
+      - "desktop/requirements.txt"
+      - "mcp/requirements-core.txt"
+      - "ui/backend/requirements.txt"
+  workflow_dispatch:
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install desktop dependency set
+        run: |
+          python -m venv /tmp/desktop-venv
+          /tmp/desktop-venv/bin/pip install --quiet --upgrade pip
+          /tmp/desktop-venv/bin/pip install --quiet -r desktop/requirements.txt
+
+      - name: Assert the local-embeddings stack stayed out
+        run: |
+          # Re-adding any of these silently returns ~770MB to the installer.
+          if /tmp/desktop-venv/bin/pip list 2>/dev/null | grep -iE "^(torch|sentence-transformers|scipy|scikit-learn|transformers) "; then
+            echo "::error::A local-embeddings package is back in the desktop set. Desktop uses API/Ollama embeddings (EMBEDDINGS_MODE); see mcp/requirements-core.txt."
+            exit 1
+          fi
+          echo "clean — no local-embeddings packages"
+
+      - name: Compare against baseline
+        run: |
+          SITE_PACKAGES=$(/tmp/desktop-venv/bin/python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          python desktop/check_size.py --site-packages "$SITE_PACKAGES"

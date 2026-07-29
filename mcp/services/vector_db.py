@@ -43,6 +43,30 @@ class VectorStoreLockedError(RuntimeError):
         )
 
 
+class EmbeddingDimensionMismatch(RuntimeError):
+    """Stored vectors were written by a different embedding model.
+
+    Each embeddings provider emits a fixed vector width (Voyage 1024, OpenAI
+    1536, Gemini/Ollama 768, MiniLM 384). Switching provider without clearing
+    the collection does not error at write time — Qdrant rejects the insert,
+    or worse, searches silently return nothing useful. Detecting the mismatch
+    at connect time turns a confusing recall failure into an actionable
+    message.
+    """
+
+    def __init__(self, collection: str, stored_dim: int, configured_dim: int):
+        self.collection = collection
+        self.stored_dim = stored_dim
+        self.configured_dim = configured_dim
+        super().__init__(
+            f"Collection '{collection}' holds {stored_dim}-dimensional vectors "
+            f"but the configured embeddings model produces {configured_dim}. "
+            f"Investigation memory cannot be read until this is resolved: "
+            f"either restore the previous embeddings provider, or clear the "
+            f"stored memory and let it rebuild."
+        )
+
+
 class VectorDB:
     """Thin Qdrant wrapper exposing the legacy add/search/connect API."""
 
@@ -129,6 +153,44 @@ class VectorDB:
 
     # ── Schema bootstrap ─────────────────────────────────────────────────────
 
+    def _stored_vector_size(self, name: str) -> Optional[int]:
+        """Vector width Qdrant recorded when the collection was created.
+
+        Read from the collection config rather than tracked separately —
+        Qdrant is the authority, and a value we maintain ourselves could drift
+        from what is actually stored. Returns None when the shape is
+        unfamiliar, in which case the caller skips the check rather than
+        blocking on a false positive.
+        """
+        try:
+            info = self._client.get_collection(name)
+        except Exception as exc:
+            logger.debug("could not read config for %s: %s", name, exc)
+            return None
+
+        vectors = getattr(getattr(getattr(info, "config", None), "params", None), "vectors", None)
+        if vectors is None:
+            return None
+
+        size = getattr(vectors, "size", None)
+        if size is not None:
+            return int(size)
+
+        # Named-vector collections expose a mapping instead.
+        if isinstance(vectors, dict):
+            sizes = {getattr(v, "size", None) for v in vectors.values()}
+            sizes.discard(None)
+            if len(sizes) == 1:
+                return int(sizes.pop())
+        return None
+
+    def _assert_dimension_matches(self, name: str, expected: Optional[int] = None) -> None:
+        """Refuse to use a collection written by a different embedding model."""
+        expected = self._vector_size if expected is None else expected
+        stored = self._stored_vector_size(name)
+        if stored is not None and stored != expected:
+            raise EmbeddingDimensionMismatch(name, stored, expected)
+
     def _ensure_collection(self, qmodels) -> None:
         """Create the collection if it doesn't exist. Idempotent."""
         try:
@@ -138,6 +200,7 @@ class VectorDB:
             existing = set()
 
         if self.collection in existing:
+            self._assert_dimension_matches(self.collection)
             return
 
         self._client.create_collection(
@@ -232,6 +295,11 @@ class VectorDB:
             existing = set()
 
         if spec.name in existing:
+            # Same guard as the primary collection: a provider switch leaves
+            # these holding vectors of the wrong width.
+            self._assert_dimension_matches(
+                spec.name, getattr(spec, "vector_size", None) or self._vector_size
+            )
             # Existing collection — ensure its indexing_threshold is low
             # enough that small corpora (under 20K vectors) get a usable
             # HNSW index. Qdrant's default 20K means a fresh deployment-

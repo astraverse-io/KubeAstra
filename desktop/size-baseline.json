@@ -1,0 +1,8 @@
+{
+  "_comment": "Installed size of desktop/requirements.txt, in MiB. Enforced by .github/workflows/desktop-size.yml, which fails when a change grows this by more than tolerance_percent. Regenerate deliberately (see the workflow's failure message) when an increase is intended \u2014 do not bump it to make a red build green without knowing why it grew.",
+  "site_packages_mib": 201,
+  "tolerance_percent": 10,
+  "measured_on": "2026-07-29",
+  "measured_with": "python3.14, macOS arm64",
+  "context": "Server dependency set is ~1100 MiB; the desktop set excludes torch, sentence-transformers and their transitive deps (scipy, sympy, sklearn, transformers)."
+}
