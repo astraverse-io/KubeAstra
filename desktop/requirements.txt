@@ -1,0 +1,17 @@
+# Desktop app dependency set.
+#
+# The shared runtime core WITHOUT torch/sentence-transformers, plus the
+# backend's own dependencies and the OS-keychain client. Embeddings are
+# computed through the user's provider API or a local Ollama daemon, so the
+# ~770MB local-model stack never enters the bundle.
+#
+# Guard when building: `pip list | grep -i torch` must return nothing.
+
+-r ../ui/backend/requirements.txt
+-r ../mcp/requirements-core.txt
+
+# ── Credential storage ────────────────────────────────────────────────────────
+# macOS Keychain / Windows Credential Manager / SecretService on Linux.
+# desktop_secrets.py detects the no-usable-backend case and falls back to a
+# 0600 file with a visible warning rather than a silent plaintext store.
+keyring>=25.0

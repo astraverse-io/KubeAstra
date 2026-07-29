@@ -1,0 +1,48 @@
+# Python 3.11+ required
+#
+# Runtime dependencies shared by BOTH the server deployment and the desktop
+# app. Deliberately excludes two things:
+#
+#   * torch + sentence-transformers — local embeddings. Installed ~770MB with
+#     their transitive deps (scipy, sympy, sklearn, transformers), which is
+#     acceptable in a container and impossible in a desktop installer. Desktop
+#     computes embeddings through the provider's API instead
+#     (EMBEDDINGS_MODE=api) or a local Ollama daemon.
+#   * test and type-checking tooling — not needed at runtime.
+#
+# Both live in requirements.txt, which includes this file.
+
+# ── Core ──────────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# ── MCP SDK ───────────────────────────────────────────────────────────────────
+mcp>=0.9.0
+
+# ── HTTP MCP transport / local testing ────────────────────────────────────────
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+httpx>=0.27.0
+
+# ── Kubernetes / kubectl (SSH kubeconfig management) ─────────────────────────
+paramiko>=3.0.0
+
+# ── AI / Gemini ───────────────────────────────────────────────────────────────
+google-genai>=1.0.0
+
+# ── AI / Anthropic (installed by default so LLM_PROVIDER=anthropic works
+#      out of the box; OpenAI provider uses the already-listed httpx) ─────────
+anthropic>=0.34.0
+
+# ── Vector DB (RAG) — Qdrant since Phase 1.1; replaced weaviate-client ───────
+# Pin to the same minor as the deployed Qdrant server (currently 1.11.x).
+# The client emits a hard warning when major versions differ or minor diff
+# exceeds 1, and silent API drift between minors is a real risk — Qdrant
+# occasionally renames fields or changes defaults across minors. Bump both
+# this pin AND the Helm StatefulSet image tag together when upgrading.
+# The same library serves desktop in embedded mode (VECTOR_DB_MODE=local),
+# so no separate dependency is needed there.
+qdrant-client>=1.11.0,<1.12.0
+# YAML config parsing for the RAG ingestion CronJob (Phase 1.2)
+PyYAML>=6.0

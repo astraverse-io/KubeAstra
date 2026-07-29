@@ -758,6 +758,34 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
+    // Shared-session links arrive as /chat?session=<id>. The older
+    // /chat/<id> route still exists in server builds and redirects here, but
+    // it cannot exist in the desktop static export (a dynamic route needs
+    // generateStaticParams, and session ids are not knowable at build time).
+    // Carrying the id in the query string means one static page serves both.
+    //
+    // Runs before the auth effect below, so the id is in sessionStorage by
+    // the time loadPendingSharedSession looks for it. Reading
+    // window.location directly rather than useSearchParams keeps this out of
+    // a Suspense boundary, which static export would otherwise require.
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const shared = params.get("session");
+    if (!shared) return;
+
+    sessionStorage.setItem(PENDING_SHARED_SESSION_KEY, shared);
+    // Drop the param so a refresh doesn't re-enter the shared-view flow after
+    // the user has navigated on. Matches what the old redirect route did.
+    params.delete("session");
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}`,
+    );
+  }, []);
+
+  useEffect(() => {
     // Desktop mode only: /api/desktop/* is absent in server deployments, and
     // fetchDesktopSetup returns null on 404 rather than throwing, so this is
     // a no-op there.
@@ -1316,7 +1344,10 @@ export default function ChatPage() {
 
   const handleShare = useCallback(() => {
     if (typeof window === "undefined") return;
-    const url = `${window.location.origin}/chat/${sessionId}`;
+    // Query form, not /chat/<id>: the path form needs a dynamic route, which
+    // a static export cannot produce. Already-shared /chat/<id> links keep
+    // working in server builds via the redirect page.
+    const url = `${window.location.origin}/chat?session=${encodeURIComponent(sessionId)}`;
     copyToClipboard(url).then(() => {
       setShareCopied(true);
       setTimeout(() => setShareCopied(false), 1500);
