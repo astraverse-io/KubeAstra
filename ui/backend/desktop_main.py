@@ -28,11 +28,66 @@ import os
 import secrets
 import socket
 import sys
+import threading
+import time
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
+
+
+def announce(line: str) -> None:
+    """Write a handshake line to stdout, surviving a closed pipe.
+
+    The parent (the Tauri shell, or `kubeastra open`) reads these lines. If it
+    ever stops reading — a bounded buffer, or a reader that returns after
+    parsing the handshake — the pipe's read end closes and the next write
+    raises BrokenPipeError, killing an otherwise healthy backend.
+
+    A GUI app must not die because nobody is listening to its stdout. Found by
+    the Tauri spike: the Rust side stopped reading after the handshake and the
+    backend crashed on `READY`.
+    """
+    try:
+        print(line, flush=True)
+    except (BrokenPipeError, ValueError):
+        # ValueError covers "I/O operation on closed file".
+        pass
+
+
+def watch_parent(poll_seconds: float = 2.0) -> None:
+    """Exit when the process that launched us goes away.
+
+    The Tauri shell kills the sidecar on a graceful quit, but that handler
+    does not run when the shell is force-quit, crashes, or is signalled — the
+    spike confirmed a backend surviving its parent. An orphan keeps the port
+    and, worse, the exclusive lock on the vector store, so the next launch
+    cannot start.
+
+    On POSIX an orphan is reparented to init/launchd, so a changed ppid is a
+    reliable death signal. Skipped when we are already an orphan at startup
+    (nohup, a daemonised run, or a developer running this directly) — there
+    is no parent to outlive in that case.
+    """
+    if os.name == "nt":  # pragma: no cover — Windows needs a job object
+        return
+
+    original_ppid = os.getppid()
+    if original_ppid <= 1:
+        return
+
+    def _watch() -> None:
+        while True:
+            time.sleep(poll_seconds)
+            if os.getppid() != original_ppid:
+                announce("PARENT-GONE")
+                # Hard exit: uvicorn's graceful shutdown can block on open
+                # connections, and there is no longer anyone to serve.
+                os._exit(0)
+
+    thread = threading.Thread(target=_watch, name="parent-watchdog", daemon=True)
+    thread.start()
 
 
 def bind_socket(host: str, port: int) -> tuple[socket.socket, int]:
@@ -105,8 +160,8 @@ def main(argv: list[str] | None = None) -> int:
     import main as backend_main  # noqa: E402
 
     token = os.environ["KUBEASTRA_DESKTOP_TOKEN"]
-    print(f"PORT={port}", flush=True)
-    print(f"URL=http://127.0.0.1:{port}/auth?token={token}", flush=True)
+    announce(f"PORT={port}")
+    announce(f"URL=http://127.0.0.1:{port}/auth?token={token}")
 
     config = uvicorn.Config(
         backend_main.app,
@@ -117,7 +172,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     server = uvicorn.Server(config)
 
-    print("READY", flush=True)
+    announce("READY")
+    # Started after the handshake so a parent that dies mid-startup still gets
+    # its PORT line, and before serving so no orphan can outlive the shell.
+    watch_parent()
     try:
         server.run(sockets=[sock])
     except KeyboardInterrupt:
