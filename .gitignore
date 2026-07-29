@@ -36,6 +36,8 @@ node_modules/
 .next/
 out/
 build/
+# Transient during `npm run build:desktop` (restored on exit; present only if a build was killed)
+.desktop-build-stash/
 *.tsbuildinfo
 next-env.d.ts
 npm-debug.log*

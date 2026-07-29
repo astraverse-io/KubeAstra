@@ -42,6 +42,15 @@ from routers import auth as auth_router
 
 logger = logging.getLogger(__name__)
 
+# ── Run mode ───────────────────────────────────────────────────────
+# "server"  — the deployed form (docker-compose / Helm); auth, CORS and the
+#             machine-to-machine exemptions in auth.is_public_path apply.
+# "desktop" — single-user app on a laptop; desktop_security replaces the auth
+#             boundary with a localhost/origin/token guard and the built
+#             frontend is served from this same origin.
+KUBEASTRA_MODE = os.environ.get("KUBEASTRA_MODE", "server").strip().lower()
+DESKTOP_MODE = KUBEASTRA_MODE == "desktop"
+
 
 def _bootstrap_rag_collections() -> None:
     """Create every known RAG collection up-front so grounded-retrieval
@@ -154,10 +163,26 @@ app = FastAPI(
 )
 
 _auth_settings = auth_utils.get_auth_settings()
+
+if DESKTOP_MODE:
+    # Same-origin app: the only legitimate origin is our own loopback port.
+    # The wildcard used in server mode would let any page read our responses.
+    import desktop_security
+
+    _cors_origins = sorted(desktop_security.allowed_origins())
+    _cors_credentials = True
+else:
+    _cors_origins = (
+        list(_auth_settings.allowed_origins)
+        if _auth_settings.enabled and _auth_settings.allowed_origins
+        else ["*"]
+    )
+    _cors_credentials = not _auth_settings.enabled or bool(_auth_settings.allowed_origins)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list(_auth_settings.allowed_origins) if _auth_settings.enabled and _auth_settings.allowed_origins else ["*"],
-    allow_credentials=not _auth_settings.enabled or bool(_auth_settings.allowed_origins),
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -292,3 +317,74 @@ def get_metrics(request: Request):
     from fastapi.responses import Response
     from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+# ── Desktop mode: security boundary + same-origin frontend ─────────
+# Registered last on purpose. Starlette runs HTTP middleware in reverse
+# registration order, so the desktop guard ends up outermost and rejects
+# unauthorized requests before auth/logging middleware ever runs. The static
+# mount must also come after every router, or "/" would shadow the API.
+if DESKTOP_MODE:
+    from typing import Optional
+
+    from fastapi.staticfiles import StaticFiles
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+    from starlette.responses import Response
+
+    def _resolve_frontend_dist() -> Path:
+        override = os.environ.get("KUBEASTRA_FRONTEND_DIST")
+        if override:
+            return Path(override).expanduser().resolve()
+        # Frozen bundles (PyInstaller) place the export next to the binary.
+        bundled = Path(getattr(sys, "_MEIPASS", "")) / "frontend" if getattr(sys, "_MEIPASS", "") else None
+        if bundled and bundled.is_dir():
+            return bundled
+        return (Path(__file__).resolve().parent.parent / "frontend" / "out").resolve()
+
+    class _SPAStaticFiles(StaticFiles):
+        """Static export server with a directory-index fallback.
+
+        `next build` with trailingSlash emits `/chat/index.html`. A user
+        typing `/chat` (no slash) would otherwise 404, so extension-less
+        misses retry as `<path>/index.html`.
+        """
+
+        async def get_response(self, path: str, scope):
+            miss: Optional[Response] = None
+            try:
+                response = await super().get_response(path, scope)
+                if response.status_code != 404:
+                    return response
+                miss = response
+            except StarletteHTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+
+            leaf = path.rsplit("/", 1)[-1]
+            if "." not in leaf:
+                try:
+                    return await super().get_response(
+                        f"{path.rstrip('/')}/index.html", scope
+                    )
+                except StarletteHTTPException:
+                    pass
+
+            if miss is not None:
+                return miss
+            raise StarletteHTTPException(status_code=404)
+
+    _frontend_dist = _resolve_frontend_dist()
+
+    # install() before mount(): Starlette matches routes in registration
+    # order, so a catch-all mount at "/" would shadow /auth.
+    desktop_security.install(app, static_root=_frontend_dist)
+
+    if _frontend_dist.is_dir():
+        app.mount("/", _SPAStaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
+        logger.info("desktop: serving frontend from %s", _frontend_dist)
+    else:
+        logger.warning(
+            "desktop: no frontend export at %s — API only. "
+            "Build it with: npm run build:desktop",
+            _frontend_dist,
+        )

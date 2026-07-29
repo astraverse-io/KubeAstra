@@ -374,5 +374,21 @@ def config_path_cmd() -> None:
     typer.echo(str(config_path()))
 
 
+@app.command()
+def open(  # noqa: A001 — `open` is the natural verb here; shadowing is local
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="Start the app but don't open a browser window."
+    ),
+) -> None:
+    """Run KubeAstra locally as an app — no Docker, no cluster install.
+
+    Starts a loopback-only backend, serves the built UI from the same origin,
+    and opens it in your browser. Uses the kubeconfig already on this machine.
+    """
+    from .desktop import launch
+
+    raise typer.Exit(code=launch(open_browser=not no_browser, echo=console.print))
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()
