@@ -17,12 +17,30 @@ operation by a DevOps team. See ``docs/AGENT_FEATURE_ROADMAP.md``.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+class VectorStoreLockedError(RuntimeError):
+    """Local-mode storage is held by another process.
+
+    qdrant-client's embedded mode takes an exclusive lock on its directory, so
+    a second KubeAstra backend pointed at the same path cannot start. The
+    desktop launcher enforces single-instance to prevent this; if it surfaces
+    anyway the UI should say "KubeAstra is already running" rather than
+    reporting a database error.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        super().__init__(
+            f"Vector storage at {path} is already in use by another process."
+        )
 
 
 class VectorDB:
@@ -32,6 +50,7 @@ class VectorDB:
         self._client: Optional[Any] = None
         self.collection = settings.qdrant_collection
         self._vector_size = settings.embedding_dim
+        self._is_local = settings.vector_db_mode == "local"
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -51,15 +70,43 @@ class VectorDB:
                 "and re-run setup."
             ) from exc
 
-        kwargs: dict = {"url": settings.qdrant_url, "timeout": settings.qdrant_timeout_seconds}
-        if settings.qdrant_api_key:
-            kwargs["api_key"] = settings.qdrant_api_key
+        local_mode = settings.vector_db_mode == "local"
 
-        self._client = QdrantClient(**kwargs)
+        if local_mode:
+            # Embedded mode: a directory on disk, no server process. Same
+            # client API, so nothing downstream changes.
+            path = settings.vector_db_path
+            if not path:
+                raise RuntimeError(
+                    "VECTOR_DB_MODE=local requires VECTOR_DB_PATH to be set"
+                )
+            Path(path).expanduser().mkdir(parents=True, exist_ok=True)
+            kwargs: dict = {"path": str(Path(path).expanduser())}
+        else:
+            kwargs = {
+                "url": settings.qdrant_url,
+                "timeout": settings.qdrant_timeout_seconds,
+            }
+            if settings.qdrant_api_key:
+                kwargs["api_key"] = settings.qdrant_api_key
+
+        try:
+            self._client = QdrantClient(**kwargs)
+        except RuntimeError as exc:
+            # qdrant-client reports the exclusive-lock conflict as a generic
+            # RuntimeError; translate it so callers can tell "already running"
+            # apart from a real storage failure.
+            if local_mode and "already accessed" in str(exc).lower():
+                raise VectorStoreLockedError(kwargs["path"]) from exc
+            raise
+
         self._ensure_collection(qmodels)
         logger.info(
-            "VectorDB connected url=%s collection=%s vector_size=%d",
-            settings.qdrant_url, self.collection, self._vector_size,
+            "VectorDB connected mode=%s target=%s collection=%s vector_size=%d",
+            settings.vector_db_mode,
+            kwargs.get("path") or kwargs.get("url"),
+            self.collection,
+            self._vector_size,
         )
 
     def disconnect(self) -> None:
@@ -95,15 +142,19 @@ class VectorDB:
         )
 
         # Index commonly-filtered payload fields so search-with-filter is fast.
-        for field in ("tool", "category", "severity"):
-            try:
-                self._client.create_payload_index(
-                    collection_name=self.collection,
-                    field_name=field,
-                    field_schema=qmodels.PayloadSchemaType.KEYWORD,
-                )
-            except Exception as exc:
-                logger.debug("payload index for %s failed (ok if exists): %s", field, exc)
+        # Local (embedded) mode ignores payload indexes and warns loudly on
+        # every call; skip them there. Filtering still works, it just scans —
+        # irrelevant at the scale a single laptop accumulates.
+        if not self._is_local:
+            for field in ("tool", "category", "severity"):
+                try:
+                    self._client.create_payload_index(
+                        collection_name=self.collection,
+                        field_name=field,
+                        field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                    )
+                except Exception as exc:
+                    logger.debug("payload index for %s failed (ok if exists): %s", field, exc)
 
         logger.info("Created Qdrant collection: %s", self.collection)
 
@@ -208,16 +259,18 @@ class VectorDB:
                 indexing_threshold=1000,
             ),
         )
-        for field_name in spec.indexed_fields:
-            try:
-                self._client.create_payload_index(
-                    collection_name=spec.name,
-                    field_name=field_name,
-                    field_schema=qmodels.PayloadSchemaType.KEYWORD,
-                )
-            except Exception as exc:
-                logger.debug("payload index for %s.%s failed (ok if exists): %s",
-                             spec.name, field_name, exc)
+        # Skipped in local mode — see the note in _ensure_collection.
+        if not self._is_local:
+            for field_name in spec.indexed_fields:
+                try:
+                    self._client.create_payload_index(
+                        collection_name=spec.name,
+                        field_name=field_name,
+                        field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                    )
+                except Exception as exc:
+                    logger.debug("payload index for %s.%s failed (ok if exists): %s",
+                                 spec.name, field_name, exc)
         logger.info("Created Qdrant collection: %s", spec.name)
 
     def upsert_point(

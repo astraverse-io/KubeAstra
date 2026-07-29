@@ -114,12 +114,38 @@ class Settings(BaseSettings):
     qdrant_collection: str = "k8s_errors"
     qdrant_timeout_seconds: float = 10.0
 
+    # Where the vectors live.
+    #   "server" — Qdrant over HTTP (Helm / docker-compose deployments).
+    #   "local"  — qdrant-client embedded mode: an on-disk directory, no
+    #              server process. Used by the desktop app.
+    # Local mode takes an EXCLUSIVE lock on vector_db_path, so exactly one
+    # process may hold it; the desktop launcher enforces single-instance for
+    # this reason.
+    vector_db_mode: str = "server"
+    vector_db_path: str = ""  # required when vector_db_mode == "local"
+
     # Embedding model + its native vector dimension. The dimension MUST
     # match the model: bumping the model without bumping this number will
     # cause Qdrant collection creation to fail (or, worse, silent search
     # mismatches).
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dim: int = 384
+
+    # How embeddings are computed.
+    #   "local"  — sentence-transformers in-process. Accurate and offline but
+    #              drags in torch (~770MB with its transitive deps), so it is
+    #              server-only; the desktop bundle excludes torch entirely.
+    #   "api"    — the provider's embeddings HTTP API (desktop default).
+    #   "ollama" — a local Ollama daemon; keeps airgapped desktops working.
+    # NOTE: Anthropic has no embeddings API. When the chat provider is
+    # Anthropic the user supplies a separate embeddings key (voyage / openai /
+    # gemini); without one, memory degrades to keyword-only rather than
+    # failing (see services/embeddings.py).
+    embeddings_mode: str = "local"
+    embeddings_provider: str = ""  # voyage | openai | gemini (mode == "api")
+    embeddings_model: str = ""  # blank => provider default
+    embeddings_timeout_seconds: float = 30.0
+    ollama_url: str = "http://localhost:11434"
 
     # ── RAG ingestion (Phase 1.2) ─────────────────────────────────────────────
     # Path to the YAML config consumed by scripts/reindex.py. Only the

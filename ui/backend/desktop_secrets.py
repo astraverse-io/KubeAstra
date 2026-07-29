@@ -1,0 +1,147 @@
+"""API-key storage for desktop mode, backed by the OS keychain.
+
+Never `.env`, never SQLite. A desktop app's config directory is readable by
+anything running as that user, gets swept into Time Machine / Dropbox, and
+survives uninstall. The OS keychain is the only place a laptop app should put
+a credential.
+
+Key names are namespaced:
+    llm.<provider>          e.g. llm.anthropic, llm.openai
+    embeddings.<provider>   e.g. embeddings.voyage
+
+If the OS has no usable secret store — a headless Linux box with no Secret
+Service daemon is the common case — `keyring` silently resolves to a backend
+that either fails or writes plaintext. We detect that, fall back to a 0600
+file, and report it so the UI can warn. Degrading silently into a
+plaintext-but-looks-fine keyring is the one outcome this module must prevent.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import Optional
+
+import desktop_paths
+
+logger = logging.getLogger(__name__)
+
+SERVICE = "io.astraverse.kubeastra"
+
+# Substrings identifying keyring backends that do not actually protect
+# anything: `fail` is what resolves with no OS store available, and the
+# plaintext/file/null backends store credentials in the clear.
+_INSECURE_MARKERS = ("fail", "plaintext", "file", "null")
+
+# Namespaces probed by list_configured(). keyring cannot enumerate a service's
+# entries portably, so discovery means asking for the names we might have set.
+LLM_PROVIDERS = ("anthropic", "openai", "gemini", "ollama")
+EMBEDDING_PROVIDERS = ("voyage", "openai", "gemini")
+
+
+def _keyring():
+    import keyring
+
+    return keyring
+
+
+def backend_name() -> str:
+    """Human-readable backend name, for the settings UI."""
+    try:
+        return type(_keyring().get_keyring()).__name__
+    except Exception as exc:  # keyring can raise on import on odd systems
+        logger.warning("keyring unavailable: %s", exc)
+        return "unavailable"
+
+
+def is_secure() -> bool:
+    """True when the OS keychain will actually protect a stored secret.
+
+    False means callers are using the file fallback and the UI must say so.
+    """
+    try:
+        module = type(_keyring().get_keyring()).__module__.lower()
+    except Exception:
+        return False
+    return not any(marker in module for marker in _INSECURE_MARKERS)
+
+
+# ── file fallback ─────────────────────────────────────────────────────────
+# Only used when is_secure() is False.
+
+
+def _read_fallback() -> dict:
+    path = desktop_paths.secrets_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        logger.warning("%s is unreadable; treating as empty", path)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_fallback(data: dict) -> None:
+    path = desktop_paths.secrets_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Open with the mode set, rather than writing then chmod'ing: the latter
+    # leaves a window where the file exists and is world-readable.
+    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(handle, "w") as stream:
+        json.dump(data, stream)
+
+
+# ── public API ────────────────────────────────────────────────────────────
+
+
+def set_secret(name: str, value: str) -> None:
+    if is_secure():
+        _keyring().set_password(SERVICE, name, value)
+        return
+    data = _read_fallback()
+    data[name] = value
+    _write_fallback(data)
+
+
+def get_secret(name: str) -> Optional[str]:
+    if is_secure():
+        try:
+            return _keyring().get_password(SERVICE, name)
+        except Exception as exc:
+            logger.warning("keyring read failed for %s: %s", name, exc)
+            return None
+    return _read_fallback().get(name)
+
+
+def delete_secret(name: str) -> None:
+    if is_secure():
+        try:
+            _keyring().delete_password(SERVICE, name)
+        except Exception:
+            # keyring raises when the entry is absent; deleting a
+            # non-existent secret is not an error for callers.
+            pass
+        return
+    data = _read_fallback()
+    data.pop(name, None)
+    _write_fallback(data)
+
+
+def list_configured() -> list[str]:
+    """Names of stored secrets. Never returns values.
+
+    Lets the API report configuration state without any secret reaching a
+    response body.
+    """
+    if not is_secure():
+        return sorted(_read_fallback().keys())
+
+    candidates = [f"llm.{provider}" for provider in LLM_PROVIDERS]
+    candidates += [f"embeddings.{provider}" for provider in EMBEDDING_PROVIDERS]
+    return [name for name in candidates if get_secret(name)]
+
+
+def has_secret(name: str) -> bool:
+    return bool(get_secret(name))

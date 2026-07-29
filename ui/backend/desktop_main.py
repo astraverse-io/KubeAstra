@@ -80,6 +80,21 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["KUBEASTRA_MODE"] = "desktop"
     os.environ.setdefault("KUBEASTRA_DESKTOP_TOKEN", secrets.token_urlsafe(32))
 
+    # Data locations must be set before `main` is imported: settings and
+    # db.py read their paths at import time. setdefault, not assignment — an
+    # explicit env var from the shell or a developer still wins.
+    import desktop_paths
+
+    desktop_paths.ensure_layout()
+    os.environ.setdefault("DB_PATH", str(desktop_paths.db_path()))
+    os.environ.setdefault("AUDIT_LOG_PATH", str(desktop_paths.audit_log_path()))
+    os.environ.setdefault("KUBEASTRA_KUBECONFIG_DIR", str(desktop_paths.kubeconfig_dir()))
+    # Investigation memory: embedded vectors, no Qdrant server, embeddings via
+    # the user's provider API (no torch in the desktop bundle).
+    os.environ.setdefault("VECTOR_DB_MODE", "local")
+    os.environ.setdefault("VECTOR_DB_PATH", str(desktop_paths.vectors_path()))
+    os.environ.setdefault("EMBEDDINGS_MODE", "api")
+
     sock, port = bind_socket(args.host, args.port)
     os.environ["KUBEASTRA_DESKTOP_PORT"] = str(port)
 

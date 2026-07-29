@@ -25,8 +25,18 @@ import db
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_TEMP_DIR = Path(tempfile.gettempdir()) / "kubeastra-kubeconfigs"
-_TEMP_DIR.mkdir(exist_ok=True)
+# Where kubeconfigs pasted into the UI are written. Desktop mode points this
+# at the per-user app-data directory (0700); the shared-/tmp default is a
+# predictable path and is unsafe on multi-user hosts.
+_TEMP_DIR = Path(
+    os.environ.get("KUBEASTRA_KUBECONFIG_DIR")
+    or Path(tempfile.gettempdir()) / "kubeastra-kubeconfigs"
+).expanduser()
+_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    _TEMP_DIR.chmod(0o700)
+except OSError:
+    pass
 
 
 class KubeconfigBody(BaseModel):
