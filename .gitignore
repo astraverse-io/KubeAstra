@@ -1,6 +1,6 @@
 # ── Archive (internal docs, not part of OSS repo) ─────────────────────────────
 archive/
-internal_docs/
+internal_docs
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
