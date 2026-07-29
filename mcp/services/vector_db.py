@@ -50,7 +50,17 @@ class VectorDB:
         self._client: Optional[Any] = None
         self.collection = settings.qdrant_collection
         self._vector_size = settings.embedding_dim
-        self._is_local = settings.vector_db_mode == "local"
+
+    @property
+    def _is_local(self) -> bool:
+        """Read live rather than cached in __init__.
+
+        This module ends with `vector_db = VectorDB()`, so __init__ runs at
+        import time. Freezing the mode there would ignore any configuration
+        applied afterwards and would make the setting untestable on the
+        shared singleton.
+        """
+        return settings.vector_db_mode == "local"
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 

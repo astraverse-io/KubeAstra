@@ -714,3 +714,68 @@ export async function fetchAgentRunDetails(runId: string): Promise<AgentRunDetai
   return res.json();
 }
 
+
+// ── Desktop mode ────────────────────────────────────────────────────────────
+// These endpoints exist only when the backend runs with KUBEASTRA_MODE=desktop.
+// A 404 from `fetchDesktopSetup` is the signal that this is a server
+// deployment, so callers should treat it as "not desktop" rather than an error.
+
+export interface DesktopSetupState {
+  configured: boolean;
+  llm_provider: string | null;
+  needs_embeddings_key: boolean;
+  memory_available: boolean;
+  memory_mode: "vector" | "keyword";
+  keychain_secure: boolean;
+  keychain_backend: string;
+}
+
+export interface DesktopSettingsState {
+  memory_enabled: boolean;
+  remote_diagnostics_enabled: boolean;
+  memory_mode: "vector" | "keyword";
+  memory_available: boolean;
+  keychain_secure: boolean;
+  keychain_backend: string;
+}
+
+/** Returns null in server mode (endpoint absent), the state otherwise. */
+export async function fetchDesktopSetup(): Promise<DesktopSetupState | null> {
+  try {
+    return (await fetchJson("/api/desktop/setup")) as DesktopSetupState;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+export async function setupDesktopLlm(payload: {
+  provider: string;
+  api_key?: string;
+}): Promise<{ ok: boolean; provider: string; needs_embeddings_key: boolean }> {
+  return fetchJson("/api/desktop/setup/llm", { method: "POST", body: payload });
+}
+
+export async function setupDesktopEmbeddings(payload: {
+  provider: string;
+  api_key: string;
+}): Promise<{ ok: boolean; provider: string; dim: number }> {
+  return fetchJson("/api/desktop/setup/embeddings", { method: "POST", body: payload });
+}
+
+export async function fetchDesktopSettings(): Promise<DesktopSettingsState> {
+  return fetchJson("/api/desktop/settings");
+}
+
+export async function updateDesktopSettings(payload: {
+  memory_enabled?: boolean;
+  remote_diagnostics_enabled?: boolean;
+}): Promise<DesktopSettingsState> {
+  return fetchJson("/api/desktop/settings", { method: "PUT", body: payload });
+}
+
+export async function forgetDesktopSecret(name: string): Promise<{ ok: boolean }> {
+  return fetchJson(`/api/desktop/secrets/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}

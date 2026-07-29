@@ -71,6 +71,26 @@ def test_provider_without_embeddings_api_degrades(monkeypatch):
     assert module.embeddings.available is False
 
 
+def test_available_is_false_when_local_deps_absent(monkeypatch):
+    """Regression: constructing _LocalBackend does not import
+    sentence-transformers, so `available` must not assume it is installed —
+    desktop bundles exclude torch on purpose. Reporting True here would make
+    the UI claim memory works right before the first embed raises.
+    """
+    _configure(monkeypatch, embeddings_mode="local")
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+
+    def missing(name, *args, **kwargs):
+        if name == "sentence_transformers":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", missing)
+    assert module.embeddings.available is False
+
+
 def test_ollama_mode_needs_no_key(monkeypatch):
     _configure(monkeypatch, embeddings_mode="ollama")
     assert module.embeddings.available is True

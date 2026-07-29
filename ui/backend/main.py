@@ -331,6 +331,12 @@ if DESKTOP_MODE:
     from starlette.exceptions import HTTPException as StarletteHTTPException
     from starlette.responses import Response
 
+    # Setup wizard + desktop settings. Absent in server mode, so the frontend
+    # can treat a 404 here as "this is a server deployment".
+    from routers import desktop as desktop_router
+
+    app.include_router(desktop_router.router, prefix="/api", tags=["Desktop"])
+
     def _resolve_frontend_dist() -> Path:
         override = os.environ.get("KUBEASTRA_FRONTEND_DIST")
         if override:

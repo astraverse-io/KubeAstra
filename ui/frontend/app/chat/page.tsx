@@ -56,7 +56,10 @@ import {
   type SessionAccessMode,
   triggerManualInvestigation,
   appendSessionMessages,
+  fetchDesktopSetup,
+  type DesktopSetupState,
 } from "../../lib/api";
+import FirstRunWizard from "../../components/FirstRunWizard";
 
 /* ── types ───────────────────────────────────────────────────── */
 
@@ -639,6 +642,8 @@ export default function ChatPage() {
   // paint 1. On the server it stays false so we don't render mission-control
   // markup that would mismatch on hydration.
   const [mounted, setMounted] = useState(() => typeof document !== "undefined");
+  // null while unknown or in server mode; a state object in desktop mode.
+  const [desktopSetup, setDesktopSetup] = useState<DesktopSetupState | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -750,6 +755,23 @@ export default function ChatPage() {
     // the layout init script didn't run, mounted may still be false — force
     // it here. Theme was already read from data-theme in the state initializer.
     setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    // Desktop mode only: /api/desktop/* is absent in server deployments, and
+    // fetchDesktopSetup returns null on 404 rather than throwing, so this is
+    // a no-op there.
+    let cancelled = false;
+    fetchDesktopSetup()
+      .then((state) => {
+        if (!cancelled) setDesktopSetup(state);
+      })
+      .catch(() => {
+        // Never block the app on setup state; the wizard just won't appear.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1625,6 +1647,19 @@ export default function ChatPage() {
               contextName={sshCreds?.host || clusterConn?.context_name || "Local Cluster"}
             />
           )
+        )}
+
+        {/* Desktop first run: no AI provider configured yet. Absent in
+            server mode, where desktopSetup stays null. */}
+        {desktopSetup && !desktopSetup.configured && (
+          <FirstRunWizard
+            state={desktopSetup}
+            onComplete={() => {
+              fetchDesktopSetup()
+                .then(setDesktopSetup)
+                .catch(() => setDesktopSetup(null));
+            }}
+          />
         )}
 
         {isMissionControl ? (

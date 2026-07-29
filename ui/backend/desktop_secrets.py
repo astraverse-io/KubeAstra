@@ -86,11 +86,25 @@ def _read_fallback() -> dict:
 def _write_fallback(data: dict) -> None:
     path = desktop_paths.secrets_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Open with the mode set, rather than writing then chmod'ing: the latter
-    # leaves a window where the file exists and is world-readable.
+    # Mode on os.open only applies when the file is CREATED. A secrets.json
+    # left behind at 0644 by an older build, or restored from a backup that
+    # did not preserve modes, would otherwise keep those permissions and we
+    # would write a plaintext key into a world-readable file. fchmod on the
+    # open descriptor fixes existing files without a TOCTOU window.
     handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(handle, "w") as stream:
-        json.dump(data, stream)
+    try:
+        if os.name != "nt":
+            os.fchmod(handle, 0o600)
+        with os.fdopen(handle, "w") as stream:
+            json.dump(data, stream)
+    except BaseException:
+        # fdopen takes ownership of the descriptor on success; close it
+        # ourselves only if we failed before that point.
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+        raise
 
 
 # ── public API ────────────────────────────────────────────────────────────

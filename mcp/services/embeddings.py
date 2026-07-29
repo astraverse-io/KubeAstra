@@ -283,9 +283,22 @@ class EmbeddingService:
 
     @property
     def available(self) -> bool:
-        """True when semantic recall is usable. Lets the UI report memory
-        status without triggering a failing embed call."""
-        return not isinstance(self._resolve(), _NullBackend)
+        """True when semantic recall is usable.
+
+        Lets the UI report memory status without triggering a failing embed
+        call — so it must not claim availability the first embed would refuse.
+        Constructing _LocalBackend does not import sentence-transformers (that
+        is deliberately deferred), so check the package is importable here;
+        find_spec does not execute the module, so torch is not loaded.
+        """
+        backend = self._resolve()
+        if isinstance(backend, _NullBackend):
+            return False
+        if isinstance(backend, _LocalBackend):
+            from importlib.util import find_spec
+
+            return find_spec("sentence_transformers") is not None
+        return True
 
     def embed(self, text: str) -> list[float]:
         return self._resolve().embed(text)

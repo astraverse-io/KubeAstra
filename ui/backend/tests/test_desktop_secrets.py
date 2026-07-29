@@ -136,6 +136,22 @@ def test_fallback_file_is_owner_only(insecure):
     assert mode == 0o600, f"secrets file is {oct(mode)}"
 
 
+def test_fallback_tightens_permissions_on_existing_file(insecure):
+    """Regression: os.open's mode argument only applies on CREATE.
+
+    A secrets.json left at 0644 by an older build or a backup restore would
+    otherwise keep those permissions and receive a plaintext key.
+    """
+    path = insecure / "secrets.json"
+    path.write_text("{}")
+    path.chmod(0o644)
+
+    desktop_secrets.set_secret("llm.openai", "sk-secret")
+
+    mode = stat.S_IMODE(path.stat().st_mode)
+    assert mode == 0o600, f"pre-existing file left at {oct(mode)}"
+
+
 def test_fallback_delete(insecure):
     desktop_secrets.set_secret("llm.gemini", "k")
     desktop_secrets.delete_secret("llm.gemini")
