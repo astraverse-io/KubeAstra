@@ -860,13 +860,25 @@ export default function ChatPage() {
       setMessages(historyToMessages(history));
       setHistoryLoaded(true);
     });
+    // Same only-ever-set bug as the cluster badge below: an SSH target from a
+    // previous session would otherwise linger over a session that has none.
+    setPendingReconnect(null);
     getSshTarget(sessionId).then((target) => {
-      if (target) setPendingReconnect(target);
-    });
+      setPendingReconnect(target ?? null);
+    }).catch(() => setPendingReconnect(null));
+    // Cluster connections are per-session; this badge was not. Because the
+    // old code only ever *set* it, switching to a session with no connection
+    // kept the previous session's pill on screen — while commands silently
+    // ran against the local kubeconfig, since the backend had no row to
+    // install a runner from. Clear first, then let the backend be
+    // authoritative, so the badge can only ever overstate by one request.
+    setClusterConn(null);
     clusterStatus(sessionId).then((status) => {
-      if (status.connected) setClusterConn(status);
+      setClusterConn(status.connected ? status : null);
     }).catch(() => {
-      // Cluster connection is optional; ignore status fetch failures on load.
+      // A failed status fetch must not leave a stale badge asserting a
+      // connection we can no longer confirm.
+      setClusterConn(null);
     });
   }, [sessionId, authLoaded, authIsEnabled, currentUser, isOwnedSession]);
 

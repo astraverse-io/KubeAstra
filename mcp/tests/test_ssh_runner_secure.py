@@ -608,3 +608,30 @@ def test_bastion_uses_one_cumulative_connection_deadline(monkeypatch):
     assert inner.closed is True
     assert channel.closed is True
     assert outer.closed is True
+
+
+# ── host-key lookup is case-sensitive in paramiko ─────────────────────────
+
+
+def test_hostname_is_lowercased_for_host_key_lookup():
+    """DNS is case-insensitive; paramiko's known_hosts lookup is not.
+
+    An operator typing "S60503-gfs-k8s-m.example.com" into the connect dialog
+    missed an entry stored as "s60503-…" and got "SSH host key is not
+    registered" for a host they had trusted for months. OpenSSH lower-cases
+    before matching; this makes us match that.
+    """
+    from k8s.ssh_runner import SSHKubectlRunner
+
+    runner = SSHKubectlRunner(
+        host="S60503-GFS-K8s-M.Example.COM", username="ansible", password="x"
+    )
+    assert runner.host == "s60503-gfs-k8s-m.example.com"
+
+
+def test_host_key_name_lowercases_both_forms():
+    from k8s.ssh_runner import SSHKubectlRunner
+
+    runner = SSHKubectlRunner(host="Example.COM", username="u", password="x")
+    assert runner._host_key_name("Example.COM", 22) == "example.com"
+    assert runner._host_key_name("Example.COM", 2222) == "[example.com]:2222"

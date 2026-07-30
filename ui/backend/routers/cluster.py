@@ -20,6 +20,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 import auth
+import cluster_session
 import db
 
 logger = logging.getLogger(__name__)
@@ -290,26 +291,7 @@ def disconnect(body: DisconnectBody, request: Request):
 @router.get("/cluster/status/{session_id}")
 def connection_status(session_id: str, request: Request):
     auth.require_owned_session(request, session_id)
-    conn = db.get_cluster_connection(session_id)
-    if conn:
-        return {
-            "connected": True,
-            "mode": conn["mode"],
-            "context_name": conn["context_name"],
-            "cluster_name": conn["cluster_name"],
-            "server_url": conn["server_url"],
-            "namespace": conn["namespace"],
-        }
-
-    ssh = db.get_ssh_target(session_id)
-    if ssh:
-        return {
-            "connected": True,
-            "mode": "ssh",
-            "cluster_name": ssh["host"],
-            "context_name": f"{ssh['username']}@{ssh['host']}",
-            "server_url": "",
-            "namespace": "",
-        }
-
-    return {"connected": False}
+    # Delegates to cluster_session so the badge and the code that actually
+    # targets kubectl agree on what "connected" means — including the stale
+    # case, where a row exists but its kubeconfig has gone.
+    return cluster_session.status_for(session_id)

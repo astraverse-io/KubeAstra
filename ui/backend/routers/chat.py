@@ -27,6 +27,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import auth as auth_utils
+import cluster_session
 import db
 import memory
 
@@ -2109,7 +2110,21 @@ def chat(req: ChatRequest, request: Request):
 
         # ── Set up kubeconfig runner if session has a cluster connection ─────
         elif sid and not req.ssh:
-            cluster_conn = db.get_cluster_connection(sid)
+            # resolve() raises rather than returning None when a connection
+            # is recorded but its kubeconfig has gone. Falling through would
+            # leave get_runner() on the local kubectl and run the command
+            # against whatever cluster this machine points at.
+            try:
+                cluster_conn = cluster_session.resolve(sid)
+            except cluster_session.ClusterConnectionUnavailable as exc:
+                logger.warning("session %s: %s", session_tag, exc)
+                return ChatResponse(
+                    reply=str(exc),
+                    tool_used="error",
+                    result=None,
+                    error="cluster_unavailable",
+                    session_id=sid,
+                )
             if cluster_conn and cluster_conn.get("context_name"):
                 from k8s.kubectl_runner import KubectlRunner, set_runner, runner_ctx
                 kube_runner = KubectlRunner(
@@ -2251,7 +2266,24 @@ async def chat_stream(req: ChatRequest, request: Request):
                               "message": f"Could not connect to {req.ssh.host} via SSH: {e}"})
                     return
             elif sid:
-                cluster_conn = db.get_cluster_connection(sid)
+                # See the non-streaming path: fail closed, never retarget.
+                try:
+                    cluster_conn = cluster_session.resolve(sid)
+                except cluster_session.ClusterConnectionUnavailable as exc:
+                    logger.warning("session %s: %s", session_tag, exc)
+                    _enqueue({
+                        "type": "done",
+                        "result": {
+                            "reply": str(exc),
+                            "tool_used": "error",
+                            "result": {},
+                            "error": "cluster_unavailable",
+                            "timestamp": time.time(),
+                            "suggested_actions": [],
+                            "session_id": sid,
+                        },
+                    })
+                    return
                 if cluster_conn and cluster_conn.get("context_name"):
                     from k8s.kubectl_runner import KubectlRunner, set_runner
                     kube_runner = KubectlRunner(
