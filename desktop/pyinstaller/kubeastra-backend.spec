@@ -132,7 +132,21 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['torch', 'sentence_transformers', 'transformers', 'scipy', 'matplotlib'],
+    excludes=[
+        'torch', 'sentence_transformers', 'transformers', 'scipy', 'matplotlib',
+        # Nothing here imports pkg_resources, but if PyInstaller *sees* it, it
+        # adds the pyi_rth_pkgres runtime hook — and that hook then crashes the
+        # frozen app on launch:
+        #     AttributeError: module 'pkg_resources' has no attribute
+        #     'NullProvider'
+        # It happens when the interpreter ships an old setuptools that provides
+        # pkg_resources (Python 3.11 bundles 65.5.0) and pip later upgrades
+        # setuptools to a version that dropped NullProvider. CI hit exactly
+        # that; a 3.14 venv does not, because it has no bundled pkg_resources
+        # for PyInstaller to notice — which is why local builds were fine.
+        # Excluding both drops the hook, and a little bundle weight with it.
+        'pkg_resources', 'setuptools',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
