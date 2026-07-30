@@ -47,6 +47,44 @@ Revisit if there is real demand. The Tauri config would need `appimage`/`deb`
 back in `bundle.targets`, a `ubuntu-*` matrix entry with the GTK/WebKit dev
 packages, and — most of the cost — a bundle-verification step per distro.
 
+### macOS is arm64-only
+
+Dropped x86_64 on 2026-07-30. The `macos-13` runner sat **queued across three
+release runs and never had a runner assigned** (`runner=NEVER ASSIGNED`) —
+GitHub has retired that image, and it was the last hosted x86_64 macOS one.
+
+Intel Macs can still run the arm64 build under Rosetta 2. That is not free for
+a Python sidecar — expect noticeably slower startup — but it works, and Intel
+Macs are a shrinking minority.
+
+**If you need a native x86_64 build later, this is what it actually takes.**
+It is not a matrix edit:
+
+1. **A runner.** No hosted x86_64 macOS image remains. Either a self-hosted
+   Intel Mac, or a third-party macOS cloud runner.
+2. **An x86_64 Python.** *This is the real work.* `--target
+   x86_64-apple-darwin` cross-compiles the **Rust** fine, but **PyInstaller
+   cannot cross-compile** — it freezes whichever interpreter is running it.
+   Build on an arm64 runner and you get an arm64 sidecar inside an x86_64
+   app: it will bundle, pass every gate, and die on launch for Intel users
+   with a `Bad CPU type in executable`. Exactly the failure shape as the
+   flattened-onedir bug.
+
+   Options: run the whole job on an Intel machine, or install an x86_64
+   Python via `arch -x86_64` and run PyInstaller under it — every dependency
+   with a native wheel (`pydantic-core`, `cryptography`, `qdrant-client`)
+   must also be the x86_64 wheel.
+3. **Extend the verification step.** It must assert the architecture, or the
+   mismatch above ships silently:
+   ```bash
+   lipo -archs "$SIDECAR" | grep -q x86_64
+   file "$APP/Contents/MacOS/kubeastra-desktop" | grep -q x86_64
+   ```
+4. **Decide on a universal binary.** Two separate DMGs is simpler; `lipo`-ing
+   them together roughly doubles download size.
+
+Do this only if Intel users actually ask. Rosetta covers them until then.
+
 ## Development Setup
 
 1. **Install dependencies**:

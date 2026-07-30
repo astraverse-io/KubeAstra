@@ -16,13 +16,14 @@ jobs:
           - platform: 'macos-latest'
             target: 'aarch64-apple-darwin'
             args: '--target aarch64-apple-darwin'
-          - platform: 'macos-13'
-            target: 'x86_64-apple-darwin'
-            args: '--target x86_64-apple-darwin'
-          # No Linux entry. Linux desktop is out of scope for v1 — see
-          # desktop/README.md. It would have produced an AppImage that nobody
-          # ever launched: the "Verify the bundled app" step below is
-          # macOS-only, so a Linux artifact would ship unexercised.
+          # arm64 only. There is no x86_64 macOS entry and no Linux entry —
+          # both deliberate, both explained in desktop/README.md § Platforms.
+          #
+          # x86_64 was dropped on 2026-07-30 after `macos-13` sat queued
+          # across three runs and never had a runner assigned; GitHub has
+          # retired that image. Restoring it is not a matrix edit: PyInstaller
+          # cannot cross-compile, so a `--target x86_64-apple-darwin` build on
+          # an arm64 runner would ship an arm64 sidecar inside an x86_64 app.
 
     runs-on: ${{ matrix.platform }}
     # `secrets` is not available in a step-level `if`, but it is here.
