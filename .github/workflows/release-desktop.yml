@@ -25,6 +25,9 @@ jobs:
           # macOS-only, so a Linux artifact would ship unexercised.
 
     runs-on: ${{ matrix.platform }}
+    # `secrets` is not available in a step-level `if`, but it is here.
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -88,11 +91,35 @@ jobs:
       - name: Test the Tauri shell
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
 
-      - name: Build Tauri App
+      # Two steps, because a missing secret is an EMPTY STRING, not an unset
+      # variable. Passing APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      # with no such secret still defines the variable, so Tauri believes it
+      # has a certificate and fails:
+      #   failed codesign application: failed to run command security import:
+      #   failed to import keychain certificate
+      # There is no way to conditionally omit a single `env` key, so the
+      # signing variables have to live on a step that only runs when a
+      # certificate actually exists. This needs no edit when the certs land —
+      # add the secrets and the signed path takes over on its own.
+      - name: Build Tauri App (unsigned)
+        if: env.HAS_APPLE_CERT != 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          tagName: desktop-v__VERSION__
+          releaseName: 'KubeAstra Desktop v__VERSION__'
+          releaseBody: 'Unsigned build — macOS will warn on first launch.'
+          releaseDraft: true
+          prerelease: true
+          workdir: desktop
+          args: ${{ matrix.args }}
+
+      - name: Build Tauri App (signed and notarized)
+        if: env.HAS_APPLE_CERT == 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
