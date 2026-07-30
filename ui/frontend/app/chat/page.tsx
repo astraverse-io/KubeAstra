@@ -61,6 +61,7 @@ import {
   type DesktopSetupState,
 } from "../../lib/api";
 import FirstRunWizard from "../../components/FirstRunWizard";
+import DesktopSettings from "../../components/DesktopSettings";
 
 /* ── types ───────────────────────────────────────────────────── */
 
@@ -645,6 +646,7 @@ export default function ChatPage() {
   const [mounted, setMounted] = useState(() => typeof document !== "undefined");
   // null while unknown or in server mode; a state object in desktop mode.
   const [desktopSetup, setDesktopSetup] = useState<DesktopSetupState | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -1564,6 +1566,28 @@ export default function ChatPage() {
     <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", fontSize: "0.75rem" }}>
       {themePickerButton}
       {exportPMButton}
+      {desktopSetup && (
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          aria-label="Settings"
+          title="Settings"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            color: "var(--fg-2)",
+            padding: 0,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+      )}
       {isOwnedSession && (
         <>
           <ClusterConnect
@@ -1699,6 +1723,21 @@ export default function ChatPage() {
           <FirstRunWizard
             state={desktopSetup}
             onComplete={() => {
+              fetchDesktopSetup()
+                .then(setDesktopSetup)
+                .catch(() => setDesktopSetup(null));
+            }}
+          />
+        )}
+
+        {/* Settings. Forgetting a credential re-reads setup, which is what
+            brings the wizard back — previously there was no way to reach it
+            again once a key had been stored. */}
+        {settingsOpen && (
+          <DesktopSettings
+            onClose={() => setSettingsOpen(false)}
+            onCredentialCleared={() => {
+              setSettingsOpen(false);
               fetchDesktopSetup()
                 .then(setDesktopSetup)
                 .catch(() => setDesktopSetup(null));
