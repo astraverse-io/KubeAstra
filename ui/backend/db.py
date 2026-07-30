@@ -637,6 +637,22 @@ def save_cluster_connection(
         )
 
 
+def list_cluster_connections() -> list[dict]:
+    """Every session's cluster connection.
+
+    Used by the startup prune to decide which uploaded kubeconfigs are still
+    referenced. Returns rows, not paths, so callers can filter as they need.
+    """
+    with _conn() as con:
+        rows = con.execute(
+            """
+            SELECT session_id, mode, context_name, cluster_name, kubeconfig_path
+            FROM cluster_connections
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_cluster_connection(session_id: str) -> Optional[dict]:
     """Return the active cluster connection for a session, if any."""
     with _conn() as con:

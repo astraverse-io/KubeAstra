@@ -147,6 +147,15 @@ async def lifespan(app: FastAPI):
             logger.error("Failed to instrument FastAPI app: %s", exc)
     db.init_db()
     db.sweep_orphaned_investigations()
+    # Uploaded kubeconfigs are durable in desktop mode, so they outlive the
+    # process. Drop only the ones no session references any more, instead of
+    # the old exit-time wipe that destroyed every one of them.
+    try:
+        import cluster_session
+
+        cluster_session.prune_orphan_kubeconfigs()
+    except Exception as exc:
+        logger.warning("kubeconfig prune failed: %s", exc)
     _bootstrap_rag_collections()
     health.set_initialization_state(
         initialized=True,
