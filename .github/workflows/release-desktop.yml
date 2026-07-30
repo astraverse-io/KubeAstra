@@ -19,9 +19,10 @@ jobs:
           - platform: 'macos-13'
             target: 'x86_64-apple-darwin'
             args: '--target x86_64-apple-darwin'
-          - platform: 'ubuntu-22.04'
-            target: 'x86_64-unknown-linux-gnu'
-            args: ''
+          # No Linux entry. Linux desktop is out of scope for v1 — see
+          # desktop/README.md. It would have produced an AppImage that nobody
+          # ever launched: the "Verify the bundled app" step below is
+          # macOS-only, so a Linux artifact would ship unexercised.
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -43,12 +44,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsecret-1-dev
 
       - name: Install Frontend Dependencies & Build Static SPA
         run: |

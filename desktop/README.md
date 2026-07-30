@@ -19,8 +19,33 @@ KubeAstra Desktop runs as a local native application. The backend runs as a froz
 - Rust toolchain (`cargo`, `rustc`)
 - Platform tools:
   - **macOS**: Xcode Command Line Tools
-  - **Linux**: `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `libsecret-1-dev`
   - **Windows**: C++ Build Tools
+
+## Platforms
+
+**macOS and Windows only.** There is no Linux desktop build, and this is a
+deliberate reversal of the original plan — which chose Linux for the first
+release because it needed no code-signing certificate, not because users
+wanted it.
+
+Every native feature degrades on Linux:
+
+| | |
+|---|---|
+| Tray icon | Needs `libappindicator`, and GNOME does not show tray icons without a user-installed extension |
+| Global shortcut | Wayland blocks global shortcuts by design, and it is the default on Ubuntu, Fedora and GNOME |
+| Keychain | Needs SecretService; otherwise falls back to a `0600` file |
+| Webview | WebKitGTK version fragmentation — the same binary breaks across distros |
+
+**Linux users are already served.** `kubeastra open` runs the app in a browser
+on Linux today, and server mode (Helm, docker-compose) is Linux-native and
+unaffected. That covers the cases where Linux actually matters for KubeAstra;
+a desktop installer would have been the weakest build on the hardest platform
+to verify.
+
+Revisit if there is real demand. The Tauri config would need `appimage`/`deb`
+back in `bundle.targets`, a `ubuntu-*` matrix entry with the GTK/WebKit dev
+packages, and — most of the cost — a bundle-verification step per distro.
 
 ## Development Setup
 
