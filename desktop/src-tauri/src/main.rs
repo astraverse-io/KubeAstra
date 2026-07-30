@@ -6,6 +6,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+
+/// Auto-update. Rust-driven, because the webview has no IPC bridge.
+mod updater;
 use tauri::{Manager, WebviewWindow};
 
 /// Shared state for the shell.
@@ -561,6 +564,7 @@ fn build_tray(app: &tauri::AppHandle, shell: Shell) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open KubeAstra", true, None::<&str>)?;
     let investigate =
         MenuItem::with_id(app, "investigate", "New investigation…", true, Some("CmdOrCtrl+N"))?;
+    let update = MenuItem::with_id(app, "update", "Check for Updates…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit KubeAstra", true, Some("CmdOrCtrl+Q"))?;
 
     let menu = Menu::with_items(
@@ -571,6 +575,7 @@ fn build_tray(app: &tauri::AppHandle, shell: Shell) -> tauri::Result<()> {
             &open,
             &investigate,
             &PredefinedMenuItem::separator(app)?,
+            &update,
             &quit,
         ],
     )?;
@@ -596,6 +601,8 @@ fn build_tray(app: &tauri::AppHandle, shell: Shell) -> tauri::Result<()> {
                     front(&window);
                     dispatch(&window, &handler_shell, "focus", &[]);
                 }
+                // Manual check: answers either way, including "already current".
+                "update" => updater::spawn_check(app.clone(), true),
                 "quit" => app.exit(0),
                 _ => {}
             }
@@ -768,6 +775,8 @@ fn main() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let window = app
@@ -782,6 +791,11 @@ fn main() {
             let backend_window = window.clone();
             let backend_shell = setup_shell.clone();
             std::thread::spawn(move || start_backend(backend_window, backend_shell));
+
+            // Silent unless there is genuinely something to install — see the
+            // note at the top of updater.rs. Spawned last so a slow or
+            // unreachable endpoint cannot hold up the window.
+            updater::spawn_check(app.handle().clone(), false);
             Ok(())
         })
         .build(tauri::generate_context!())
