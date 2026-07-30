@@ -169,6 +169,23 @@ def main(argv: list[str] | None = None) -> int:
     # safety boundary here. Overridable, for anyone who wants it narrower.
     os.environ.setdefault("ALLOWED_NAMESPACES", "*")
 
+    # Credentials live in the keychain; everything that consumes them reads
+    # the environment. Bridge the two here — before `main` is imported, since
+    # settings are read and memoised at import time. Without this the app
+    # starts with no API key, the LLM provider reports itself disabled, and
+    # chat quietly degrades to single-shot tool output with no reasoning
+    # trace and no synthesis.
+    try:
+        import desktop_secrets
+
+        restored = desktop_secrets.restore_to_environ()
+        if restored:
+            announce(f"LLM_PROVIDER={restored}")
+        else:
+            announce("LLM_PROVIDER=none (run setup)")
+    except Exception as error:  # a broken keychain must not block startup
+        print(f"warning: could not restore stored credentials: {error}", file=sys.stderr)
+
     sock, port = bind_socket(args.host, args.port)
     os.environ["KUBEASTRA_DESKTOP_PORT"] = str(port)
 
