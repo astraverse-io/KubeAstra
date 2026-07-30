@@ -396,9 +396,15 @@ class KubectlRunner:
         """
         Run kubectl command and parse JSON output.
 
-        Uses a 10 MB output cap so that JSON is never truncated mid-stream
-        (which would make it unparseable).  Individual callers are responsible
-        for limiting the number of items they return to the user.
+        Uses a large output cap (settings.max_json_bytes) so that JSON is
+        never truncated mid-stream — a truncated document is not "less data",
+        it is unparseable. If the cap *is* hit, this raises rather than
+        letting json.loads fail: the resulting JSONDecodeError blamed kubectl
+        for corruption this code had introduced, which sent at least one
+        debugging session in entirely the wrong direction.
+
+        Individual callers are responsible for limiting the number of items
+        they return to the user.
 
         Args:
             args: Command arguments
@@ -414,13 +420,27 @@ class KubectlRunner:
         if "-o" not in args and "--output" not in args:
             args = args + ["-o", "json"]
 
-        # Use a 10 MB hard cap — large enough for any realistic kubectl response
-        # while still protecting against pathological outputs.
-        JSON_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+        json_max_bytes = settings.max_json_bytes
 
-        result = self.run(args, namespace=namespace, max_output=JSON_MAX_BYTES)
+        result = self.run(args, namespace=namespace, max_output=json_max_bytes)
         result.raise_for_status()
-        
+
+        # Check before parsing. `run` already told us it cut the output short;
+        # parsing it anyway produces a JSONDecodeError that reads as though
+        # kubectl emitted malformed JSON, when in fact we truncated valid
+        # JSON. Say what actually happened, and what to do about it.
+        if result.truncated:
+            megabytes = json_max_bytes / (1024 * 1024)
+            raise KubectlError(
+                f"kubectl returned more than {megabytes:.0f} MB of JSON, so the "
+                f"output was cut short and cannot be parsed. Nothing is wrong "
+                f"with the cluster — the query is simply too broad. Narrow it "
+                f"with a namespace or a label selector, or raise "
+                f"MAX_JSON_BYTES if this size is expected.",
+                result.returncode,
+                result.stderr,
+            )
+
         try:
             return json.loads(result.stdout)
         except json.JSONDecodeError as e:

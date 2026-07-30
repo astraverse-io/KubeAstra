@@ -126,6 +126,23 @@ class ToolEnvelope(BaseModel):
     verdict: VerdictBand
     evidence: EvidenceUnion = Field(..., discriminator="type")
     raw_excerpt: str = Field(default="", max_length=2048)
+    # The original tool result, carried through untouched for the UI.
+    #
+    # The envelope is a *summary* — get_events keeps the top 8 deduplicated
+    # messages, not the events themselves — which is right for the LLM and
+    # wrong for a table the operator is reading. Before this field, enveloping
+    # a tool silently emptied its ResultCard: the renderer looks for `events`,
+    # `pods`, `logs`, and an envelope has none of them.
+    #
+    # Deliberately excluded from the ReAct observation (see
+    # `_truncate_observation`) — putting it in front of the model would undo
+    # the entire point of summarising.
+    # `exclude=True`: omitted from model_dump() by default. The envelope is
+    # serialised into LLM prompts at several places, and any one of them
+    # forgetting to strip this would hand the model the raw dump the summary
+    # exists to replace. Safe by default; the UI opts in explicitly via
+    # `payload_for_ui()`.
+    payload: Optional[Dict[str, Any]] = Field(default=None, exclude=True)
     confidence_signals: ConfidenceSignals = Field(default_factory=ConfidenceSignals)
     # Serialize as _meta in JSON but represent as meta in Python
     meta: ToolMeta = Field(..., alias="_meta")
@@ -229,6 +246,7 @@ def make_pod_logs_envelope(result: Dict[str, Any], params: Dict[str, Any], durat
         evidence=evidence,
         raw_excerpt=raw_excerpt,
         confidence_signals=signals,
+        payload=result,
         _meta=meta
     )
 
@@ -317,6 +335,7 @@ def make_events_envelope(result: Dict[str, Any], params: Dict[str, Any], duratio
         evidence=evidence,
         raw_excerpt=raw_excerpt,
         confidence_signals=signals,
+        payload=result,
         _meta=meta
     )
 
@@ -439,6 +458,7 @@ def make_investigate_pod_envelope(result: Dict[str, Any], params: Dict[str, Any]
         evidence=evidence,
         raw_excerpt=raw_excerpt,
         confidence_signals=signals,
+        payload=result,
         _meta=meta
     )
 
@@ -701,5 +721,6 @@ def make_generic_envelope(
         evidence=evidence,
         raw_excerpt=raw_excerpt,
         confidence_signals=confidence,
+        payload=result,
         _meta=meta
     )
