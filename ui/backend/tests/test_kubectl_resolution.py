@@ -19,9 +19,18 @@ if str(MCP_DIR) not in sys.path:
 
 from k8s import binaries  # noqa: E402
 
+# Captured before the autouse fixture stubs it out, so the tests that
+# exercise shell discovery itself can still reach the real thing.
+real_login_shell_path = binaries.login_shell_path
+
 
 @pytest.fixture(autouse=True)
-def clear_cache():
+def clear_cache(monkeypatch):
+    # Never spawn the developer's real login shell: it makes results depend
+    # on whoever is running the suite, and costs half a second each time.
+    # Tests that care about shell discovery override this in their body.
+    monkeypatch.setattr(binaries, "login_shell_path", lambda: None)
+    monkeypatch.setattr(binaries, "_cloud_plugin_dirs", lambda: [])
     binaries.reset_cache()
     yield
     binaries.reset_cache()
@@ -135,3 +144,105 @@ def test_augment_path_skips_directories_that_do_not_exist(tmp_path, monkeypatch)
 
     assert binaries.augment_path() == []
     assert os.environ["PATH"] == "/usr/bin"
+
+
+# ── login-shell PATH discovery ────────────────────────────────────────────
+#
+# Known locations cannot fix credential plugins: a GKE/EKS/AKS kubeconfig
+# names one under `exec`, kubectl resolves it through PATH itself, and it
+# installs wherever its SDK went — `~/Downloads/google-cloud-sdk/bin` is a
+# real example no hardcoded list would contain. So ask the user's shell.
+
+
+class _Result:
+    def __init__(self, stdout: str):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = 0
+
+
+def _shell_returning(path_value: str, *, noise: str = ""):
+    marker = binaries._MARKER
+
+    def fake_run(cmd, **kwargs):
+        return _Result(f"{noise}{marker}{path_value}{marker}")
+
+    return fake_run
+
+
+def test_login_shell_path_is_extracted_from_between_markers(monkeypatch):
+    """Real profiles print banners and version-manager chatter."""
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.delenv(binaries._DISABLE_ENV, raising=False)
+    monkeypatch.setattr(binaries, "_executable", lambda _: True)
+    monkeypatch.setattr(
+        binaries.subprocess, "run",
+        _shell_returning("/opt/sdk/bin:/usr/bin", noise="nvm: loaded\n"),
+    )
+
+    assert real_login_shell_path() == "/opt/sdk/bin:/usr/bin"
+
+
+def test_login_shell_timeout_is_not_fatal(monkeypatch):
+    """A shell that hangs must not stop the app from starting."""
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.delenv(binaries._DISABLE_ENV, raising=False)
+    monkeypatch.setattr(binaries, "_executable", lambda _: True)
+
+    def hang(cmd, **kwargs):
+        raise binaries.subprocess.TimeoutExpired(cmd, 5)
+
+    monkeypatch.setattr(binaries.subprocess, "run", hang)
+    assert real_login_shell_path() is None
+
+
+def test_login_shell_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.setenv(binaries._DISABLE_ENV, "1")
+
+    def explode(cmd, **kwargs):  # pragma: no cover — must not be reached
+        raise AssertionError("shell should not have been queried")
+
+    monkeypatch.setattr(binaries.subprocess, "run", explode)
+    assert real_login_shell_path() is None
+
+
+def test_shell_path_reaches_a_plugin_no_list_would_guess(tmp_path, monkeypatch):
+    """The end-to-end case: PATH extended so kubectl can find its exec plugin."""
+    odd_location = tmp_path / "Downloads" / "google-cloud-sdk" / "bin"
+    _make_executable(odd_location, "gke-gcloud-auth-plugin")
+
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(binaries, "login_shell_path", lambda: f"/usr/bin:{odd_location}")
+    monkeypatch.setattr(binaries, "_candidate_dirs", lambda: [])
+    monkeypatch.setattr(binaries, "_cloud_plugin_dirs", lambda: [])
+
+    added = binaries.augment_path()
+
+    assert str(odd_location) in added
+    assert "/usr/bin" not in added, "already present; must not be duplicated"
+    assert binaries.shutil.which("gke-gcloud-auth-plugin") is not None
+
+
+def test_augment_path_survives_a_shell_that_says_nothing(tmp_path, monkeypatch):
+    """Known locations still apply when shell discovery fails."""
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setattr(binaries, "login_shell_path", lambda: None)
+    monkeypatch.setattr(binaries, "_candidate_dirs", lambda: [tools])
+    monkeypatch.setattr(binaries, "_cloud_plugin_dirs", lambda: [])
+
+    assert binaries.augment_path() == [str(tools)]
+
+
+def test_missing_auth_plugins_reports_only_absent_ones(monkeypatch):
+    present = {"gke-gcloud-auth-plugin"}
+    monkeypatch.setattr(
+        binaries.shutil, "which",
+        lambda name: "/somewhere/" + name if name in present else None,
+    )
+
+    missing = binaries.missing_auth_plugins()
+    assert "gke-gcloud-auth-plugin" not in missing
+    assert "aws-iam-authenticator" in missing

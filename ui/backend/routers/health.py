@@ -128,9 +128,22 @@ def _kubectl_check_uncached() -> tuple[bool, str | None, str, CheckResult]:
 
     if result.returncode != 0:
         duration = _observe_check("kubectl", started, False)
-        detail = (result.stderr or result.stdout or "kubectl version failed").strip()[:240]
+        detail = (result.stderr or result.stdout or "kubectl version failed").strip()
+        # A GKE/EKS/AKS kubeconfig names a credential plugin under `exec`,
+        # which kubectl resolves through PATH. When that fails, kubectl's own
+        # message ("executable ... not found") reads like a broken install
+        # rather than a launch-environment problem, so name the real cause.
+        if "credential plugin" in detail or "exec:" in detail:
+            missing = binaries.missing_auth_plugins()
+            if missing:
+                detail = (
+                    f"{detail} — KubeAstra could not find these credential "
+                    f"plugins either: {', '.join(missing)}. They are resolved "
+                    f"through PATH, which a GUI launch does not inherit from "
+                    f"your shell."
+                )
         return False, None, "unavailable", CheckResult(
-            status="failed", duration_ms=duration, detail=detail
+            status="failed", duration_ms=duration, detail=detail[:600]
         )
 
     if os.environ.get("KUBERNETES_SERVICE_HOST"):

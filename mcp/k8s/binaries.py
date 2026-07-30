@@ -19,9 +19,11 @@ Two mechanisms, deliberately:
 
   * `resolve()` finds a specific tool and returns an absolute path. The
     runners use it, so command execution never depends on PATH at all.
-  * `augment_path()` appends the directories we found to `PATH`, which fixes
-    everything *else* that shells out — helm, and kubectl's own plugins,
-    which kubectl locates by scanning PATH itself.
+  * `augment_path()` appends directories to `PATH`, which fixes everything
+    *else* that shells out — helm, kubectl's own plugins, and the cloud
+    credential plugins a GKE/EKS/AKS kubeconfig names under `exec`. kubectl
+    resolves those by walking PATH itself, so we never see the call and
+    cannot route it through `resolve()`.
 
 Append, never prepend: a user who has deliberately put a particular kubectl
 earlier in PATH keeps it.
@@ -33,6 +35,7 @@ import logging
 import os
 import platform
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -163,25 +166,152 @@ def found(tool: str) -> Optional[str]:
     return path if os.path.sep in path else None
 
 
-def augment_path() -> List[str]:
-    """Append known tool directories to `PATH`. Returns the ones added.
+# ── the user's real PATH ──────────────────────────────────────────────────
+#
+# Searching known locations fixes the tools we can name. It cannot fix the
+# ones kubectl invokes on our behalf: a kubeconfig for GKE, EKS or AKS names
+# a credential plugin under `users[].user.exec`, and kubectl resolves that
+# name by walking PATH itself. We never see the call.
+#
+# Those plugins install wherever their SDK went — one real example is
+# `~/Downloads/google-cloud-sdk/bin`, which no list of standard locations
+# would ever contain. So instead of guessing, ask the user's login shell what
+# its PATH is and merge that in. This is the same approach VS Code takes for
+# the same problem, and it fixes kubectl, helm, every auth plugin and any
+# custom install at once.
 
-    For everything that shells out without going through `resolve()` —
-    notably helm, and kubectl plugins, which kubectl discovers by walking
-    PATH itself.
+_SHELL_TIMEOUT_SECONDS = 5
+_MARKER = "__KUBEASTRA_PATH__"
+_DISABLE_ENV = "KUBEASTRA_NO_SHELL_PATH"
+
+
+def login_shell_path() -> Optional[str]:
+    """The PATH the user's login shell produces, or None.
+
+    Runs the shell with `-i -l`. Interactive matters: on zsh, `PATH` is set in
+    `.zshrc` far more often than in `.zprofile`, and a login-only shell never
+    reads it. Output is bracketed by a marker because a real profile prints
+    banners, version-manager noise and occasionally warnings.
+
+    Returns None on any failure. A shell that hangs, errors, or is missing is
+    a normal condition here, not something to propagate — discovery falling
+    back to known locations is strictly better than failing to start.
+    """
+    if platform.system() == "Windows":
+        return None
+    if os.environ.get(_DISABLE_ENV):
+        logger.info("login-shell PATH discovery disabled by %s", _DISABLE_ENV)
+        return None
+
+    shell = os.environ.get("SHELL") or "/bin/zsh"
+    if not _executable(Path(shell)):
+        logger.debug("login shell %s is not executable", shell)
+        return None
+
+    script = f'printf "{_MARKER}%s{_MARKER}" "$PATH"'
+    # Guard against a profile that launches this app again.
+    env = {**os.environ, _DISABLE_ENV: "1"}
+
+    for args in (["-i", "-l", "-c", script], ["-l", "-c", script]):
+        try:
+            result = subprocess.run(
+                [shell, *args],
+                capture_output=True,
+                text=True,
+                timeout=_SHELL_TIMEOUT_SECONDS,
+                check=False,
+                env=env,
+                stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("login shell %s did not respond within %ds",
+                           shell, _SHELL_TIMEOUT_SECONDS)
+            continue
+        except Exception as error:
+            logger.warning("could not query login shell %s: %s", shell, error)
+            continue
+
+        parts = (result.stdout or "").split(_MARKER)
+        if len(parts) >= 3 and parts[1].strip():
+            return parts[1].strip()
+
+    return None
+
+
+def _cloud_plugin_dirs() -> List[Path]:
+    """Standard SDK locations, as a fallback when the shell tells us nothing.
+
+    Covers a default install of each cloud SDK. A non-default install is what
+    `login_shell_path()` is for.
+    """
+    home = Path.home()
+    return [
+        home / "google-cloud-sdk" / "bin",
+        Path("/opt/homebrew/share/google-cloud-sdk/bin"),
+        Path("/usr/local/share/google-cloud-sdk/bin"),
+        Path("/usr/lib/google-cloud-sdk/bin"),
+        home / ".azure" / "kubelogin",
+        home / ".krew" / "bin",           # kubectl plugin manager
+    ]
+
+
+# Credential plugins a kubeconfig can name. Reported by health checks so a
+# cloud cluster failing to authenticate says *why*.
+AUTH_PLUGINS = (
+    "gke-gcloud-auth-plugin",
+    "aws-iam-authenticator",
+    "aws",
+    "kubelogin",
+)
+
+
+def missing_auth_plugins() -> List[str]:
+    """Which known credential plugins cannot be resolved right now."""
+    return [name for name in AUTH_PLUGINS if shutil.which(name) is None]
+
+
+def augment_path() -> List[str]:
+    """Extend `PATH` so shelled-out tools and auth plugins resolve.
+
+    Returns the directories added. Sources, in order of trust:
+
+      1. the user's login shell — their actual environment
+      2. known tool locations (`_candidate_dirs`)
+      3. standard cloud SDK locations
+
+    Appended, never prepended: a binary the user deliberately put earlier in
+    PATH keeps winning.
     """
     current = os.environ.get("PATH", "")
     existing = {p for p in current.split(os.pathsep) if p}
 
-    added = [
-        str(d) for d in _candidate_dirs()
-        if str(d) not in existing and d.is_dir()
-    ]
+    added: List[str] = []
+
+    shell_path = login_shell_path()
+    if shell_path:
+        for entry in shell_path.split(os.pathsep):
+            if entry and entry not in existing:
+                existing.add(entry)
+                added.append(entry)
+        logger.info("login shell contributed %d PATH entries", len(added))
+
+    for directory in [*_candidate_dirs(), *_cloud_plugin_dirs()]:
+        text = str(directory)
+        if text in existing:
+            continue
+        try:
+            if not directory.is_dir():
+                continue
+        except OSError:
+            continue
+        existing.add(text)
+        added.append(text)
+
     if added:
         os.environ["PATH"] = os.pathsep.join(
             [current, *added] if current else added
         )
-        logger.info("PATH extended with %d tool director(ies)", len(added))
+        logger.info("PATH extended with %d director(ies)", len(added))
     return added
 
 

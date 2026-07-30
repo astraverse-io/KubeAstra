@@ -209,6 +209,16 @@ def main(argv: list[str] | None = None) -> int:
         announce(f"KUBECTL={kubectl_path or 'not found'}")
         if added:
             print(f"PATH extended with: {', '.join(added)}", file=sys.stderr)
+        # Cloud clusters authenticate through a credential plugin kubectl
+        # invokes itself. Say up front which ones are unreachable, rather
+        # than letting the first GKE query fail with kubectl's own wording.
+        missing = binaries.missing_auth_plugins()
+        if missing:
+            print(
+                f"note: credential plugins not found: {', '.join(missing)} "
+                f"(only matters for clusters whose kubeconfig uses them)",
+                file=sys.stderr,
+            )
     except Exception as error:  # never block startup over tool discovery
         print(f"warning: tool discovery failed: {error}", file=sys.stderr)
 
