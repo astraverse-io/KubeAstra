@@ -149,6 +149,57 @@ The tray icon is `icons/tray.png`, **not** `icons/icon.png`. macOS renders
 template icons from the alpha channel alone, and `icon.png` is 100% opaque —
 using it puts a solid black square in the menu bar.
 
+## Notifications
+
+Server mode receives alerts by webhook. A laptop has no address Alertmanager
+can post to — and would not be reachable when closed — so desktop **polls**
+instead.
+
+```
+Alertmanager  ──30s──▶  desktop_alerts.AlertPoller  (decides what is new)
+                                  │
+                        GET /api/desktop/notifications   (destructive drain)
+                                  │
+                        ──15s──▶  Tauri shell  ──▶  OS notification
+```
+
+The backend decides what is *new*; the shell only asks "anything for me?" and
+shows it. Draining is destructive: re-delivering would mean duplicate OS
+notifications for one alert, which is worse than losing one if the shell dies
+between the drain and the notification.
+
+**The first poll after enabling announces nothing.** It records what is
+already firing and stays silent — otherwise opening the laptop on a Monday
+would fire a notification for every alert that has been going all weekend.
+Enabling triggers an immediate poll rather than waiting for the next interval,
+so that priming reflects the cluster at the moment you switched it on.
+
+Configuration lives in `config.json` in the app-data directory, not in
+environment variables: an Alertmanager URL is typed once and must survive a
+restart. It is written `0600` because the URL can carry basic-auth credentials.
+
+```bash
+# Verify before storing — the same rule the wizard's LLM step follows
+curl -X POST localhost:PORT/api/desktop/notifications/test \
+  -H 'Content-Type: application/json' -d '{"alertmanager_url":"localhost:9093"}'
+```
+
+### Two known gaps
+
+**No Settings UI yet.** The endpoints exist and are typed in `lib/api.ts`, but
+nothing renders them — a user can currently only configure this with `curl`.
+A Settings screen is the next piece of work.
+
+**Clicking a notification only activates the app.** Tauri v2's notification
+plugin exposes click actions on mobile only, so a click cannot yet open the
+specific investigation. The namespace and pod are already carried in the
+payload, ready for when it can.
+
+Also worth knowing: on macOS, notification delivery for an **unsigned** app run
+from a build directory is unreliable — `show()` returns `Ok` either way. This
+is one of the things that can only really be confirmed once the app is signed
+and installed.
+
 ## Why resources instead of externalBin
 
 The backend is a PyInstaller **onedir** build — a launcher plus an

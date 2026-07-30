@@ -19,6 +19,11 @@ struct Shell {
     backend: Arc<Mutex<Option<Child>>>,
     base_url: Arc<Mutex<Option<String>>>,
     pending: Arc<Mutex<Option<String>>>,
+    /// The per-launch token, for the shell's own API calls. The webview gets
+    /// a cookie via /auth; a background poller has no cookie jar, so it sends
+    /// `Authorization: Bearer` instead (desktop_security.extract_token
+    /// accepts either).
+    token: Arc<Mutex<Option<String>>>,
 }
 
 /// Bring the window to the foreground from wherever it was.
@@ -312,6 +317,7 @@ fn start_backend(window: WebviewWindow, shell: Shell) {
                 }
                 println!("[tauri] Backend healthy on port {port}");
                 *shell.base_url.lock().unwrap() = Some(format!("http://127.0.0.1:{port}"));
+                *shell.token.lock().unwrap() = Some(token.clone());
 
                 let url = format!("http://127.0.0.1:{port}/auth?token={token}");
                 match url.parse() {
@@ -409,23 +415,133 @@ fn stop_backend(child_opt: &mut Option<Child>) {
     }
 }
 
-/// Read the connected context from /health for the tray's cluster line.
-fn poll_cluster_label(base: &str) -> Option<String> {
-    let url = base.strip_prefix("http://")?;
-    let mut stream = std::net::TcpStream::connect(url).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok()?;
+/// One HTTP GET against the local backend, authenticated with the launch
+/// token. Deliberately hand-rolled: pulling in a full HTTP client for two
+/// loopback GETs against a server we started ourselves is not worth the
+/// dependency, and `wait_for_health` already speaks enough HTTP.
+fn backend_get(base: &str, path: &str, token: Option<&str>, timeout: Duration) -> Option<String> {
+    let host = base.strip_prefix("http://")?;
+    let mut stream = std::net::TcpStream::connect(host).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    stream.set_write_timeout(Some(timeout)).ok()?;
 
     use std::io::{Read, Write};
+    let auth = match token {
+        Some(value) => format!("Authorization: Bearer {value}\r\n"),
+        None => String::new(),
+    };
     let request =
-        format!("GET /health HTTP/1.1\r\nHost: {url}\r\nConnection: close\r\n\r\n");
+        format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n{auth}Connection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).ok()?;
+
     let mut response = String::new();
     stream.read_to_string(&mut response).ok()?;
+    if !response.starts_with("HTTP/1.1 200") {
+        return None;
+    }
+    response.split_once("\r\n\r\n").map(|(_, body)| body.to_string())
+}
 
-    let body = response.split("\r\n\r\n").nth(1)?;
-    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+/// Raise an OS notification per newly-firing alert.
+///
+/// The backend polls Alertmanager and decides what is new; this only asks
+/// "anything for me?" and shows it. Draining is destructive on the server
+/// side, so one poll here equals one notification per alert.
+///
+/// Clicking a notification activates the app, which is the OS default. Tauri
+/// v2's notification plugin exposes click actions on mobile only, so a click
+/// cannot yet open the specific investigation — the plan's "click opens an
+/// investigation" is not achievable with the plugin as it stands. The
+/// namespace and pod are carried in the payload, ready for when it is.
+fn start_notifier(app: tauri::AppHandle, shell: Shell) {
+    use tauri_plugin_notification::NotificationExt;
+
+    std::thread::spawn(move || {
+        // macOS and Windows both gate notifications on a user grant. Ask once
+        // at startup rather than at the moment the first alert fires, so the
+        // permission prompt is not the thing competing with the alert.
+        match app.notification().permission_state() {
+            Ok(tauri_plugin_notification::PermissionState::Granted) => {}
+            Ok(_) => match app.notification().request_permission() {
+                Ok(state) => println!("[tauri] Notification permission: {state:?}"),
+                Err(error) => {
+                    eprintln!("[tauri] Could not request notification permission: {error}")
+                }
+            },
+            Err(error) => eprintln!("[tauri] Notification permission unknown: {error}"),
+        }
+
+        loop {
+            std::thread::sleep(Duration::from_secs(15));
+
+            let (Some(base), token) = (
+                shell.base_url.lock().unwrap().clone(),
+                shell.token.lock().unwrap().clone(),
+            ) else {
+                continue;
+            };
+
+            let Some(body) = backend_get(
+                &base,
+                "/api/desktop/notifications",
+                token.as_deref(),
+                Duration::from_secs(10),
+            ) else {
+                continue;
+            };
+
+            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) else {
+                continue;
+            };
+            let Some(alerts) = parsed.get("alerts").and_then(|v| v.as_array()) else {
+                continue;
+            };
+
+            for item in alerts {
+                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("Alert");
+                let severity = item.get("severity").and_then(|v| v.as_str()).unwrap_or("");
+                let namespace = item.get("namespace").and_then(|v| v.as_str()).unwrap_or("");
+                let pod = item.get("pod").and_then(|v| v.as_str()).unwrap_or("");
+                let summary = item.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+
+                let title = if severity.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{name} ({severity})")
+                };
+                let mut detail = String::new();
+                if !namespace.is_empty() {
+                    detail.push_str(namespace);
+                    if !pod.is_empty() {
+                        detail.push('/');
+                        detail.push_str(pod);
+                    }
+                }
+                if !summary.is_empty() {
+                    if !detail.is_empty() {
+                        detail.push_str(" — ");
+                    }
+                    detail.push_str(summary);
+                }
+
+                if let Err(error) = app
+                    .notification()
+                    .builder()
+                    .title(&title)
+                    .body(if detail.is_empty() { "Firing" } else { &detail })
+                    .show()
+                {
+                    eprintln!("[tauri-error] Could not raise notification: {error}");
+                }
+            }
+        }
+    });
+}
+
+/// Read the connected context from /health for the tray's cluster line.
+fn poll_cluster_label(base: &str) -> Option<String> {
+    let body = backend_get(base, "/health", None, Duration::from_secs(5))?;
+    let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
     match parsed.get("kubectl_context").and_then(|v| v.as_str()) {
         Some(context) => Some(format!("Cluster: {context}")),
         None => Some("Cluster: not connected".to_string()),
@@ -652,6 +768,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let window = app
                 .get_webview_window("main")
@@ -660,6 +777,7 @@ fn main() {
             build_tray(app.handle(), setup_shell.clone())?;
             register_shortcut(app.handle(), setup_shell.clone());
             register_deep_links(app, setup_shell.clone());
+            start_notifier(app.handle().clone(), setup_shell.clone());
 
             let backend_window = window.clone();
             let backend_shell = setup_shell.clone();

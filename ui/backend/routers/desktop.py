@@ -23,6 +23,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+import desktop_alerts
+import desktop_config
 import desktop_secrets
 
 logger = logging.getLogger(__name__)
@@ -86,11 +88,17 @@ class DesktopSettings(BaseModel):
     memory_available: bool = False
     keychain_secure: bool = True
     keychain_backend: str = ""
+    # Persisted in config.json rather than the environment: the user types
+    # these once and expects them to survive a restart.
+    alertmanager_url: str = ""
+    notifications_enabled: bool = False
 
 
 class DesktopSettingsUpdate(BaseModel):
     memory_enabled: Optional[bool] = None
     remote_diagnostics_enabled: Optional[bool] = None
+    alertmanager_url: Optional[str] = None
+    notifications_enabled: Optional[bool] = None
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -346,6 +354,7 @@ def setup_embeddings(body: EmbeddingsSetupRequest) -> EmbeddingsSetupResponse:
 @router.get("/settings", response_model=DesktopSettings)
 def get_desktop_settings() -> DesktopSettings:
     available = _memory_available()
+    stored = desktop_config.load()
     return DesktopSettings(
         memory_enabled=os.environ.get("KUBEASTRA_MEMORY_ENABLED", "1") != "0",
         remote_diagnostics_enabled=os.environ.get(
@@ -356,6 +365,8 @@ def get_desktop_settings() -> DesktopSettings:
         memory_available=available,
         keychain_secure=desktop_secrets.is_secure(),
         keychain_backend=desktop_secrets.backend_name(),
+        alertmanager_url=str(stored.get("alertmanager_url") or ""),
+        notifications_enabled=bool(stored.get("notifications_enabled")),
     )
 
 
@@ -367,8 +378,76 @@ def update_desktop_settings(body: DesktopSettingsUpdate) -> DesktopSettings:
         os.environ["KUBEASTRA_REMOTE_DIAGNOSTICS"] = (
             "1" if body.remote_diagnostics_enabled else "0"
         )
+
+    updates: dict = {}
+    if body.alertmanager_url is not None:
+        try:
+            updates["alertmanager_url"] = desktop_config.normalize_alertmanager_url(
+                body.alertmanager_url
+            )
+        except ValueError as error:
+            # Reject rather than store something that would silently never
+            # poll — a notifications feature that quietly does nothing is
+            # worse than one that refuses to be configured.
+            raise HTTPException(status_code=400, detail=str(error)) from error
+    if body.notifications_enabled is not None:
+        updates["notifications_enabled"] = bool(body.notifications_enabled)
+
+    if updates:
+        merged = desktop_config.save(updates)
+        # Enabling with no URL configured cannot work; say so now.
+        if merged.get("notifications_enabled") and not merged.get("alertmanager_url"):
+            desktop_config.save({"notifications_enabled": False})
+            raise HTTPException(
+                status_code=400,
+                detail="Set an Alertmanager URL before enabling notifications.",
+            )
+        desktop_alerts.poller.start()
+        # Poll now rather than in up to a full interval. Enabling should
+        # prime against the cluster as it is at this moment; otherwise an
+        # alert that starts firing in the gap is written off as pre-existing.
+        desktop_alerts.poller.refresh()
+
     _reset_caches()
     return get_desktop_settings()
+
+
+@router.get("/notifications")
+def drain_notifications() -> dict:
+    """Alerts that have started firing since the last call.
+
+    Polled by the Tauri shell, which raises one native notification per item.
+    Draining is destructive — see AlertPoller.drain for why re-delivery would
+    be worse than an occasional loss.
+    """
+    return {
+        "alerts": desktop_alerts.poller.drain(),
+        "status": desktop_alerts.poller.status(),
+    }
+
+
+@router.post("/notifications/test")
+def test_alertmanager(body: DesktopSettingsUpdate) -> dict:
+    """Check a URL before the user commits to it.
+
+    Same verify-before-store rule the LLM and embeddings steps follow: a
+    settings screen that accepts anything and fails silently in a background
+    thread is untestable by the person using it.
+    """
+    try:
+        url = desktop_config.normalize_alertmanager_url(body.alertmanager_url or "")
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if not url:
+        raise HTTPException(status_code=400, detail="No Alertmanager URL given.")
+
+    try:
+        alerts = desktop_alerts.poller.fetch(url, timeout=8.0)
+    except Exception as error:
+        raise HTTPException(
+            status_code=400, detail=f"Could not reach Alertmanager: {error}"
+        ) from error
+    return {"ok": True, "url": url, "firing": len(alerts)}
 
 
 @router.delete("/secrets/{name}")
