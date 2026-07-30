@@ -96,6 +96,11 @@ class DesktopSettings(BaseModel):
     # set by connecting a cluster, so there is one act of choosing rather
     # than two settings that can disagree.
     default_cluster_context: str = ""
+    # Which kubectl is actually being used, and which credential plugins are
+    # missing. Both are launch-environment dependent — a GUI launch inherits
+    # almost no PATH — so "it works in my terminal" is not evidence.
+    kubectl_path: str = ""
+    missing_auth_plugins: list[str] = []
 
 
 class DesktopSettingsUpdate(BaseModel):
@@ -135,6 +140,28 @@ def _reset_caches() -> None:
         embeddings.reset()
     except Exception:  # pragma: no cover — embeddings optional at this point
         logger.debug("embeddings reset skipped", exc_info=True)
+
+
+def _kubectl_path() -> str:
+    """Absolute path to the kubectl in use, or "" when none was found."""
+    try:
+        from k8s import binaries
+
+        return binaries.found("kubectl") or ""
+    except Exception:  # discovery must never break the settings screen
+        logger.debug("kubectl discovery failed", exc_info=True)
+        return ""
+
+
+def _missing_auth_plugins() -> list[str]:
+    """Credential plugins a cloud kubeconfig might name that we cannot find."""
+    try:
+        from k8s import binaries
+
+        return binaries.missing_auth_plugins()
+    except Exception:
+        logger.debug("auth plugin probe failed", exc_info=True)
+        return []
 
 
 def _stored_llm_provider() -> Optional[str]:
@@ -396,6 +423,8 @@ def get_desktop_settings() -> DesktopSettings:
         alertmanager_url=str(stored.get("alertmanager_url") or ""),
         notifications_enabled=bool(stored.get("notifications_enabled")),
         default_cluster_context=str(stored.get("default_cluster_context") or ""),
+        kubectl_path=_kubectl_path(),
+        missing_auth_plugins=_missing_auth_plugins(),
     )
 
 
@@ -488,5 +517,20 @@ def forget_secret(name: str) -> dict:
     if name not in valid:
         raise HTTPException(404, f"Unknown secret '{name}'")
     desktop_secrets.delete_secret(name)
+
+    # Forget the recorded choice too, and clear the key out of the running
+    # process. Leaving either behind means the app still believes it is
+    # configured for a provider whose credential no longer exists — which is
+    # the state this endpoint exists to escape.
+    if name.startswith("llm."):
+        provider = name.split(".", 1)[1]
+        _persist_choice("llm_provider", "")
+        env_name = _PROVIDER_ENV.get(provider)
+        if env_name:
+            os.environ.pop(env_name, None)
+    elif name.startswith("embeddings."):
+        _persist_choice("embeddings_provider", "")
+        os.environ.pop("EMBEDDINGS_API_KEY", None)
+
     _reset_caches()
     return {"ok": True}

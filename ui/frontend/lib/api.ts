@@ -740,6 +740,19 @@ export interface DesktopSettingsState {
   /** Persisted in config.json, unlike the flags above which live in env. */
   alertmanager_url: string;
   notifications_enabled: boolean;
+  /**
+   * Cluster that alert-driven investigations target. Read-only: it is set by
+   * connecting a cluster, so there is one act of choosing. Empty means
+   * background investigations refuse to run rather than guess.
+   */
+  default_cluster_context: string;
+  /**
+   * Which kubectl the backend resolved, and any credential plugins it could
+   * not find. Both depend on the launch environment — a GUI launch inherits
+   * almost no PATH — so these are worth showing rather than assuming.
+   */
+  kubectl_path: string;
+  missing_auth_plugins: string[];
 }
 
 /** Returns null in server mode (endpoint absent), the state otherwise. */
