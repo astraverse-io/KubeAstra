@@ -78,6 +78,76 @@ def resolve(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
     return conn
 
 
+class NoDefaultCluster(RuntimeError):
+    """Background work was asked to run with no cluster chosen.
+
+    Distinct from ClusterConnectionUnavailable: nothing is broken, nothing
+    has been picked yet.
+    """
+
+
+def _desktop_mode() -> bool:
+    return (os.environ.get("KUBEASTRA_MODE") or "").lower() == "desktop"
+
+
+def resolve_default() -> Optional[Dict[str, Any]]:
+    """The cluster background work should target, or None in server mode.
+
+    Chat binds a runner per session. An alert arriving from Alertmanager has
+    no session, so `get_runner()` returned the ambient runner — the machine's
+    `current-context`. On a laptop that is routinely an employer's cluster
+    the operator never chose for this app, and a proactive investigation
+    would happily run `kubectl get pods --all-namespaces` against it.
+
+    Server mode is the opposite case: the ambient runner *is* the intended
+    cluster, an in-cluster ServiceAccount with a bounded RBAC role. Returning
+    None there preserves that.
+
+    Raises NoDefaultCluster in desktop mode when nothing has been chosen, so
+    the caller refuses rather than guessing.
+    """
+    if not _desktop_mode():
+        return None
+
+    import desktop_config
+
+    stored = desktop_config.load()
+    context = (stored.get("default_cluster_context") or "").strip()
+    if not context:
+        raise NoDefaultCluster(
+            "No cluster has been selected for background investigations. "
+            "Connect a cluster in KubeAstra first — nothing was run, and no "
+            "command was sent to any cluster."
+        )
+
+    path = (stored.get("default_cluster_kubeconfig") or "").strip()
+    if path and not os.path.isfile(path):
+        raise ClusterConnectionUnavailable(context, "kubeconfig file is missing")
+
+    return {"context_name": context, "kubeconfig_path": path or None}
+
+
+def remember_default(context_name: str, kubeconfig_path: Optional[str]) -> None:
+    """Record the cluster the operator just connected to.
+
+    Called from the connect flow so choosing a cluster in the UI is also the
+    act of choosing it for alerts — rather than a second, separate setting
+    nobody would find, whose default would have to be *something*.
+    """
+    if not _desktop_mode() or not context_name:
+        return
+    try:
+        import desktop_config
+
+        desktop_config.save({
+            "default_cluster_context": context_name,
+            "default_cluster_kubeconfig": kubeconfig_path or "",
+        })
+        logger.info("background investigations will target %s", context_name)
+    except Exception as error:  # never fail a working connect over this
+        logger.warning("could not record default cluster: %s", error)
+
+
 def status_for(session_id: str) -> Dict[str, Any]:
     """Connection state for the UI, honest about staleness.
 

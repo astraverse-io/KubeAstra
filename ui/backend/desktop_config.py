@@ -36,6 +36,14 @@ DEFAULTS: Dict[str, Any] = {
     # their LLM. "" means "not configured yet".
     "llm_provider": "",
     "embeddings_provider": "",
+    # Which cluster background work targets. Chat binds per session; an alert
+    # arriving from Alertmanager has no session, and without this it fell
+    # through to `kubectl config current-context` — whatever the laptop
+    # happened to point at, which on a work machine is the day-job cluster.
+    # Recorded when the operator connects a cluster in the UI. "" means
+    # nothing chosen, and background investigations refuse to run.
+    "default_cluster_context": "",
+    "default_cluster_kubeconfig": "",
 }
 
 
