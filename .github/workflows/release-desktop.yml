@@ -29,6 +29,7 @@ jobs:
     # `secrets` is not available in a step-level `if`, but it is here.
     env:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -92,6 +93,28 @@ jobs:
       - name: Test the Tauri shell
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
 
+      # A release signed by the development updater key would be worse than
+      # one with no updater at all: every install would permanently reject
+      # real updates, and the channel to tell them so is the broken one.
+      - name: Refuse the development updater key
+        if: env.HAS_UPDATER_KEY == 'true'
+        run: desktop/scripts/check-updater-key.sh --release
+
+      # `createUpdaterArtifacts` makes the build *require* a signing key, so
+      # without one the whole release would fail rather than just skip the
+      # updater. Turn it off instead, and say so in the log.
+      - name: Skip updater artifacts when unsigned
+        if: env.HAS_UPDATER_KEY != 'true'
+        run: |
+          python3 - <<'EOF'
+          import json
+          path = 'desktop/src-tauri/tauri.conf.json'
+          conf = json.load(open(path))
+          conf['bundle']['createUpdaterArtifacts'] = False
+          json.dump(conf, open(path, 'w'), indent=2)
+          EOF
+          echo '::warning::No TAURI_SIGNING_PRIVATE_KEY — this build ships without auto-update.'
+
       # Two steps, because a missing secret is an EMPTY STRING, not an unset
       # variable. Passing APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       # with no such secret still defines the variable, so Tauri believes it
@@ -107,6 +130,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: desktop-v__VERSION__
           releaseName: 'KubeAstra Desktop v__VERSION__'
@@ -126,6 +151,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: desktop-v__VERSION__
           releaseName: 'KubeAstra Desktop v__VERSION__'

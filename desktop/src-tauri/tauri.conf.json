@@ -40,7 +40,8 @@
     "macOS": {
       "minimumSystemVersion": "11.0",
       "entitlements": "entitlements.plist"
-    }
+    },
+    "createUpdaterArtifacts": true
   },
   "plugins": {
     "deep-link": {
@@ -49,6 +50,12 @@
           "kubeastra"
         ]
       }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFFOTNFN0E0OUE4OUQwRkQKUldUOTBJbWFwT2VUcnJEejFlZFpRM0xnRXhRKzByWGRhTkpZSHU0Y2NWQm1Qb3U4ajFXRk4wV0wK",
+      "endpoints": [
+        "https://github.com/astraverse-io/KubeAstra/releases/latest/download/latest.json"
+      ]
     }
   }
 }
