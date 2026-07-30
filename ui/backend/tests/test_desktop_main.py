@@ -150,3 +150,32 @@ def test_child_exits_when_its_parent_is_sigkilled(tmp_path):
     finally:
         if parent.poll() is None:  # pragma: no cover
             parent.kill()
+
+
+# ── environment defaults ──────────────────────────────────────────────────
+
+
+def _env_defaults() -> dict:
+    """The setdefault() calls desktop_main.main() makes before importing main."""
+    source = (BACKEND_DIR / "desktop_main.py").read_text()
+    import re
+
+    return dict(re.findall(r'os\.environ\.setdefault\(\s*"([A-Z_]+)"\s*,\s*"([^"]*)"', source))
+
+
+def test_desktop_widens_the_namespace_allowlist():
+    """The server default confines desktop mode to `default`.
+
+    ALLOWED_NAMESPACES exists to stop one tenant's operator reaching another
+    tenant's namespaces. Desktop has one tenant, and the kubeconfig already
+    bounds what is reachable — leaving it at "default" made every
+    kubeastra://investigate link for a real namespace fail with "not in the
+    allowed list".
+    """
+    assert _env_defaults().get("ALLOWED_NAMESPACES") == "*"
+
+
+def test_desktop_keeps_vectors_and_embeddings_local():
+    defaults = _env_defaults()
+    assert defaults.get("VECTOR_DB_MODE") == "local"
+    assert defaults.get("EMBEDDINGS_MODE") == "api"

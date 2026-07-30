@@ -8,8 +8,79 @@ use std::time::{Duration, Instant};
 
 use tauri::{Manager, WebviewWindow};
 
-#[allow(dead_code)]
-struct Backend(Arc<Mutex<Option<Child>>>);
+/// Shared state for the shell.
+///
+/// `base_url` is set once the backend answers /health, and is what the tray,
+/// the global shortcut and deep links steer the webview with. Anything that
+/// arrives before then goes into `pending` and is replayed on ready — a deep
+/// link is the usual way the app gets launched cold.
+#[derive(Clone, Default)]
+struct Shell {
+    backend: Arc<Mutex<Option<Child>>>,
+    base_url: Arc<Mutex<Option<String>>>,
+    pending: Arc<Mutex<Option<String>>>,
+}
+
+/// Bring the window to the foreground from wherever it was.
+fn front(window: &WebviewWindow) {
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// Ask the running app to do something, via the URL fragment.
+///
+/// Deliberately not Tauri IPC. The app is served from http://127.0.0.1:<port>
+/// — a remote origin, which Tauri v2 only exposes IPC to after explicitly
+/// opting that domain in. A fragment needs no such grant, and a fragment-only
+/// change does not reload the page, so the hotkey cannot throw away an
+/// in-flight investigation.
+///
+/// `nonce` matters: pressing the shortcut twice must fire `hashchange` twice,
+/// and an identical fragment would not.
+fn dispatch(window: &WebviewWindow, shell: &Shell, action: &str, params: &[(&str, &str)]) {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
+    let mut fragment = format!("#kubeastra={}", encode_fragment(action));
+    for (key, value) in params {
+        fragment.push_str(&format!(
+            "&{}={}",
+            encode_fragment(key),
+            encode_fragment(value)
+        ));
+    }
+    fragment.push_str(&format!("&n={nonce}"));
+
+    let base = shell.base_url.lock().unwrap().clone();
+    let Some(base) = base else {
+        // Backend still starting. Hold it; start_backend replays on ready.
+        *shell.pending.lock().unwrap() = Some(fragment);
+        println!("[tauri] Backend not ready; queued {action}");
+        return;
+    };
+
+    // Steer the page the user is already on, so the fragment does not reload
+    // it. Falling back to the chat route covers a cold start.
+    let current = window
+        .url()
+        .ok()
+        .map(|u| u.to_string())
+        .filter(|u| u.starts_with(&base))
+        .unwrap_or_else(|| format!("{base}/chat/"));
+
+    let target = format!("{}{}", current.split('#').next().unwrap_or(&current), fragment);
+    match target.parse() {
+        Ok(url) => {
+            if let Err(error) = window.navigate(url) {
+                eprintln!("[tauri-error] Could not dispatch {action}: {error}");
+            }
+        }
+        Err(error) => eprintln!("[tauri-error] Bad dispatch URL {target}: {error}"),
+    }
+}
 
 /// Locate the frozen backend.
 ///
@@ -149,7 +220,7 @@ fn wait_for_health(port: u16, timeout: Duration) -> bool {
     false
 }
 
-fn start_backend(window: WebviewWindow, slot: Arc<Mutex<Option<Child>>>) {
+fn start_backend(window: WebviewWindow, shell: Shell) {
     // Captured before anything can navigate away — this is the only handle on
     // the splash document, and failures need somewhere to render.
     let splash_url = window.url().ok().map(|u| u.to_string());
@@ -188,7 +259,7 @@ fn start_backend(window: WebviewWindow, slot: Arc<Mutex<Option<Child>>>) {
         }
     };
 
-    *slot.lock().unwrap() = Some(child);
+    *shell.backend.lock().unwrap() = Some(child);
 
     let mut port: Option<u16> = None;
     let mut token: Option<String> = None;
@@ -240,6 +311,7 @@ fn start_backend(window: WebviewWindow, slot: Arc<Mutex<Option<Child>>>) {
                     continue;
                 }
                 println!("[tauri] Backend healthy on port {port}");
+                *shell.base_url.lock().unwrap() = Some(format!("http://127.0.0.1:{port}"));
 
                 let url = format!("http://127.0.0.1:{port}/auth?token={token}");
                 match url.parse() {
@@ -247,6 +319,7 @@ fn start_backend(window: WebviewWindow, slot: Arc<Mutex<Option<Child>>>) {
                         Ok(()) => {
                             println!("[tauri] Webview successfully navigated to /auth");
                             tail.clear();
+                            replay_pending(&window, &shell, port);
                         }
                         Err(error) => {
                             show_fatal(&window, &splash_url, "Could not open the app", &format!("{error}"))
@@ -271,6 +344,34 @@ fn start_backend(window: WebviewWindow, slot: Arc<Mutex<Option<Child>>>) {
             .as_str(),
         );
     }
+}
+
+/// Deliver a request that arrived before the backend was up.
+///
+/// Opening a `kubeastra://` link with the app closed is the ordinary case:
+/// the deep link lands during startup, when there is nowhere to send it yet.
+///
+/// Waits for /auth to have set its cookie and redirected before applying the
+/// fragment — arriving mid-redirect would lose it.
+fn replay_pending(window: &WebviewWindow, shell: &Shell, port: u16) {
+    let Some(fragment) = shell.pending.lock().unwrap().take() else {
+        return;
+    };
+    println!("[tauri] Replaying queued request: {fragment}");
+
+    let target = format!("http://127.0.0.1:{port}/chat/{fragment}");
+    let window = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(600));
+        match target.parse() {
+            Ok(url) => {
+                if let Err(error) = window.navigate(url) {
+                    eprintln!("[tauri-error] Could not replay queued request: {error}");
+                }
+            }
+            Err(error) => eprintln!("[tauri-error] Bad replay URL {target}: {error}"),
+        }
+    });
 }
 
 fn stop_backend(child_opt: &mut Option<Child>) {
@@ -308,24 +409,261 @@ fn stop_backend(child_opt: &mut Option<Child>) {
     }
 }
 
+/// Read the connected context from /health for the tray's cluster line.
+fn poll_cluster_label(base: &str) -> Option<String> {
+    let url = base.strip_prefix("http://")?;
+    let mut stream = std::net::TcpStream::connect(url).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .ok()?;
+
+    use std::io::{Read, Write};
+    let request =
+        format!("GET /health HTTP/1.1\r\nHost: {url}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+
+    let body = response.split("\r\n\r\n").nth(1)?;
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    match parsed.get("kubectl_context").and_then(|v| v.as_str()) {
+        Some(context) => Some(format!("Cluster: {context}")),
+        None => Some("Cluster: not connected".to_string()),
+    }
+}
+
+/// Menu-bar presence: which cluster is attached, and a way in.
+///
+/// Left-clicking the icon is not wired to the menu on macOS — there, a click
+/// opens the menu, which is the platform convention. `show_menu_on_left_click`
+/// keeps that behaviour explicit rather than inherited.
+fn build_tray(app: &tauri::AppHandle, shell: Shell) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::TrayIconBuilder;
+
+    let cluster = MenuItem::with_id(app, "cluster", "Connecting…", false, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open KubeAstra", true, None::<&str>)?;
+    let investigate =
+        MenuItem::with_id(app, "investigate", "New investigation…", true, Some("CmdOrCtrl+N"))?;
+    let quit = MenuItem::with_id(app, "quit", "Quit KubeAstra", true, Some("CmdOrCtrl+Q"))?;
+
+    let menu = Menu::with_items(
+        app,
+        &[
+            &cluster,
+            &PredefinedMenuItem::separator(app)?,
+            &open,
+            &investigate,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+
+    let handler_shell = shell.clone();
+    TrayIconBuilder::with_id("main")
+        // A dedicated monochrome mark, not the app icon. macOS template icons
+        // are rendered from the alpha channel alone, and icons/icon.png is
+        // 100% opaque — using it produced a solid black square in the menu
+        // bar. icons/tray.png carries its shape in alpha.
+        .icon(tauri::include_image!("icons/tray.png"))
+        .icon_as_template(true)
+        .tooltip("KubeAstra")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(move |app, event| {
+            let Some(window) = app.get_webview_window("main") else {
+                return;
+            };
+            match event.id().as_ref() {
+                "open" => front(&window),
+                "investigate" => {
+                    front(&window);
+                    dispatch(&window, &handler_shell, "focus", &[]);
+                }
+                "quit" => app.exit(0),
+                _ => {}
+            }
+        })
+        .build(app)?;
+
+    // Keep the cluster line current. 30s is slow enough to be free and fast
+    // enough that switching kubectl context shows up without a restart.
+    std::thread::spawn(move || {
+        let mut last = String::new();
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+            let base = shell.base_url.lock().unwrap().clone();
+            let Some(base) = base else { continue };
+            if let Some(label) = poll_cluster_label(&base) {
+                if label != last {
+                    let _ = cluster.set_text(&label);
+                    last = label;
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Turn `kubeastra://investigate?ns=…&pod=…` into an in-app request.
+///
+/// Only the recognised keys are forwarded, and `dispatch` percent-encodes
+/// every value — the URL comes from outside the app (a browser, the VS Code
+/// extension, anything registered to open the scheme) and is untrusted.
+/// Pure half of deep-link handling, so it can be tested without a window.
+///
+/// Returns the namespace and pod a link asks for, or None if the URL is not
+/// something this app should act on.
+fn parse_deep_link(raw: &str) -> Option<(String, String)> {
+    let rest = raw.strip_prefix("kubeastra://")?;
+    let (action, query) = match rest.split_once('?') {
+        Some((action, query)) => (action.trim_end_matches('/'), query),
+        None => (rest.trim_end_matches('/'), ""),
+    };
+    if action != "investigate" {
+        return None;
+    }
+
+    let mut namespace = String::new();
+    let mut pod = String::new();
+    for pair in query.split('&') {
+        match pair.split_once('=') {
+            Some(("ns", value)) => namespace = decode_component(value),
+            Some(("pod", value)) => pod = decode_component(value),
+            _ => {}
+        }
+    }
+    Some((namespace, pod))
+}
+
+fn handle_deep_link(window: &WebviewWindow, shell: &Shell, raw: &str) {
+    println!("[tauri] Deep link: {raw}");
+
+    let Some((namespace, pod)) = parse_deep_link(raw) else {
+        eprintln!("[tauri-error] Ignoring unusable deep link: {raw}");
+        return;
+    };
+
+    let mut params: Vec<(&str, &str)> = Vec::new();
+    if !namespace.is_empty() {
+        params.push(("ns", namespace.as_str()));
+    }
+    if !pod.is_empty() {
+        params.push(("pod", pod.as_str()));
+    }
+
+    front(window);
+    dispatch(window, shell, "investigate", &params);
+}
+
+/// Percent-decode a query value. Invalid escapes are kept verbatim rather
+/// than dropped, so a malformed link degrades to visible text.
+fn decode_component(value: &str) -> String {
+    let bytes = value.replace('+', " ").into_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Summon the app from anywhere with Cmd/Ctrl+Shift+K.
+///
+/// Registration is best-effort: the combination may already be taken by
+/// another app, and on Linux it depends on the compositor. A failure logs and
+/// the app runs on — the tray and the window still work.
+fn register_shortcut(app: &tauri::AppHandle, shell: Shell) {
+    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+    let accelerator = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyK);
+    let handle = app.clone();
+
+    let result = app.global_shortcut().on_shortcut(accelerator, move |_app, _shortcut, event| {
+        // Fire once per press, not again on release.
+        if event.state != ShortcutState::Pressed {
+            return;
+        }
+        let Some(window) = handle.get_webview_window("main") else {
+            return;
+        };
+        front(&window);
+        dispatch(&window, &shell, "focus", &[]);
+    });
+
+    match result {
+        Ok(()) => println!("[tauri] Global shortcut registered: Cmd/Ctrl+Shift+K"),
+        Err(error) => eprintln!("[tauri] Global shortcut unavailable (likely already taken): {error}"),
+    }
+}
+
+/// Register the `kubeastra://` scheme and handle links while running.
+///
+/// The scheme is declared in tauri.conf.json so the installer registers it
+/// with the OS. `register_all` additionally claims it at runtime, which is
+/// what makes deep links work in a dev build that was never installed.
+fn register_deep_links(app: &tauri::App, shell: Shell) {
+    use tauri_plugin_deep_link::DeepLinkExt;
+
+    #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+    if let Err(error) = app.deep_link().register_all() {
+        eprintln!("[tauri] Could not register the kubeastra:// scheme: {error}");
+    }
+
+    let handle = app.handle().clone();
+    app.deep_link().on_open_url(move |event| {
+        let Some(window) = handle.get_webview_window("main") else {
+            return;
+        };
+        for url in event.urls() {
+            handle_deep_link(&window, &shell, url.as_str());
+        }
+    });
+}
+
 fn main() {
-    let backend: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
-    let for_exit = Arc::clone(&backend);
+    let shell = Shell::default();
+    let for_exit = Arc::clone(&shell.backend);
+
+    let single_instance_shell = shell.clone();
+    let setup_shell = shell.clone();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+        .plugin(tauri_plugin_single_instance::init(move |app, argv, _cwd| {
+            let Some(window) = app.get_webview_window("main") else {
+                return;
+            };
+            front(&window);
+            // On Windows and Linux a deep link reaches an already-running app
+            // as argv on the second instance, not through the plugin event.
+            if let Some(url) = argv.iter().find(|a| a.starts_with("kubeastra://")) {
+                handle_deep_link(&window, &single_instance_shell, url);
             }
         }))
-        .manage(Backend(Arc::clone(&backend)))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(move |app| {
             let window = app
                 .get_webview_window("main")
                 .expect("Main window missing from tauri.conf.json");
-            let slot = Arc::clone(&backend);
-            std::thread::spawn(move || start_backend(window, slot));
+
+            build_tray(app.handle(), setup_shell.clone())?;
+            register_shortcut(app.handle(), setup_shell.clone());
+            register_deep_links(app, setup_shell.clone());
+
+            let backend_window = window.clone();
+            let backend_shell = setup_shell.clone();
+            std::thread::spawn(move || start_backend(backend_window, backend_shell));
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -339,4 +677,108 @@ fn main() {
                 stop_backend(&mut guard);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── encode_fragment ───────────────────────────────────────────────────
+    // Values reach the fragment from outside the app (a deep link, a pod
+    // name). If any of them could emit a bare & or #, they would forge extra
+    // parameters or truncate the fragment.
+
+    #[test]
+    fn encode_fragment_passes_unreserved_characters_through() {
+        assert_eq!(encode_fragment("api-gateway_0.v1~x"), "api-gateway_0.v1~x");
+    }
+
+    #[test]
+    fn encode_fragment_neutralises_separators() {
+        assert_eq!(encode_fragment("a&b=c#d"), "a%26b%3Dc%23d");
+        assert_eq!(encode_fragment("a b"), "a%20b");
+    }
+
+    #[test]
+    fn encode_fragment_handles_non_ascii() {
+        assert_eq!(encode_fragment("café"), "caf%C3%A9");
+    }
+
+    // ── decode_component ──────────────────────────────────────────────────
+
+    #[test]
+    fn decode_component_reverses_percent_encoding() {
+        assert_eq!(decode_component("kube%2Dsystem"), "kube-system");
+        assert_eq!(decode_component("a%20b"), "a b");
+        assert_eq!(decode_component("caf%C3%A9"), "café");
+    }
+
+    #[test]
+    fn decode_component_treats_plus_as_space() {
+        assert_eq!(decode_component("a+b"), "a b");
+    }
+
+    #[test]
+    fn decode_component_keeps_malformed_escapes_verbatim() {
+        // Degrade to visible text rather than silently dropping characters.
+        assert_eq!(decode_component("100%"), "100%");
+        assert_eq!(decode_component("%zz"), "%zz");
+    }
+
+    // ── parse_deep_link ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_deep_link_reads_namespace_and_pod() {
+        assert_eq!(
+            parse_deep_link("kubeastra://investigate?ns=prod&pod=api-0"),
+            Some(("prod".into(), "api-0".into()))
+        );
+    }
+
+    #[test]
+    fn parse_deep_link_tolerates_a_trailing_slash_and_reordering() {
+        assert_eq!(
+            parse_deep_link("kubeastra://investigate/?pod=api-0&ns=prod"),
+            Some(("prod".into(), "api-0".into()))
+        );
+    }
+
+    #[test]
+    fn parse_deep_link_allows_either_parameter_alone() {
+        assert_eq!(
+            parse_deep_link("kubeastra://investigate?ns=prod"),
+            Some(("prod".into(), String::new()))
+        );
+        assert_eq!(
+            parse_deep_link("kubeastra://investigate"),
+            Some((String::new(), String::new()))
+        );
+    }
+
+    #[test]
+    fn parse_deep_link_ignores_unknown_parameters() {
+        assert_eq!(
+            parse_deep_link("kubeastra://investigate?ns=prod&exec=rm+-rf&pod=api-0"),
+            Some(("prod".into(), "api-0".into()))
+        );
+    }
+
+    #[test]
+    fn parse_deep_link_rejects_foreign_schemes_and_actions() {
+        // The scheme is registered with the OS, so anything on the machine can
+        // invoke it. Only `investigate` is acted on.
+        assert_eq!(parse_deep_link("https://evil.example/investigate?ns=x"), None);
+        assert_eq!(parse_deep_link("kubeastra://shell?cmd=whoami"), None);
+        assert_eq!(parse_deep_link("kubeastra://"), None);
+    }
+
+    #[test]
+    fn parse_deep_link_cannot_forge_extra_fragment_parameters() {
+        // A pod name carrying separators must stay one value once encoded.
+        let (namespace, pod) =
+            parse_deep_link("kubeastra://investigate?ns=prod&pod=x%26kubeastra%3Dfocus").unwrap();
+        assert_eq!(namespace, "prod");
+        assert_eq!(pod, "x&kubeastra=focus");
+        assert_eq!(encode_fragment(&pod), "x%26kubeastra%3Dfocus");
+    }
 }

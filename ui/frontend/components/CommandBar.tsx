@@ -198,6 +198,9 @@ export function CommandBar({
           </span>
           <input
             ref={inputRef}
+            // The desktop shell's global shortcut and tray focus this. Both
+            // input bars carry it so the hotkey works in either mode.
+            data-kubeastra-input=""
             value={val}
             onChange={(e) => setVal(e.target.value)}
             onKeyDown={onKeyDown}

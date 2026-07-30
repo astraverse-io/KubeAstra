@@ -22,11 +22,28 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app", "appimage", "deb", "msi"],
-    "resources": ["binaries/kubeastra-backend/**/*"],
+    "targets": [
+      "dmg",
+      "app",
+      "appimage",
+      "deb",
+      "msi"
+    ],
+    "resources": [
+      "binaries/kubeastra-backend/**/*"
+    ],
     "macOS": {
       "minimumSystemVersion": "11.0",
       "entitlements": "entitlements.plist"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "kubeastra"
+        ]
+      }
     }
   }
 }

@@ -91,6 +91,39 @@ KubeAstra Desktop runs as a local native application. The backend runs as a froz
 
    It must print `PORT=`, `URL=` and `READY`. CI does this automatically.
 
+## How the shell talks to the app
+
+The tray, the global shortcut (`Cmd/Ctrl+Shift+K`) and `kubeastra://` deep
+links all steer the webview the same way: by navigating to
+`#kubeastra=<action>&…`. A small client component, `DesktopBridge`, listens for
+`hashchange` and acts.
+
+**Not Tauri IPC**, for two reasons:
+
+1. The app is served from `http://127.0.0.1:<port>` — a remote origin, which
+   Tauri v2 only exposes IPC to after explicitly opting that domain in.
+2. A fragment-only change does not reload the page. Pressing the shortcut
+   during an investigation must not discard it.
+
+The splash screen's failure path (`#fail=`) uses the same channel.
+
+Actions:
+
+| Fragment | Sent by | Effect |
+|---|---|---|
+| `#kubeastra=focus` | shortcut, tray "New investigation…" | Front the window, focus the input |
+| `#kubeastra=investigate&ns=…&pod=…` | `kubeastra://investigate?ns=…&pod=…` | Front the window, submit an investigation |
+
+Every value is percent-encoded by the Rust side and re-parsed with
+`URLSearchParams`, so a pod name containing `&` or `=` cannot forge extra
+parameters — there is a test for exactly that. A request that arrives before
+the backend is ready is queued and replayed, which is the normal case when a
+deep link launches the app cold.
+
+The tray icon is `icons/tray.png`, **not** `icons/icon.png`. macOS renders
+template icons from the alpha channel alone, and `icon.png` is 100% opaque —
+using it puts a solid black square in the menu bar.
+
 ## Why resources instead of externalBin
 
 The backend is a PyInstaller **onedir** build — a launcher plus an
