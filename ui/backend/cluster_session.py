@@ -119,3 +119,45 @@ def status_for(session_id: str) -> Dict[str, Any]:
         }
 
     return {"connected": False, "stale": False}
+
+
+def prune_orphan_kubeconfigs(directory: Optional[str] = None) -> int:
+    """Delete uploaded kubeconfigs no session references any more.
+
+    Replaces an `atexit` handler that wiped the whole directory on exit. That
+    was harmless while uploads lived in /tmp, but desktop mode stores them in
+    the durable app-data directory — so quitting destroyed every kubeconfig
+    the operator had uploaded, while the rows referencing them survived.
+
+    Deletes nothing if the referenced set cannot be read: losing a live
+    kubeconfig is far worse than leaving a stale file on disk.
+    """
+    import glob
+
+    if directory is None:
+        directory = os.environ.get("KUBEASTRA_KUBECONFIG_DIR") or ""
+    if not directory or not os.path.isdir(directory):
+        return 0
+
+    try:
+        referenced = {
+            row["kubeconfig_path"]
+            for row in db.list_cluster_connections()
+            if row.get("kubeconfig_path")
+        }
+    except Exception as error:
+        logger.warning("kubeconfig prune skipped — cannot read references: %s", error)
+        return 0
+
+    removed = 0
+    for path in glob.glob(os.path.join(directory, "kubeastra-*.yaml")):
+        if path in referenced:
+            continue
+        try:
+            os.unlink(path)
+            removed += 1
+        except OSError as error:
+            logger.warning("could not prune %s: %s", path, error)
+    if removed:
+        logger.info("pruned %d orphaned kubeconfig(s)", removed)
+    return removed

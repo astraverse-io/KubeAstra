@@ -5,7 +5,6 @@ Selected contexts are persisted by session so chat and execute can target the
 same cluster without changing the host's default kubectl context.
 """
 
-import atexit
 import logging
 import os
 import re
@@ -165,15 +164,15 @@ def _is_in_cluster() -> bool:
     return Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
 
 
-def _cleanup_temp_files() -> None:
-    try:
-        for path in _TEMP_DIR.glob("kubeastra-*.yaml"):
-            path.unlink()
-    except Exception as e:
-        logger.warning("Cluster temp cleanup failed: %s", e)
-
-
-atexit.register(_cleanup_temp_files)
+# No atexit wipe. This used to delete every kubeastra-*.yaml on process exit,
+# which was harmless while they lived in /tmp — but desktop mode points
+# KUBEASTRA_KUBECONFIG_DIR at the durable app-data directory, so quitting the
+# app destroyed every kubeconfig the operator had uploaded while leaving the
+# SQLite rows that reference them. The next launch then either ran silently
+# against the local cluster, or (once targeting fails closed) refused to run
+# at all until they re-uploaded.
+#
+# Orphans are pruned at startup instead — see cluster_session.prune_orphan_kubeconfigs.
 
 
 @router.get("/cluster/autodetect")
