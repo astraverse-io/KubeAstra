@@ -737,6 +737,9 @@ export interface DesktopSettingsState {
   memory_available: boolean;
   keychain_secure: boolean;
   keychain_backend: string;
+  /** Persisted in config.json, unlike the flags above which live in env. */
+  alertmanager_url: string;
+  notifications_enabled: boolean;
 }
 
 /** Returns null in server mode (endpoint absent), the state otherwise. */
@@ -770,8 +773,26 @@ export async function fetchDesktopSettings(): Promise<DesktopSettingsState> {
 export async function updateDesktopSettings(payload: {
   memory_enabled?: boolean;
   remote_diagnostics_enabled?: boolean;
+  alertmanager_url?: string;
+  notifications_enabled?: boolean;
 }): Promise<DesktopSettingsState> {
   return fetchJson("/api/desktop/settings", { method: "PUT", body: payload });
+}
+
+/**
+ * Check an Alertmanager URL before storing it.
+ *
+ * Same verify-before-store rule the wizard's LLM and embeddings steps follow:
+ * polling happens on a background thread, so a bad URL would otherwise fail
+ * where nobody can see it.
+ */
+export async function testAlertmanager(
+  alertmanager_url: string,
+): Promise<{ ok: boolean; url: string; firing: number }> {
+  return fetchJson("/api/desktop/notifications/test", {
+    method: "POST",
+    body: { alertmanager_url },
+  });
 }
 
 export async function forgetDesktopSecret(name: string): Promise<{ ok: boolean }> {

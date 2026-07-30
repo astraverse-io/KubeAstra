@@ -191,6 +191,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     server = uvicorn.Server(config)
 
+    # Only starts polling if the user has configured and enabled it; the
+    # thread otherwise idles. Started after the app is built so a failure here
+    # cannot stop the window from opening.
+    try:
+        import desktop_alerts
+
+        desktop_alerts.poller.start()
+    except Exception as error:  # pragma: no cover — never block startup
+        print(f"alert polling unavailable: {error}", file=sys.stderr)
+
     announce("READY")
     # Started after the handshake so a parent that dies mid-startup still gets
     # its PORT line, and before serving so no orphan can outlive the shell.
