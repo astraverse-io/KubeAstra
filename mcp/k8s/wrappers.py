@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from k8s import redaction
+from k8s import binaries, redaction
 from k8s.kubectl_runner import get_runner, KubectlError
 from k8s.parsers import (
     parse_deployment,
@@ -2716,7 +2716,7 @@ def add_kubeconfig_context(
         
         # Merge configs using kubectl
         merge_cmd = [
-            "kubectl", "config", "view", "--flatten"
+            binaries.kubectl(), "config", "view", "--flatten"
         ]
         
         # Set KUBECONFIG to merge both configs
@@ -2750,7 +2750,7 @@ def add_kubeconfig_context(
         # Rename context if needed
         if context_name != hostname:
             rename_cmd = [
-                "kubectl", "config", "rename-context",
+                binaries.kubectl(), "config", "rename-context",
                 hostname, context_name
             ]
             subprocess.run(rename_cmd, capture_output=True, timeout=5)

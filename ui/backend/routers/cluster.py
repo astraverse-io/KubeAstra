@@ -122,7 +122,11 @@ def _delete_temp_kubeconfig(path: Optional[str]) -> None:
 
 
 def _connectivity_check(kubeconfig_path: Optional[str] = None, context: Optional[str] = None) -> dict:
-    cmd = ["kubectl", "cluster-info"]
+    # Resolved, not bare: this is the first kubectl a user hits, so a GUI
+    # launch with a minimal PATH failed here before anything else.
+    from k8s import binaries
+
+    cmd = [binaries.kubectl(), "cluster-info"]
     if kubeconfig_path:
         cmd.extend(["--kubeconfig", kubeconfig_path])
     if context:
