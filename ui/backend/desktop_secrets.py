@@ -110,7 +110,23 @@ def _write_fallback(data: dict) -> None:
 # ── public API ────────────────────────────────────────────────────────────
 
 
+# Read-through cache, process lifetime.
+#
+# Every keychain read is a potential "allow access?" prompt, and startup used
+# to make four of them: `_resolve_provider()` probes each provider it might
+# have a key for, then the winner is read again. On a build whose signature
+# changes — an ad-hoc signed development build, where identity is derived from
+# the binary hash — macOS treats each launch as a new application and asks
+# again for every one of them.
+#
+# A secret written or deleted through this module invalidates its entry. One
+# edited *outside* the process (Keychain Access) is not noticed until restart,
+# which is the right trade: the alternative is prompting on every read.
+_secret_cache: Dict[str, Optional[str]] = {}
+
+
 def set_secret(name: str, value: str) -> None:
+    _secret_cache[name] = value
     if is_secure():
         _keyring().set_password(SERVICE, name, value)
         return
@@ -120,16 +136,24 @@ def set_secret(name: str, value: str) -> None:
 
 
 def get_secret(name: str) -> Optional[str]:
+    if name in _secret_cache:
+        return _secret_cache[name]
+
     if is_secure():
         try:
-            return _keyring().get_password(SERVICE, name)
+            value = _keyring().get_password(SERVICE, name)
         except Exception as exc:
             logger.warning("keyring read failed for %s: %s", name, exc)
-            return None
-    return _read_fallback().get(name)
+            return None  # not cached: a transient failure must be retryable
+    else:
+        value = _read_fallback().get(name)
+
+    _secret_cache[name] = value
+    return value
 
 
 def delete_secret(name: str) -> None:
+    _secret_cache.pop(name, None)
     if is_secure():
         try:
             _keyring().delete_password(SERVICE, name)
@@ -141,6 +165,11 @@ def delete_secret(name: str) -> None:
     data = _read_fallback()
     data.pop(name, None)
     _write_fallback(data)
+
+
+def clear_cache() -> None:
+    """Forget cached reads. For tests, and after an external key change."""
+    _secret_cache.clear()
 
 
 def list_configured() -> list[str]:
@@ -182,15 +211,24 @@ def _resolve_provider() -> Optional[str]:
     if recorded in LLM_PROVIDERS:
         return recorded
 
-    # Ollama needs no credential, so it can never be inferred from storage;
-    # only an explicit record selects it.
-    stored = [p for p in _PROVIDER_ENV if has_secret(f"llm.{p}")]
-    if len(stored) == 1:
-        return stored[0]
-    if stored:
-        # Ambiguous. The configured default is the best available signal.
-        preferred = (os.environ.get("LLM_PROVIDER") or "gemini").lower()
-        return preferred if preferred in stored else stored[0]
+    # Nothing recorded — an install predating that field. Probe, but probe the
+    # likeliest first and stop there: each miss is a separate key name, so a
+    # blind sweep of all three is three keychain prompts rather than one.
+    # Ollama needs no credential and so can never be inferred; only an
+    # explicit record selects it.
+    preferred = (os.environ.get("LLM_PROVIDER") or "gemini").lower()
+    order = [preferred] if preferred in _PROVIDER_ENV else []
+    order += [p for p in _PROVIDER_ENV if p != preferred]
+
+    for provider in order:
+        if has_secret(f"llm.{provider}"):
+            # Record it, so the probe happens once per install rather than
+            # once per launch.
+            try:
+                desktop_config.save({"llm_provider": provider})
+            except Exception as error:
+                logger.debug("could not record inferred provider: %s", error)
+            return provider
     return None
 
 
