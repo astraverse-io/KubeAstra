@@ -31,7 +31,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
           cache-dependency-path: 'ui/frontend/package-lock.json'
 
@@ -60,12 +60,6 @@ jobs:
       # unresolved hidden imports, onedir layout, no developer dotfiles, and a
       # launch + /health smoke test. PyInstaller exits 0 on all of those
       # failures, so calling it directly lets a broken bundle go green.
-      # Deep links come from outside the app — the OS hands any process's
-      # kubeastra:// URL straight to us — so the parsing and the fragment
-      # encoding are covered by unit tests.
-      - name: Test the Tauri shell
-        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
-
       - name: Build and verify PyInstaller backend
         run: desktop/pyinstaller/build.sh /tmp/pyi-dist /tmp/pyi-work
 
@@ -80,6 +74,19 @@ jobs:
           cp -r /tmp/pyi-dist/kubeastra-backend desktop/src-tauri/binaries/kubeastra-backend
           test -x desktop/src-tauri/binaries/kubeastra-backend/kubeastra-backend
           test -d desktop/src-tauri/binaries/kubeastra-backend/_internal
+
+      # Must come AFTER staging. `bundle.resources` is a glob that tauri-build
+      # resolves in the build script, and it hard-fails when nothing matches:
+      #   glob pattern binaries/kubeastra-backend/**/* path not found
+      # So any cargo command — including `cargo test` — needs the sidecar
+      # already in place. Locally this is invisible, because binaries/ is left
+      # behind by the previous build.
+      #
+      # Deep links come from outside the app: the OS hands any process's
+      # kubeastra:// URL straight to us, so the parsing and the fragment
+      # encoding are worth unit tests.
+      - name: Test the Tauri shell
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
 
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
