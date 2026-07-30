@@ -241,6 +241,34 @@ def _llm_provider(model: Optional[str] = None):
         return None
 
 
+_LLM_UNAVAILABLE_NOTICE = (
+    "⚠️ **No LLM is configured, so this answer is raw tool output.** "
+    "There is no reasoning trace and no analysis — KubeAstra ran a single "
+    "matching command and printed the result. Add an API key in Settings to "
+    "restore multi-step investigation."
+)
+
+
+def _note_llm_unavailable(resp, session_tag: str):
+    """Say out loud that the answer came back without an LLM.
+
+    This degradation used to be entirely silent: tools still ran and rendered,
+    so the reply looked plausible while the reasoning trace and synthesis had
+    simply vanished. That is indistinguishable from a broken UI, and it cost
+    days of debugging in the wrong place. Diagnose it in the answer itself.
+    """
+    logger.warning(
+        "session %s: no LLM provider enabled — answering from a single tool "
+        "call with no reasoning. Check that an API key is configured.",
+        session_tag,
+    )
+    try:
+        resp.reply = f"{_LLM_UNAVAILABLE_NOTICE}\n\n{resp.reply or ''}".rstrip()
+    except Exception:  # never let the notice break the answer
+        logger.debug("could not attach llm-unavailable notice", exc_info=True)
+    return resp
+
+
 def _short_session_id(session_id: Optional[str]) -> str:
     if not session_id:
         return "-"
@@ -2150,6 +2178,8 @@ def chat(req: ChatRequest, request: Request):
                 resp = _chat_react(req, provider, _persist, session_tag, user_id=user_id)
             else:
                 resp = _chat_single_shot(req, _persist, session_tag)
+                if not use_react:
+                    resp = _note_llm_unavailable(resp, session_tag)
 
     except Exception as e:
         logger.exception("Chat error")
@@ -2332,7 +2362,13 @@ async def chat_stream(req: ChatRequest, request: Request):
                 # No LLM — fall back to single-shot. Emit a single "done"
                 # so the client sees the same shape; richer streaming for
                 # this path is out of scope for Phase A.
+                #
+                # The fallback is still useful, but it must not look like a
+                # normal answer: no trace, no synthesis, one tool. Say so.
                 resp = _chat_single_shot(req, _persist, session_tag)
+                resp = _note_llm_unavailable(resp, session_tag)
+                _enqueue({"type": "llm_unavailable",
+                          "message": _LLM_UNAVAILABLE_NOTICE})
                 _enqueue({"type": "done", "result": resp.model_dump()})
                 return
 

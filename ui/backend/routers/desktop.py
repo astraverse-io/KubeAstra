@@ -246,13 +246,21 @@ def _probe_llm(provider: str, api_key: Optional[str]) -> None:
 
 
 def _apply_provider(provider: str) -> None:
-    """Make the stored credential the active configuration."""
+    """Make the stored credential the active configuration.
+
+    Persists the choice as well as applying it. Applying it in-process only
+    meant the selection lasted until the app was closed, and the next launch
+    fell back to the `llm_provider` default with no key — the LLM silently
+    went away. `desktop_secrets.restore_to_environ` reads what is recorded
+    here at startup.
+    """
     os.environ["LLM_PROVIDER"] = provider
     env_name = _PROVIDER_ENV.get(provider)
     if env_name:
         key = desktop_secrets.get_secret(f"llm.{provider}")
         if key:
             os.environ[env_name] = key
+    _persist_choice("llm_provider", provider)
     _reset_caches()
 
 
@@ -262,7 +270,23 @@ def _apply_embeddings(provider: str) -> None:
     key = desktop_secrets.get_secret(f"embeddings.{provider}")
     if key:
         os.environ["EMBEDDINGS_API_KEY"] = key
+    _persist_choice("embeddings_provider", provider)
     _reset_caches()
+
+
+def _persist_choice(key: str, provider: str) -> None:
+    """Record a provider selection so the next launch can find its key.
+
+    A failure to persist must not fail the request: the credential is already
+    saved and working for this session, and reporting an error would suggest
+    it was not.
+    """
+    try:
+        import desktop_config
+
+        desktop_config.save({key: provider})
+    except Exception:
+        logger.warning("could not persist %s=%s", key, provider, exc_info=True)
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────

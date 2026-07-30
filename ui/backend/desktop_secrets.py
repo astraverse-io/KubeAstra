@@ -159,3 +159,80 @@ def list_configured() -> list[str]:
 
 def has_secret(name: str) -> bool:
     return bool(get_secret(name))
+
+
+# Provider -> the env var `mcp/config/settings.py` reads its key from.
+_PROVIDER_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+
+def _resolve_provider() -> Optional[str]:
+    """Which LLM provider this install is configured for.
+
+    Prefers the recorded choice. Installs made before that was persisted have
+    no record, so fall back to whichever credential is actually stored — that
+    is the only evidence left of what the user set up.
+    """
+    import desktop_config
+
+    recorded = (desktop_config.load().get("llm_provider") or "").strip().lower()
+    if recorded in LLM_PROVIDERS:
+        return recorded
+
+    # Ollama needs no credential, so it can never be inferred from storage;
+    # only an explicit record selects it.
+    stored = [p for p in _PROVIDER_ENV if has_secret(f"llm.{p}")]
+    if len(stored) == 1:
+        return stored[0]
+    if stored:
+        # Ambiguous. The configured default is the best available signal.
+        preferred = (os.environ.get("LLM_PROVIDER") or "gemini").lower()
+        return preferred if preferred in stored else stored[0]
+    return None
+
+
+def restore_to_environ() -> Optional[str]:
+    """Put stored credentials back into the environment. Returns the provider.
+
+    Desktop mode keeps credentials in the keychain but every consumer reads
+    them from the environment via pydantic-settings, and that bridge only ever
+    existed inside the setup wizard's save handler. So a key survived a
+    restart in the keychain while the process that needed it started blank —
+    `GeminiProvider.enabled` went False, and chat silently downgraded to
+    single-shot: tools still ran, but no reasoning trace and no synthesis. A
+    bundled `mcp/.env` masked this until it was (correctly) removed.
+
+    Called from `desktop_main` before the app is imported, because settings
+    are read and memoised at import time.
+
+    An env var already set wins — a developer exporting a key in their shell
+    is being explicit. Returning None is a normal state, not an error: a
+    first-run install has no credential yet and must still start so the wizard
+    can be reached.
+    """
+    provider = _resolve_provider()
+    if not provider:
+        return None
+
+    os.environ.setdefault("LLM_PROVIDER", provider)
+
+    env_name = _PROVIDER_ENV.get(provider)
+    if env_name and not os.environ.get(env_name):
+        key = get_secret(f"llm.{provider}")
+        if key:
+            os.environ[env_name] = key
+
+    import desktop_config
+
+    embeddings = (desktop_config.load().get("embeddings_provider") or "").strip().lower()
+    if embeddings in EMBEDDING_PROVIDERS and not os.environ.get("EMBEDDINGS_API_KEY"):
+        key = get_secret(f"embeddings.{embeddings}")
+        if key:
+            os.environ.setdefault("EMBEDDINGS_MODE", "api")
+            os.environ.setdefault("EMBEDDINGS_PROVIDER", embeddings)
+            os.environ["EMBEDDINGS_API_KEY"] = key
+
+    return provider

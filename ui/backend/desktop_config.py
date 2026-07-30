@@ -29,6 +29,13 @@ DEFAULTS: Dict[str, Any] = {
     # Seconds between polls. Alertmanager is cheap to query and a laptop is
     # not a scrape target, so this is about noticing quickly rather than load.
     "alert_poll_seconds": 30,
+    # Which provider the wizard configured. The credential itself lives in the
+    # keychain; this only records which one to go looking for. Without it the
+    # choice was in-process only, so every relaunch fell back to the
+    # `llm_provider` default and an Anthropic or OpenAI user silently lost
+    # their LLM. "" means "not configured yet".
+    "llm_provider": "",
+    "embeddings_provider": "",
 }
 
 

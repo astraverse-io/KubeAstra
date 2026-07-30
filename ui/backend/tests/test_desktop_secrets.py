@@ -181,3 +181,82 @@ def test_keyring_import_failure_reports_insecure(monkeypatch, tmp_path):
 def test_module_reimports_cleanly():
     """Guard against import-time side effects creeping in."""
     importlib.reload(desktop_secrets)
+
+
+# ── restoring credentials into the environment ────────────────────────────
+#
+# Regression cover for the bug where a key survived in the keychain but the
+# process that needed it started blank. Nothing bridged the two outside the
+# setup wizard's save handler, so every relaunch ran with no API key: the LLM
+# provider reported itself disabled and chat silently degraded to single-shot
+# tool output — no reasoning trace, no synthesis. A bundled `mcp/.env` hid it
+# until that file was correctly dropped from the installer.
+
+
+@pytest.fixture
+def clean_env(monkeypatch):
+    for name in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+                 "LLM_PROVIDER", "EMBEDDINGS_API_KEY", "EMBEDDINGS_PROVIDER"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_restore_puts_stored_key_in_the_environment(secure, clean_env):
+    desktop_secrets.set_secret("llm.gemini", "gem-key")
+
+    assert desktop_secrets.restore_to_environ() == "gemini"
+
+    import os
+
+    assert os.environ["GEMINI_API_KEY"] == "gem-key"
+    assert os.environ["LLM_PROVIDER"] == "gemini"
+
+
+def test_restore_honours_the_recorded_provider(secure, clean_env, monkeypatch):
+    """Two stored keys is not ambiguous once a choice has been recorded."""
+    import desktop_config
+
+    desktop_secrets.set_secret("llm.gemini", "gem-key")
+    desktop_secrets.set_secret("llm.anthropic", "ant-key")
+    monkeypatch.setattr(
+        desktop_config, "load", lambda: {"llm_provider": "anthropic"}
+    )
+
+    assert desktop_secrets.restore_to_environ() == "anthropic"
+
+    import os
+
+    assert os.environ["ANTHROPIC_API_KEY"] == "ant-key"
+    assert "GEMINI_API_KEY" not in os.environ
+
+
+def test_restore_infers_provider_for_installs_predating_the_record(
+    secure, clean_env, monkeypatch
+):
+    """No recorded choice: the single stored credential is the only evidence."""
+    import desktop_config
+
+    desktop_secrets.set_secret("llm.openai", "oai-key")
+    monkeypatch.setattr(desktop_config, "load", lambda: {"llm_provider": ""})
+
+    assert desktop_secrets.restore_to_environ() == "openai"
+
+    import os
+
+    assert os.environ["OPENAI_API_KEY"] == "oai-key"
+
+
+def test_restore_does_not_override_an_explicit_env_var(secure, clean_env, monkeypatch):
+    """A developer exporting a key in their shell is being explicit."""
+    import os
+
+    desktop_secrets.set_secret("llm.gemini", "from-keychain")
+    monkeypatch.setenv("GEMINI_API_KEY", "from-shell")
+
+    desktop_secrets.restore_to_environ()
+
+    assert os.environ["GEMINI_API_KEY"] == "from-shell"
+
+
+def test_restore_with_no_credentials_is_not_an_error(secure, clean_env):
+    """First run must still start, so the wizard can be reached."""
+    assert desktop_secrets.restore_to_environ() is None
