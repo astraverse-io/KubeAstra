@@ -47,6 +47,12 @@ class _MemoryKeyring:
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("KUBEASTRA_STATE_DIR", str(tmp_path))
+    # desktop_secrets caches reads for the life of the process, because each
+    # one is a potential macOS "allow access?" prompt. Writes through the
+    # module invalidate it — the only writer in production — but swapping the
+    # keyring underneath it here is not a write, so entries from the previous
+    # test would survive into this one's fresh store.
+    desktop_secrets.clear_cache()
     # One instance for the whole test: a fresh keyring per call would discard
     # everything written, making storage assertions vacuously fail.
     fake_keyring = _MemoryKeyring()

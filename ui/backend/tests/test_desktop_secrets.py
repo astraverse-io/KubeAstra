@@ -48,6 +48,14 @@ class _FailKeyring(_FakeKeyring):
     __module__ = "keyring.backends.fail"
 
 
+@pytest.fixture(autouse=True)
+def _no_cached_reads():
+    """The read cache lives for the process, which spans the whole suite."""
+    desktop_secrets.clear_cache()
+    yield
+    desktop_secrets.clear_cache()
+
+
 @pytest.fixture
 def secure(tmp_path, monkeypatch):
     monkeypatch.setenv("KUBEASTRA_STATE_DIR", str(tmp_path))
@@ -260,3 +268,59 @@ def test_restore_does_not_override_an_explicit_env_var(secure, clean_env, monkey
 def test_restore_with_no_credentials_is_not_an_error(secure, clean_env):
     """First run must still start, so the wizard can be reached."""
     assert desktop_secrets.restore_to_environ() is None
+
+
+# ── keychain prompt volume ────────────────────────────────────────────────
+#
+# Every read is a potential "allow access?" dialog. Startup used to make four:
+# a blind sweep of all three credential providers, then the winner again. On a
+# build whose code signature changes each time, macOS treats every launch as a
+# new app and asks for all four.
+
+
+def _counting_keyring(monkeypatch, secure, stored: dict):
+    reads: list[str] = []
+
+    def get_password(service, name):
+        reads.append(name)
+        return stored.get(name)
+
+    monkeypatch.setattr(secure, "get_password", get_password)
+    return reads
+
+
+def test_startup_reads_the_keychain_once(secure, clean_env, monkeypatch):
+    desktop_secrets.clear_cache()
+    reads = _counting_keyring(monkeypatch, secure, {"llm.gemini": "gem-key"})
+
+    assert desktop_secrets.restore_to_environ() == "gemini"
+    assert reads == ["llm.gemini"], f"expected one keychain read, got {reads}"
+
+
+def test_repeat_reads_do_not_hit_the_keychain(secure, clean_env, monkeypatch):
+    desktop_secrets.clear_cache()
+    reads = _counting_keyring(monkeypatch, secure, {"llm.gemini": "gem-key"})
+
+    desktop_secrets.get_secret("llm.gemini")
+    desktop_secrets.get_secret("llm.gemini")
+    desktop_secrets.get_secret("llm.gemini")
+
+    assert len(reads) == 1
+
+
+def test_writing_a_secret_invalidates_the_cache(secure, clean_env):
+    desktop_secrets.clear_cache()
+    desktop_secrets.set_secret("llm.gemini", "first")
+    assert desktop_secrets.get_secret("llm.gemini") == "first"
+
+    desktop_secrets.set_secret("llm.gemini", "rotated")
+    assert desktop_secrets.get_secret("llm.gemini") == "rotated"
+
+
+def test_deleting_a_secret_invalidates_the_cache(secure, clean_env):
+    desktop_secrets.clear_cache()
+    desktop_secrets.set_secret("llm.gemini", "key")
+    desktop_secrets.get_secret("llm.gemini")
+
+    desktop_secrets.delete_secret("llm.gemini")
+    assert desktop_secrets.get_secret("llm.gemini") is None
