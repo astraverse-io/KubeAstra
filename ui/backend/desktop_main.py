@@ -195,6 +195,23 @@ def main(argv: list[str] | None = None) -> int:
 
     import main as backend_main  # noqa: E402
 
+    # `main` puts mcp/ on sys.path, so this is the first point k8s.binaries
+    # can be imported. The runners resolve kubectl explicitly, but helm and
+    # kubectl's own plugins are found by walking PATH — and a GUI launch
+    # gives us roughly /usr/bin:/bin:/usr/sbin:/sbin, which contains none of
+    # the places Kubernetes tooling installs itself.
+    try:
+        from k8s import binaries  # noqa: E402
+
+        added = binaries.augment_path()
+        binaries.reset_cache()
+        kubectl_path = binaries.found("kubectl")
+        announce(f"KUBECTL={kubectl_path or 'not found'}")
+        if added:
+            print(f"PATH extended with: {', '.join(added)}", file=sys.stderr)
+    except Exception as error:  # never block startup over tool discovery
+        print(f"warning: tool discovery failed: {error}", file=sys.stderr)
+
     token = os.environ["KUBEASTRA_DESKTOP_TOKEN"]
     announce(f"PORT={port}")
     announce(f"URL=http://127.0.0.1:{port}/auth?token={token}")

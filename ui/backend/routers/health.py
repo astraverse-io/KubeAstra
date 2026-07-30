@@ -92,15 +92,24 @@ def _kubectl_check() -> tuple[bool, str | None, str, CheckResult]:
 
 def _kubectl_check_uncached() -> tuple[bool, str | None, str, CheckResult]:
     started = time.perf_counter()
-    if not shutil.which("kubectl"):
+    # Not shutil.which: a GUI launch has a minimal PATH, so `which` returns
+    # None even when kubectl is installed in the usual Docker Desktop /
+    # Rancher / Homebrew location. That produced "kubectl binary not found"
+    # on a machine that had a perfectly working kubectl.
+    from k8s import binaries
+
+    kubectl_bin = binaries.found("kubectl")
+    if not kubectl_bin:
         duration = _observe_check("kubectl", started, False)
         return False, None, "unavailable", CheckResult(
-            status="failed", duration_ms=duration, detail="kubectl binary not found"
+            status="failed",
+            duration_ms=duration,
+            detail="kubectl binary not found on PATH or in any known install location",
         )
 
     try:
         result = subprocess.run(
-            ["kubectl", "version", "-o", "json", "--request-timeout=3s"],
+            [kubectl_bin, "version", "-o", "json", "--request-timeout=3s"],
             capture_output=True,
             text=True,
             timeout=4,
@@ -131,7 +140,7 @@ def _kubectl_check_uncached() -> tuple[bool, str | None, str, CheckResult]:
         context = None
         try:
             context_result = subprocess.run(
-                ["kubectl", "config", "current-context"],
+                [kubectl_bin, "config", "current-context"],
                 capture_output=True,
                 text=True,
                 timeout=1,
@@ -143,7 +152,12 @@ def _kubectl_check_uncached() -> tuple[bool, str | None, str, CheckResult]:
             pass
 
     duration = _observe_check("kubectl", started, True)
-    return True, context, mode, CheckResult(status="ok", duration_ms=duration)
+    # Report which binary was used. When several are installed — Docker
+    # Desktop's and Homebrew's routinely coexist, at different versions —
+    # "kubectl works" is not enough to explain what a command actually did.
+    return True, context, mode, CheckResult(
+        status="ok", duration_ms=duration, detail=f"using {kubectl_bin}"
+    )
 
 
 def _readiness_failures() -> list[str]:

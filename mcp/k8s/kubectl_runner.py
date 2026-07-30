@@ -15,6 +15,8 @@ from typing import List, Optional
 
 from config.settings import settings
 
+from . import binaries
+
 logger = logging.getLogger(__name__)
 
 _AUDIT_ENTRY_MAX_BYTES = 4095
@@ -261,8 +263,9 @@ class KubectlRunner:
         # SAFETY: Validate that command is read-only
         self._validate_read_only_command(args)
         
-        # Build command
-        cmd = ["kubectl"]
+        # Build command. Resolved rather than bare: a GUI launch gets a
+        # minimal PATH that contains no Kubernetes tooling. See k8s.binaries.
+        cmd = [binaries.kubectl()]
         
         # Add kubeconfig if configured
         if self.kubeconfig_path:
