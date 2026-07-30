@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "KubeAstra",
+  "version": "1.0.0",
+  "identifier": "io.astraverse.kubeastra",
+  "build": {
+    "frontendDist": "splash"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "KubeAstra",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:*"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app", "appimage", "deb", "msi"],
+    "resources": ["binaries/kubeastra-backend/**/*"],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "entitlements.plist"
+    }
+  }
+}

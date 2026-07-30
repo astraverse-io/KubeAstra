@@ -174,12 +174,19 @@ def install(app: FastAPI, static_root: "Optional[Path]" = None) -> None:
         The redirect strips the token from the address bar. The token stays
         valid for the life of the process (it is regenerated every launch) so
         the user can reopen the app URL from the launcher without a restart.
+
+        Lands on /chat/ rather than /. The app's root route redirects to /chat
+        with next/navigation's server-side `redirect()`, which a static export
+        cannot emit — Next bakes an error-boundary document instead, so `/`
+        answers 200 with a page reading "Application error". Sending the user
+        one hop further makes the first paint the real UI. build-desktop.mjs
+        also replaces out/index.html so `/` itself is no longer that document.
         """
         supplied = request.query_params.get("token") or ""
         if not (supplied and hmac.compare_digest(supplied, token)):
             return JSONResponse({"detail": "Invalid or missing token"}, status_code=401)
 
-        response = RedirectResponse("/", status_code=302)
+        response = RedirectResponse("/chat/", status_code=302)
         response.set_cookie(
             key=cookie_name(),
             value=token,

@@ -32,9 +32,18 @@ import threading
 import time
 from pathlib import Path
 
-BACKEND_DIR = Path(__file__).resolve().parent
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+if getattr(sys, "frozen", False):
+    _meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    BACKEND_DIR = _meipass
+    if str(BACKEND_DIR) not in sys.path:
+        sys.path.insert(0, str(BACKEND_DIR))
+    _mcp_dir = _meipass / "mcp"
+    if _mcp_dir.exists() and str(_mcp_dir) not in sys.path:
+        sys.path.insert(0, str(_mcp_dir))
+else:
+    BACKEND_DIR = Path(__file__).resolve().parent
+    if str(BACKEND_DIR) not in sys.path:
+        sys.path.insert(0, str(BACKEND_DIR))
 
 
 def announce(line: str) -> None:

@@ -20,10 +20,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # ── Resolve mcp path ───────────────────────────────────────────────
-MCP_PATH = os.environ.get(
-    "MCP_PATH",
-    str(Path(__file__).resolve().parent.parent.parent / "mcp"),
-)
+if getattr(sys, "frozen", False):
+    _meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    MCP_PATH = str(_meipass / "mcp")
+    if not Path(MCP_PATH).exists():
+        MCP_PATH = str(Path(sys.executable).parent / "mcp")
+else:
+    MCP_PATH = os.environ.get(
+        "MCP_PATH",
+        str(Path(__file__).resolve().parent.parent.parent / "mcp"),
+    )
 if MCP_PATH not in sys.path:
     sys.path.insert(0, MCP_PATH)
 

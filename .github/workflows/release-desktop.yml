@@ -1,0 +1,151 @@
+name: Release Desktop
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+
+jobs:
+  build-desktop:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            target: 'aarch64-apple-darwin'
+            args: '--target aarch64-apple-darwin'
+          - platform: 'macos-13'
+            target: 'x86_64-apple-darwin'
+            args: '--target x86_64-apple-darwin'
+          - platform: 'ubuntu-22.04'
+            target: 'x86_64-unknown-linux-gnu'
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'ui/frontend/package-lock.json'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsecret-1-dev
+
+      - name: Install Frontend Dependencies & Build Static SPA
+        run: |
+          npm ci --prefix ui/frontend
+          npm run build:desktop --prefix ui/frontend
+
+      - name: Install Python Desktop Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r desktop/requirements.txt
+          pip install pyinstaller
+
+      # build.sh wraps pyinstaller with the checks it does not perform itself:
+      # unresolved hidden imports, onedir layout, no developer dotfiles, and a
+      # launch + /health smoke test. PyInstaller exits 0 on all of those
+      # failures, so calling it directly lets a broken bundle go green.
+      - name: Build and verify PyInstaller backend
+        run: desktop/pyinstaller/build.sh /tmp/pyi-dist /tmp/pyi-work
+
+      # Shipped through bundle.resources, so the directory keeps its name and
+      # carries no target-triple suffix. externalBin cannot be used here: it
+      # expects a single executable and flattens a onedir tree into
+      # Contents/MacOS/, which strands _internal/ and breaks the launcher.
+      - name: Stage sidecar for Tauri
+        run: |
+          rm -rf desktop/src-tauri/binaries
+          mkdir -p desktop/src-tauri/binaries
+          cp -r /tmp/pyi-dist/kubeastra-backend desktop/src-tauri/binaries/kubeastra-backend
+          test -x desktop/src-tauri/binaries/kubeastra-backend/kubeastra-backend
+          test -d desktop/src-tauri/binaries/kubeastra-backend/_internal
+
+      - name: Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: desktop-v__VERSION__
+          releaseName: 'KubeAstra Desktop v__VERSION__'
+          releaseBody: 'See release notes for desktop updates.'
+          releaseDraft: true
+          prerelease: false
+          workdir: desktop
+          args: ${{ matrix.args }}
+
+      # The check that matters. Every earlier gate passed on a .app whose
+      # sidecar could not start — bundling had flattened the onedir tree, so
+      # PyInstaller failed on "Failed to load Python shared library
+      # .../Contents/Frameworks/Python" and the app opened to a blank window.
+      # Verifying the pre-bundle binary proves nothing about the bundle.
+      - name: Verify the bundled app
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          set -euo pipefail
+          APP=$(find desktop/src-tauri/target -path '*/release/bundle/macos/KubeAstra.app' | head -1)
+          [ -n "$APP" ] || { echo "No KubeAstra.app was produced"; exit 1; }
+          echo "Verifying $APP"
+
+          RES="$APP/Contents/Resources/binaries/kubeastra-backend"
+          SIDECAR="$RES/kubeastra-backend"
+          [ -x "$SIDECAR" ] || { echo "No sidecar at $SIDECAR"; exit 1; }
+          [ -d "$RES/_internal" ] \
+            || { echo "_internal/ missing — the onedir tree was flattened"; exit 1; }
+
+          # Contents/MacOS/ must hold only the Tauri binary. 480 entries there
+          # was the symptom of externalBin flattening the sidecar tree.
+          count=$(ls "$APP/Contents/MacOS" | wc -l)
+          [ "$count" -eq 1 ] || { ls "$APP/Contents/MacOS"; echo "Contents/MacOS has $count entries, expected 1"; exit 1; }
+
+          # Nothing from the build machine may reach a user.
+          if find "$APP" -name '.env*' -o -name '.git*' | grep -q .; then
+            find "$APP" -name '.env*' -o -name '.git*'
+            echo "Developer files are inside the app bundle"; exit 1
+          fi
+
+          python3 - "$SIDECAR" <<'PY'
+          import subprocess, sys, urllib.request
+          proc = subprocess.Popen([sys.argv[1]], stdout=subprocess.PIPE, text=True)
+          port = None; ready = False
+          try:
+              for line in proc.stdout:
+                  print("   ", line.rstrip())
+                  if line.startswith("PORT="): port = line[5:].strip()
+                  elif line.strip() == "READY": ready = True; break
+              if not (port and ready):
+                  sys.exit("Bundled sidecar never reached READY")
+              with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=30) as r:
+                  if r.status != 200:
+                      sys.exit(f"Bundled sidecar /health returned {r.status}")
+              print(f"    bundled sidecar healthy on port {port}")
+          finally:
+              proc.terminate()
+              try: proc.wait(timeout=10)
+              except subprocess.TimeoutExpired: proc.kill()
+          PY
