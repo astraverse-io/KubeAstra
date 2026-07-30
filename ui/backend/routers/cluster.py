@@ -273,6 +273,11 @@ def connect_context(body: ContextSelectBody, request: Request):
         namespace=namespace,
         kubeconfig_path=kubeconfig_path if body.mode == "kubeconfig-upload" else None,
     )
+    # Choosing a cluster here is also choosing it for background work. An
+    # alert has no session to inherit from, and the alternative — defaulting
+    # to the machine's current-context — is how proactive investigations
+    # ended up pointed at whatever cluster the laptop happened to have.
+    cluster_session.remember_default(body.context_name, kubeconfig_path)
     return {
         "connected": True,
         "cluster_name": cluster_name,

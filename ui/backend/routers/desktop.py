@@ -92,6 +92,10 @@ class DesktopSettings(BaseModel):
     # these once and expects them to survive a restart.
     alertmanager_url: str = ""
     notifications_enabled: bool = False
+    # Which cluster background investigations target. Read-only here: it is
+    # set by connecting a cluster, so there is one act of choosing rather
+    # than two settings that can disagree.
+    default_cluster_context: str = ""
 
 
 class DesktopSettingsUpdate(BaseModel):
@@ -391,6 +395,7 @@ def get_desktop_settings() -> DesktopSettings:
         keychain_backend=desktop_secrets.backend_name(),
         alertmanager_url=str(stored.get("alertmanager_url") or ""),
         notifications_enabled=bool(stored.get("notifications_enabled")),
+        default_cluster_context=str(stored.get("default_cluster_context") or ""),
     )
 
 

@@ -146,3 +146,64 @@ def test_prune_ignores_unrelated_files(tmp_path, monkeypatch):
     monkeypatch.setattr(cluster_session.db, "list_cluster_connections", lambda: [])
     cluster_session.prune_orphan_kubeconfigs(str(tmp_path))
     assert other.exists(), "only kubeastra-*.yaml uploads are ours to delete"
+
+
+# ── background work: alerts have no session to inherit from ───────────────
+#
+# Chat binds a runner per session. An alert arriving from Alertmanager does
+# not, so every kubectl call fell through get_runner() to the ambient runner
+# — the machine's current-context. A proactive investigation would then run
+# `kubectl get pods --all-namespaces` against whatever that happened to be.
+
+
+@pytest.fixture
+def desktop(monkeypatch, tmp_path):
+    monkeypatch.setenv("KUBEASTRA_MODE", "desktop")
+    import desktop_config
+
+    stored = {key: value for key, value in desktop_config.DEFAULTS.items()}
+    monkeypatch.setattr(desktop_config, "load", lambda: dict(stored))
+    monkeypatch.setattr(
+        desktop_config, "save", lambda updates: stored.update(updates) or dict(stored)
+    )
+    return stored
+
+
+def test_server_mode_keeps_the_ambient_runner(monkeypatch):
+    """In-cluster, the ambient runner IS the intended cluster."""
+    monkeypatch.setenv("KUBEASTRA_MODE", "server")
+    assert cluster_session.resolve_default() is None
+
+
+def test_desktop_refuses_when_no_cluster_has_been_chosen(desktop):
+    with pytest.raises(cluster_session.NoDefaultCluster):
+        cluster_session.resolve_default()
+
+
+def test_desktop_returns_the_chosen_cluster(desktop):
+    cluster_session.remember_default("kind-kubeastra-dev", None)
+
+    conn = cluster_session.resolve_default()
+    assert conn["context_name"] == "kind-kubeastra-dev"
+    assert conn["kubeconfig_path"] is None
+
+
+def test_a_vanished_kubeconfig_fails_closed(desktop, tmp_path):
+    missing = tmp_path / "gone.yaml"
+    cluster_session.remember_default("kind-kubeastra-dev", str(missing))
+
+    with pytest.raises(cluster_session.ClusterConnectionUnavailable):
+        cluster_session.resolve_default()
+
+
+def test_connecting_a_cluster_records_it_for_background_work(desktop):
+    cluster_session.remember_default("kind-kubeastra-dev", "/tmp/kc.yaml")
+    assert desktop["default_cluster_context"] == "kind-kubeastra-dev"
+    assert desktop["default_cluster_kubeconfig"] == "/tmp/kc.yaml"
+
+
+def test_server_mode_records_nothing(monkeypatch, desktop):
+    """Server mode has no per-machine default to remember."""
+    monkeypatch.setenv("KUBEASTRA_MODE", "server")
+    cluster_session.remember_default("some-context", None)
+    assert desktop["default_cluster_context"] == ""

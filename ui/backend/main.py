@@ -32,6 +32,12 @@ else:
     )
 if MCP_PATH not in sys.path:
     sys.path.insert(0, MCP_PATH)
+# Export it. `alerts._resolve_mcp_path()` reads the environment and otherwise
+# falls back to a repo-relative "../../../mcp", which does not exist inside a
+# frozen bundle — so the playbook registry loaded zero playbooks and every
+# investigation died with "Unknown playbook: generic". setdefault, so an
+# explicit MCP_PATH from the container image or a developer still wins.
+os.environ.setdefault("MCP_PATH", MCP_PATH)
 
 # Load .env from MCP project so all settings (GEMINI_API_KEY etc.) are available
 from dotenv import load_dotenv
