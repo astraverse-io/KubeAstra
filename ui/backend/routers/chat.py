@@ -269,6 +269,78 @@ def _note_llm_unavailable(resp, session_tag: str):
     return resp
 
 
+# Words that are never a namespace. The old extraction was
+# `namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)`, copy-pasted to seven call sites,
+# and it failed three different ways on ordinary phrasings:
+#
+#   "list all pods in the production namespace"  -> "the"
+#   "get pods in namespace demo"                 -> "namespace"
+#   "in the production namespace" (strict form)  -> None, silent fallback
+#
+# The second one is the subtle one: alternation picks the leftmost match, so
+# `in\s+(...)` fires on "in namespace" before `namespace[:\s]+(...)` ever gets
+# a chance. Every one of these then queried the wrong namespace and reported
+# results as though they were right.
+_NAMESPACE_STOPWORDS = frozenset({
+    "the", "a", "an", "my", "our", "your", "this", "that", "these", "those",
+    "all", "any", "some", "each", "every", "namespace", "namespaces", "ns",
+    "cluster", "there", "here", "which", "what",
+})
+
+# "show pods in imagepullbackoff" is a status filter, not a namespace, and
+# every pattern here reads it as one. The old code guarded this at exactly one
+# of the eleven call sites; the rest happily queried a namespace named after a
+# pod condition and reported "no pods found" as though that were an answer.
+_POD_CONDITION_WORDS = frozenset({
+    "crashloop", "crashloopbackoff", "crashlopp", "imagepull",
+    "imagepullbackoff", "pending", "oom", "oomkilled", "evicted",
+})
+
+
+def _extract_namespace(message: str, default: Optional[str] = None) -> Optional[str]:
+    """Pull a namespace out of free text, or return `default`.
+
+    Tried most-explicit first, because a user who wrote `-n foo` means foo
+    even if the sentence also contains the word "in".
+    """
+    text = (message or "").lower()
+
+    patterns = (
+        # -n foo   --namespace=foo   --namespace foo
+        r"(?:^|\s)-n[=\s]+([a-z0-9][a-z0-9.-]*)",
+        r"--namespace[=\s]+([a-z0-9][a-z0-9.-]*)",
+        # namespace foo   namespace: foo   namespace "foo"
+        r"namespace[:=\s]+[\"'`]?([a-z0-9][a-z0-9.-]*)[\"'`]?",
+        # in the foo namespace   in foo namespace   foo namespace
+        r"in\s+(?:the\s+)?([a-z0-9][a-z0-9.-]*)\s+namespace",
+        r"([a-z0-9][a-z0-9.-]*)\s+namespace\b",
+        # bare "in foo" — last resort, most likely to catch English
+        r"\bin\s+(?:the\s+)?([a-z0-9][a-z0-9.-]*)",
+    )
+
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            candidate = (match.group(1) or "").strip(".,;:!?\"'`")
+            if (
+                candidate
+                and candidate not in _NAMESPACE_STOPWORDS
+                and candidate not in _POD_CONDITION_WORDS
+            ):
+                return candidate
+
+    return default
+
+
+def _extract_namespace_or_all(message: str) -> str:
+    """As above, but `*` when the user clearly means every namespace."""
+    if re.search(r"\ball[\s-]?namespaces?\b|across (?:the )?cluster|every namespace", (message or "").lower()):
+        return "*"
+    namespace = _extract_namespace(message)
+    if namespace in {"all", "all-namespaces", "allnamespaces"}:
+        return "*"
+    return namespace or "*"
+
+
 def _short_session_id(session_id: Optional[str]) -> str:
     if not session_id:
         return "-"
@@ -844,11 +916,9 @@ def _keyword_route(message: str, history: list = None) -> dict:
         msg,
     )
     if cluster_check and len(message) < 120 and "runbook" not in msg:
-        ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)(?:\s+namespace)?", msg)
-        # Default to "*" (all namespaces) when none specified
-        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "*"
-        if ns in {"crashloop", "crashloopbackoff", "crashlopp", "imagepull", "imagepullbackoff", "pending", "oom", "oomkilled", "evicted"}:
-            ns = "*"
+        # Default to "*" (all namespaces) when none specified.
+        # Pod conditions are filtered out by _extract_namespace itself.
+        ns = _extract_namespace_or_all(msg)
         ns_label = "all namespaces" if ns == "*" else f"namespace '{ns}'"
         pod_status = _pod_status_filter_for_question(msg)
         if pod_status:
@@ -878,8 +948,11 @@ def _keyword_route(message: str, history: list = None) -> dict:
 
     # ── Namespace Analysis ──────────────────────────────────────────────────
     if re.search(r"analyze|health|holistic", msg) and re.search(r"namespace", msg):
-        ns_match = re.search(r"namespace[:\s]+(\S+)|(of|health\s+of)\s+([a-z0-9-]+)", msg)
-        ns = (ns_match.group(1) or ns_match.group(3)) if ns_match else "default"
+        of_match = re.search(r"(?:health\s+)?of\s+(?:the\s+)?([a-z0-9][a-z0-9.-]*)", msg)
+        of_ns = of_match.group(1) if of_match else None
+        if of_ns in _NAMESPACE_STOPWORDS:
+            of_ns = None
+        ns = _extract_namespace(msg) or of_ns or "default"
         # Avoid matching "analyze error" which is handled earlier
         if "error" not in msg:
             return {"tool": "analyze_namespace", "params": {"namespace": ns},
@@ -887,11 +960,10 @@ def _keyword_route(message: str, history: list = None) -> dict:
 
     # ── Workload investigation ──────────────────────────────────────────────
     if re.search(r"investigate|triage|debug|diagnose", msg) and not re.search(r"pod", msg):
-        ns_match = re.search(r"(?:namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)\s+namespace)", msg)
         wl_match = re.search(r"(?:deployment|statefulset|daemonset|workload|app|application)[:\s]+(\S+)|investigate\s+(\S+)", msg)
         wl = (wl_match.group(1) or wl_match.group(2)) if wl_match else ""
         if wl and wl not in ["pod", "namespace"]:
-            ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "default"
+            ns = _extract_namespace(msg, "default")
             return {"tool": "investigate_workload", 
                     "params": {"namespace": ns, "workload_name": wl, "workload_type": "deployment", "use_ai": True},
                     "explanation": f"Investigating workload '{wl}' in '{ns}'"}
@@ -904,14 +976,11 @@ def _keyword_route(message: str, history: list = None) -> dict:
         msg,
     )
     if targeted_failure:
-        ns_match = re.search(
-            r"(?:namespace[:\s]+(\S+)|in\s+(?:the\s+)?([a-z0-9][a-z0-9\-]+)\s+namespace)",
-            msg,
-        )
         pod = _candidate_workload_names(targeted_failure.group(1).strip("?. "))[0]
         params_inv: dict = {"pod_name": pod, "use_ai": True}
-        if ns_match:
-            params_inv["namespace"] = ns_match.group(1) or ns_match.group(2)
+        targeted_ns = _extract_namespace(msg)
+        if targeted_ns:
+            params_inv["namespace"] = targeted_ns
         return {
             "tool": "investigate_pod",
             "params": params_inv,
@@ -919,30 +988,27 @@ def _keyword_route(message: str, history: list = None) -> dict:
         }
 
     if re.search(r"investigate|triage|debug|diagnose", msg):
-        ns_match = re.search(r"(?:namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)\s+namespace)", msg)
         pod_match = re.search(r"pod[:\s]+(\S+)|pod\s+named?\s+(\S+)", msg)
         pod = (pod_match.group(1) or pod_match.group(2)) if pod_match else ""
         # Omit namespace when not stated so _dispatch_inner can auto-discover it
         params_inv: dict = {"pod_name": pod, "use_ai": True}
-        if ns_match:
-            params_inv["namespace"] = ns_match.group(1) or ns_match.group(2)
+        _ns = _extract_namespace(msg)
+        if _ns:
+            params_inv["namespace"] = _ns
         return {"tool": "investigate_pod", "params": params_inv,
                 "explanation": f"Investigating pod '{pod}'"}
 
     # ── Logs ───────────────────────────────────────────────────────────────
     if re.search(r"\blog\b|logs\b", msg):
-        # Extract namespace only when the user explicitly names it
-        ns_match = re.search(
-            r"(?:namespace[:\s]+(\S+)|in\s+(?:the\s+)?([a-z0-9][a-z0-9\-]+)\s+namespace)",
-            msg,
-        )
         # Extract pod/workload name: handle "for one of the X pods", "for pod X", "for the X pod"
         pod_match = re.search(
             r"(?:pod[:\s]+(\S+)|"
             r"(?:for|of|from)\s+(?:one\s+of\s+the\s+|the\s+)?([a-z0-9][a-z0-9\-\.]+)\s*pods?\b)",
             msg,
         )
-        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else None
+        # Namespace only when the user actually named one; None lets the
+        # dispatcher auto-discover it.
+        ns = _extract_namespace(msg)
         pod = (pod_match.group(1) or pod_match.group(2)) if pod_match else ""
         # Omit namespace when not explicitly stated — _dispatch_inner will auto-discover it
         params_log: dict = {"pod_name": pod, "previous": "previous" in msg or "crash" in msg}
@@ -953,11 +1019,7 @@ def _keyword_route(message: str, history: list = None) -> dict:
     # ── Simple pod status inventory ────────────────────────────────────────
     if _simple_pod_status_inventory_prompt(msg):
         pod_status = _pod_status_filter_for_question(msg)
-        ns_match = re.search(
-            r"namespace[:\s]+(\S+)|in\s+(?:the\s+)?([a-z0-9][a-z0-9\-]+)\s+namespace",
-            msg,
-        )
-        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "*"
+        ns = _extract_namespace(msg, "*")
         ns_label = "all namespaces" if ns == "*" else f"namespace '{ns}'"
         return {
             "tool": "get_pods",
@@ -978,24 +1040,19 @@ def _keyword_route(message: str, history: list = None) -> dict:
             pod_focus_params["placement_only"] = True
 
     if pod_focus_params and re.search(r"list|show|get|all|what|which|where", msg):
-        ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)", msg)
-        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "*"
-        if ns in {"all", "all-namespaces", "allnamespaces"}:
-            ns = "*"
+        ns = _extract_namespace_or_all(msg)
         params = {"namespace": ns, **pod_focus_params}
         return {"tool": "get_pods", "params": params,
                 "explanation": f"Listing focused pod inventory in {'all namespaces' if ns == '*' else f'namespace {ns}'}"}
 
     if "pod" in msg and re.search(r"list|show|get|all|running|status", msg):
-        ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)", msg)
-        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "default"
+        ns = _extract_namespace(msg, "default")
         return {"tool": "get_pods", "params": {"namespace": ns},
                 "explanation": f"Listing pods in namespace {ns}"}
 
     # ── Events (warnings, errors, recent activity) ─────────────────────────
     if re.search(r"event|warning|warn|recent|what.s happening|happening", msg):
-        ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)", msg)
-        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "*"
+        ns = _extract_namespace(msg, "*")
         field = "type=Warning" if re.search(r"warning|warn|error|issue", msg) else None
         ns_label = "all namespaces" if ns == "*" else f"namespace {ns}"
         return {"tool": "get_events",
@@ -1043,23 +1100,20 @@ def _keyword_route(message: str, history: list = None) -> dict:
 
     # ── All resources in a namespace ───────────────────────────────────────
     if re.search(r"all resources|everything|all (the\s+)?things|what.s running|what is running", msg):
-        ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+[\"']?([a-z0-9_\-]+)[\"']?\s*(ns|namespace)?", msg)
-        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "default"
+        ns = _extract_namespace(msg, "default")
         return {"tool": "list_namespace_resources", "params": {"namespace": ns},
                 "explanation": f"Listing all resources in namespace '{ns}'"}
 
     # ── Resource graph / topology visualization ─────────────────────────────
     if re.search(r"visualize|visualise|resource graph|topology|draw.*(namespace|cluster)|map the (namespace|cluster)", msg):
-        ns_match = re.search(r"namespace[:\s]+(\S+)|(?:in|of|for)\s+[\"']?([a-z0-9_\-]+)[\"']?\s*(ns|namespace)?", msg)
-        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "default"
+        ns = _extract_namespace(msg, "default")
         return {"tool": "get_resource_graph", "params": {"namespace": ns},
                 "explanation": f"Building resource graph for namespace '{ns}'"}
 
     # ── List services (no specific name) ────────────────────────────────────
     if re.search(r"^services\??$|list services|show services|get services|what services", msg):
-        ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+([a-z0-9_\-]+)", msg)
         # Try to pick up namespace from recent history context
-        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else "default"
+        ns = _extract_namespace(msg, "default")
         return {"tool": "list_services", "params": {"namespace": ns},
                 "explanation": f"Listing all services in namespace '{ns}'"}
 
@@ -1099,10 +1153,10 @@ def _keyword_route(message: str, history: list = None) -> dict:
         svc_name = svc_match.group(1).strip("?. ") if svc_match else ""
         stopwords = {"the", "a", "an", "my", "our", "all", "any", "this", "that", "what", "which"}
         if svc_name and svc_name not in stopwords:
-            ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+([a-z0-9-]+)\s+namespace", msg)
             params_svc: dict = {"service_name": svc_name}
-            if ns_match:
-                params_svc["namespace"] = ns_match.group(1) or ns_match.group(2)
+            _ns = _extract_namespace(msg)
+            if _ns:
+                params_svc["namespace"] = _ns
             return {"tool": "get_service", "params": params_svc,
                     "explanation": f"Getting port details for service '{svc_name}'"}
 
@@ -1121,9 +1175,8 @@ def _keyword_route(message: str, history: list = None) -> dict:
 
     # ── Deployment status (namespace explicitly given) ─────────────────────────
     if re.search(r"deployment|deploy|rollout|replica", msg):
-        ns_match = re.search(r"namespace[:\s]+(\S+)|in\s+the\s+([a-z0-9-]+)\s+namespace", msg)
         dep_match = re.search(r"deployment[:\s]+(\S+)|deploy[:\s]+(\S+)", msg)
-        ns = (ns_match.group(1) or ns_match.group(2)) if ns_match else None
+        ns = _extract_namespace(msg)
         dep = (dep_match.group(1) or dep_match.group(2)) if dep_match else ""
         focus_params: dict[str, bool] = {}
         if re.search(r"\blabels?\b", msg) and not re.search(r"\bstatus|ready|replicas?|image|resources?|requests?|limits?|cpu|memory|template\b", msg):
