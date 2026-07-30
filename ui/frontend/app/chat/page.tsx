@@ -22,6 +22,7 @@ import { MissionControlDiagnosis } from "../../components/MissionControlDiagnosi
 import { MissionControlApprovalOverlay } from "../../components/MissionControlApprovalOverlay";
 import { MissionControlToolTrail } from "../../components/MissionControlToolTrail";
 import { CommandBar } from "../../components/CommandBar";
+import { DesktopBridge } from "../../components/DesktopBridge";
 import { resultToMissionControlDiagnosis } from "../../lib/missionControlAdapters";
 import {
   sendChat,
@@ -2273,6 +2274,10 @@ export default function ChatPage() {
           <div ref={bottomRef} />
         </div>
       </div>
+
+      {/* Desktop shell requests: tray, global shortcut, kubeastra:// links.
+          Inert in server mode, where the fragment never appears. */}
+      <DesktopBridge onInvestigate={(prompt) => submit(prompt)} />
 
       {/* ── input bar ── */}
       {isOwnedSession ? (

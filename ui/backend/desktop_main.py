@@ -158,6 +158,16 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("VECTOR_DB_MODE", "local")
     os.environ.setdefault("VECTOR_DB_PATH", str(desktop_paths.vectors_path()))
     os.environ.setdefault("EMBEDDINGS_MODE", "api")
+    # ALLOWED_NAMESPACES defaults to "default", which is a multi-tenant server
+    # guardrail: it stops one team's operator reaching another team's
+    # namespaces. On a laptop there is one tenant — the user — and the
+    # kubeconfig they chose already bounds what is reachable. Leaving the
+    # server default in place silently confines the app to `default`, which no
+    # real cluster keeps its workloads in; a kubeastra://investigate link for
+    # any other namespace fails with "not in the allowed list".
+    # Mutations remain gated by the approval flow, which is the actual
+    # safety boundary here. Overridable, for anyone who wants it narrower.
+    os.environ.setdefault("ALLOWED_NAMESPACES", "*")
 
     sock, port = bind_socket(args.host, args.port)
     os.environ["KUBEASTRA_DESKTOP_PORT"] = str(port)

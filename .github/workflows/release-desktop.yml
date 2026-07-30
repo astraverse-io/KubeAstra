@@ -65,6 +65,12 @@ jobs:
       # unresolved hidden imports, onedir layout, no developer dotfiles, and a
       # launch + /health smoke test. PyInstaller exits 0 on all of those
       # failures, so calling it directly lets a broken bundle go green.
+      # Deep links come from outside the app — the OS hands any process's
+      # kubeastra:// URL straight to us — so the parsing and the fragment
+      # encoding are covered by unit tests.
+      - name: Test the Tauri shell
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
+
       - name: Build and verify PyInstaller backend
         run: desktop/pyinstaller/build.sh /tmp/pyi-dist /tmp/pyi-work
 
