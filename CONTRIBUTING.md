@@ -239,6 +239,9 @@ New to the project? Look for issues labeled `good-first-issue`. These are scoped
 - **Issues**: For bugs, features, and discussions
 - **Pull Requests**: For code contributions
 - **Discussions**: For questions, ideas, and general conversation
+- **Security**: Never an issue or a PR — email <security@astraverse.dev>, or
+  use [private reporting](https://github.com/astraverse-io/KubeAstra/security/advisories/new).
+  See [SECURITY.md](SECURITY.md).
 
 ---
 
