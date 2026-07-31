@@ -1,6 +1,6 @@
 # Kubeastra
 
-[![CI](https://github.com/kubeastra/KubeAstra/actions/workflows/ci.yml/badge.svg)](https://github.com/kubeastra/KubeAstra/actions/workflows/ci.yml)
+[![CI](https://github.com/astraverse-io/KubeAstra/actions/workflows/ci.yml/badge.svg)](https://github.com/astraverse-io/KubeAstra/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-black.svg)](https://nextjs.org/)
@@ -238,7 +238,7 @@ Match your situation to the feature that solves it:
 Prerequisites: Docker Desktop, `kind`, `kubectl`
 
 ```bash
-git clone https://github.com/kubeastra/KubeAstra.git
+git clone https://github.com/astraverse-io/KubeAstra.git
 cd KubeAstra
 make demo
 ```
@@ -572,7 +572,17 @@ kubeastra/
 
 Contributions are welcome — especially the items at the top of the roadmap. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, project layout, and how to add a new tool, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community guidelines.
 
-Looking for a starter task? Check the [`good first issue`](https://github.com/kubeastra/KubeAstra/labels/good%20first%20issue) label.
+Looking for a starter task? Check the [`good first issue`](https://github.com/astraverse-io/KubeAstra/labels/good%20first%20issue) label.
+
+---
+
+## Security
+
+Found a vulnerability? **Please don't open a public issue.** Email
+<security@astraverse.dev> or use
+[private reporting](https://github.com/astraverse-io/KubeAstra/security/advisories/new).
+[SECURITY.md](SECURITY.md) covers what's in scope, what isn't, and how long
+we'll take to answer.
 
 ---
 

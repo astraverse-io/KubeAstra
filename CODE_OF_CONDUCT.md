@@ -45,9 +45,13 @@ This Code of Conduct applies within all project spaces — GitHub issues, pull r
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported by opening a GitHub issue marked `[conduct]` or by contacting the project maintainer directly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported privately to **<conduct@astraverse.dev>**.
+
+Reporting privately is encouraged, and you will never be asked to justify why you did not report in public. If you would rather raise something openly, you may also open a GitHub issue marked `[conduct]`.
 
 All complaints will be reviewed and investigated promptly and fairly. Maintainers are obligated to respect the privacy and security of the reporter of any incident.
+
+Please do not use this address for security vulnerabilities — those go to <security@astraverse.dev>, and the process is in [SECURITY.md](SECURITY.md).
 
 ---
 

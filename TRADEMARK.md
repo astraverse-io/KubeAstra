@@ -69,11 +69,15 @@ Ask us first (open a GitHub issue or email the maintainers) before:
 
 ## Questions
 
-If you're unsure whether your use is allowed, just ask — open an issue at
-<https://github.com/astraverse-io/KubeAstra/issues> or contact the
-maintainers. We're an open-source project; we want the name used, talked
+If you're unsure whether your use is allowed, just ask — email
+<legal@astraverse.dev>, or open an issue at
+<https://github.com/astraverse-io/KubeAstra/issues> if the question isn't
+sensitive. We're an open-source project; we want the name used, talked
 about, and packaged — we only step in when usage would confuse people about
 what is and isn't the official KubeAstra.
+
+Formal notices — trademark, DMCA, or anything else a lawyer wrote — should go
+to <legal@astraverse.dev> rather than a public issue.
 
 ---
 
