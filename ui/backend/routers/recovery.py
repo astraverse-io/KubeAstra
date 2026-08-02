@@ -1,3 +1,4 @@
+
 """Recovery / write operation endpoints — all require confirm=True.
 
 POST /api/exec         → exec_pod_command
@@ -14,6 +15,8 @@ from pydantic import BaseModel
 from k8s.wrappers import (
     exec_pod_command, delete_pod, rollout_restart, scale_deployment, apply_patch,
 )
+
+from http_errors import internal_error
 
 router = APIRouter()
 
@@ -58,8 +61,8 @@ class PatchRequest(BaseModel):
 def _wrap(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise internal_error(context="recovery endpoint")
 
 
 @router.post("/exec")

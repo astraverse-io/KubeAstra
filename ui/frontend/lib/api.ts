@@ -4,6 +4,14 @@ function apiUrl(path: string) {
   return BASE ? `${BASE}${path}` : path;
 }
 
+// Every id interpolated into a path below goes through encodeURIComponent, and
+// none of them are ours: a session id comes from localStorage or the /chat/:id
+// URL, a run id from a previous response. Unencoded, an id is not a segment but
+// a fragment of URL — `../admin` climbs to a different endpoint, `?` or `#`
+// truncates the path and pushes the rest into the query string, and with BASE
+// set that resolution happens against another origin. It also just fixes
+// ordinary ids containing a slash, which today 404 for no visible reason.
+
 export class ApiError extends Error {
   status: number;
 
@@ -446,7 +454,7 @@ export async function createChatSession(title?: string): Promise<ChatSession> {
 }
 
 export async function deleteChatSession(sessionId: string): Promise<void> {
-  await fetchJson(`/api/sessions/${sessionId}`, { method: "DELETE" });
+  await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
 }
 
 export async function getHistory(sessionId: string): Promise<HistoryMessage[]> {
@@ -459,7 +467,7 @@ export async function getHistory(sessionId: string): Promise<HistoryMessage[]> {
 }
 
 export async function getHistoryDetail(sessionId: string): Promise<HistoryDetail> {
-  const res = await fetch(apiUrl(`/api/sessions/${sessionId}/history`), { credentials: "include" });
+  const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/history`), { credentials: "include" });
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {
@@ -484,7 +492,7 @@ export async function getHistoryDetail(sessionId: string): Promise<HistoryDetail
 
 export async function clearHistory(sessionId: string): Promise<void> {
   try {
-    await fetch(apiUrl(`/api/sessions/${sessionId}/history`), { method: "DELETE", credentials: "include" });
+    await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/history`), { method: "DELETE", credentials: "include" });
   } catch {
     // best-effort
   }
@@ -500,7 +508,7 @@ export async function appendSessionMessages(
   sessionId: string,
   messages: Array<{ role: "user" | "assistant"; content: string; tool_used?: string }>,
 ): Promise<void> {
-  const res = await fetch(apiUrl(`/api/sessions/${sessionId}/messages`), {
+  const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/messages`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -512,7 +520,7 @@ export async function appendSessionMessages(
 }
 
 export async function exportPostMortem(sessionId: string): Promise<string> {
-  const res = await fetch(apiUrl(`/api/sessions/${sessionId}/export`), {
+  const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/export`), {
     method: "POST",
     credentials: "include",
   });
@@ -527,7 +535,7 @@ export async function exportPostMortem(sessionId: string): Promise<string> {
 
 export async function getSshTarget(sessionId: string): Promise<SSHTarget | null> {
   try {
-    const res = await fetch(apiUrl(`/api/sessions/${sessionId}/ssh-target`), { credentials: "include" });
+    const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/ssh-target`), { credentials: "include" });
     if (!res.ok) return null;
     const data = await res.json();
     return data.ssh_target ?? null;
@@ -541,7 +549,7 @@ export async function saveSshTarget(
   target: SSHTarget
 ): Promise<void> {
   try {
-    await fetch(apiUrl(`/api/sessions/${sessionId}/ssh-target`), {
+    await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/ssh-target`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(target),
@@ -554,7 +562,7 @@ export async function saveSshTarget(
 
 export async function deleteSshTarget(sessionId: string): Promise<void> {
   try {
-    await fetch(apiUrl(`/api/sessions/${sessionId}/ssh-target`), { method: "DELETE", credentials: "include" });
+    await fetch(apiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/ssh-target`), { method: "DELETE", credentials: "include" });
   } catch {
     // best-effort
   }
@@ -643,7 +651,7 @@ export async function clusterDisconnect(sessionId: string): Promise<void> {
 }
 
 export async function clusterStatus(sessionId: string): Promise<ClusterStatus> {
-  return fetchJson(`/api/cluster/status/${sessionId}`);
+  return fetchJson(`/api/cluster/status/${encodeURIComponent(sessionId)}`);
 }
 
 // ── Legacy form dashboard client ─────────────────────────────────────────────
@@ -707,7 +715,7 @@ export interface AgentRunDetails {
 }
 
 export async function fetchAgentRunDetails(runId: string): Promise<AgentRunDetails> {
-  const res = await fetch(apiUrl(`/api/agent-runs/${runId}`), {
+  const res = await fetch(apiUrl(`/api/agent-runs/${encodeURIComponent(runId)}`), {
     credentials: "include",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

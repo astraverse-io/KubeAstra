@@ -123,17 +123,46 @@ const EXAMPLES = [
 
 /* ── helpers ─────────────────────────────────────────────────── */
 
+// React keys only. Never use this for anything a URL exposes or an access
+// check consults — see randomSessionId below for why. Deliberately kept
+// distinct rather than pointed at the CSPRNG, so the next reader has to make
+// the same choice rather than inherit it by accident.
 function uid() {
   return Math.random().toString(36).slice(2);
 }
 
+// A session id is not a display detail: /chat/:sessionId is a shareable URL,
+// so anyone who can guess an id can read that investigation — pod names, log
+// excerpts, the cluster's shape. Math.random() is seeded from the clock and
+// yields roughly 52 bits of predictable state, which is a guess away, not a
+// search away. Only a CSPRNG belongs here.
+function randomSessionId(): string {
+  // Bound once and probed with optional calls: `"x" in crypto` narrows the
+  // type to `never` after the first branch returns, because Crypto always
+  // declares randomUUID even where the runtime does not provide it.
+  const source = typeof crypto !== "undefined" ? crypto : undefined;
+  if (source?.randomUUID) {
+    return source.randomUUID();
+  }
+  if (source?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    source.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  // No CSPRNG at all: refuse rather than quietly issue a guessable id. Every
+  // browser this app supports has one, so reaching here means something is
+  // wrong that a weak fallback would only hide.
+  throw new Error("This browser has no secure random source; cannot start a session.");
+}
+
 function getOrCreateSessionId(): string {
-  if (typeof window === "undefined") return uid();
+  if (typeof window === "undefined") return randomSessionId();
   let sid = localStorage.getItem("k8s_session_id");
   if (!sid) {
-    sid = typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : uid() + uid();
+    // Was `crypto.randomUUID() ?? uid() + uid()`. The fallback is the whole
+    // problem: it fires exactly where the CSPRNG is missing, so the weakest
+    // ids were issued in the situations least able to tolerate them.
+    sid = randomSessionId();
     localStorage.setItem("k8s_session_id", sid);
   }
   return sid;
@@ -1311,7 +1340,11 @@ export default function ChatPage() {
       setHistoryLoaded(true);
       return;
     }
-    const newId = uid() + uid();
+    // Was `uid() + uid()`. Two Math.random() draws look like more entropy than
+    // one and are not: both come from the same clock-seeded state, so the pair
+    // is no harder to predict than the first. This is the id that ends up in
+    // /chat/:sessionId, so it gets the CSPRNG like every other session id.
+    const newId = randomSessionId();
     setSessionId(newId);
     if (typeof window !== "undefined") localStorage.setItem("k8s_session_id", newId);
     setMessages([]);

@@ -25,6 +25,14 @@ on:
       - "ui/backend/requirements.txt"
   workflow_dispatch:
 
+# Least privilege for the automatic GITHUB_TOKEN. Without this the token
+# inherits the repository default, which on many repos is write — and these
+# workflows run code from pull requests. They only ever need to read the
+# tree, so say so rather than relying on a repo setting that can change
+# without anyone editing this file.
+permissions:
+  contents: read
+
 jobs:
   measure:
     runs-on: ubuntu-latest

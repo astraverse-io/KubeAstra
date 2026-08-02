@@ -19,6 +19,8 @@ import ai_tools.fix as _fix
 import ai_tools.report as _report
 import ai_tools.runbook as _runbook
 
+from http_errors import internal_error
+
 router = APIRouter()
 
 
@@ -62,8 +64,8 @@ def analyze_error(req: AnalyzeRequest):
     try:
         raw = _analyze.run(req.error_text, req.tool, req.environment)
         return json.loads(raw)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise internal_error(context="ai tools endpoint")
 
 
 @router.post("/fix")
@@ -73,8 +75,8 @@ def get_fix_commands(req: FixRequest):
             req.error_text, req.category, req.tool, req.namespace, req.resource_name
         )
         return json.loads(raw)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise internal_error(context="ai tools endpoint")
 
 
 @router.get("/categories")
@@ -82,8 +84,8 @@ def list_categories():
     try:
         raw = _fix.list_categories()
         return json.loads(raw)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise internal_error(context="ai tools endpoint")
 
 
 @router.post("/runbook")
@@ -93,8 +95,8 @@ def generate_runbook(req: RunbookRequest):
             req.category, req.error_examples, req.error_text, req.tool
         )
         return json.loads(raw)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise internal_error(context="ai tools endpoint")
 
 
 @router.post("/report")
@@ -102,8 +104,8 @@ def cluster_report(req: ReportRequest):
     try:
         raw = _report.cluster_report(req.events_text, req.namespace)
         return json.loads(raw)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise internal_error(context="ai tools endpoint")
 
 
 @router.post("/summary")
@@ -111,5 +113,5 @@ def error_summary(req: SummaryRequest):
     try:
         raw = _report.error_summary(req.errors, req.tool)
         return json.loads(raw)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise internal_error(context="ai tools endpoint")
