@@ -2634,11 +2634,29 @@ def add_kubeconfig_context(
         from io import StringIO
         
         logger.info(f"Connecting to {hostname}:{port} as {username}")
-        
+
         # Create SSH client
         ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
+        # Fail closed on an unrecognised host key. This used AutoAddPolicy,
+        # which trusts whatever key the far end presents — on the one path that
+        # then sends the operator's SSH password to a control-plane node. Shared
+        # with SSHKubectlRunner so the decision cannot drift apart again.
+        from k8s.ssh_runner import HostKeyUnavailable, harden_host_keys
+
+        try:
+            harden_host_keys(ssh)
+        except HostKeyUnavailable as exc:
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing to connect to {hostname}: {exc}"
+                ),
+                "remediation": (
+                    f"Register the host key first, after verifying the fingerprint "
+                    f"out of band:\n  ssh-keyscan -p {port} {hostname} >> ~/.ssh/known_hosts"
+                ),
+            }
+
         # Connect with password or key-based auth
         try:
             if password:
@@ -2669,9 +2687,28 @@ def add_kubeconfig_context(
                 "ssh_connection": ssh_connection
             }
         except paramiko.SSHException as e:
+            # RejectPolicy surfaces an unknown host as a generic SSHException.
+            # Say what actually happened and what to do, rather than leaving the
+            # operator to guess from "not found in known_hosts" whether the host
+            # is down, misspelled, or simply unregistered.
+            text = str(e)
+            if "known_hosts" in text or "not found in" in text:
+                return {
+                    "success": False,
+                    "error": (
+                        f"The host key for {hostname} is not in your known_hosts, "
+                        "so the connection was refused. Nothing is wrong with the "
+                        "cluster — the key has simply never been reviewed."
+                    ),
+                    "remediation": (
+                        f"Verify the fingerprint out of band, then register it:\n"
+                        f"  ssh-keyscan -p {port} {hostname} >> ~/.ssh/known_hosts"
+                    ),
+                    "ssh_connection": ssh_connection,
+                }
             return {
                 "success": False,
-                "error": f"SSH connection failed: {str(e)}",
+                "error": f"SSH connection failed: {text}",
                 "ssh_connection": ssh_connection
             }
         except Exception as e:
