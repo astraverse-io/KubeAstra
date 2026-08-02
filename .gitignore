@@ -75,3 +75,11 @@ venv-*/
 
 # Rust build output (Tauri spike / desktop shell)
 target/
+
+# ── Generated knowledge graphs (graphify) ─────────────────────────────────────
+# Regenerated from the source it describes, so it is derived data, not source.
+# Worth ignoring rather than merely not committing: a single run drops ~10 MB
+# here (graph.json plus a self-contained graph.html), and the tool writes one
+# of these next to whichever directory it was pointed at — so `git add -A` from
+# the repo root would sweep up several copies at once.
+graphify-out/
