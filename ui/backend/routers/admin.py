@@ -10,6 +10,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 import auth
 import db
 
+from http_errors import internal_error
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -46,4 +48,4 @@ def get_cost_summary(
         return data
     except Exception as exc:
         logger.exception("Failed to aggregate run costs")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, context="cost aggregation") from exc

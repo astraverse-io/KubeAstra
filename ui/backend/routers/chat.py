@@ -30,6 +30,8 @@ import auth as auth_utils
 import db
 import memory
 
+from http_errors import internal_error
+
 
 def _maybe_capture_chat(
     *,
@@ -289,7 +291,7 @@ def _looks_like_kubernetes_prompt(message: str) -> bool:
     # Check for dotted hostnames/FQDNs conservatively
     for token in tokens:
         if "." in token:
-            if re.fullmatch(r"v?\d+(\.\d+){1,3}([-.]?(alpha|beta|rc)\d*)?", token):
+            if re.fullmatch(r"v?\d{1,9}(\.\d{1,9}){1,3}([-.]?(alpha|beta|rc)\d{0,9})?", token):
                 continue
             parts = [p for p in token.split(".") if p]
             if len(parts) >= 2:
@@ -310,7 +312,7 @@ def _looks_like_kubernetes_prompt(message: str) -> bool:
                     if has_host_signals and parts[1] in ("com", "net", "org", "io"):
                         return True
 
-    if re.search(r"\b[a-z0-9]+-[a-z0-9-]*k8s[a-z0-9-]*\b", msg):
+    if re.search(r"\b[a-z0-9]{1,63}-[a-z0-9-]{0,63}k8s[a-z0-9-]{0,63}\b", msg):
         return True
     return False
 
@@ -335,7 +337,7 @@ def _looks_like_live_kubernetes_prompt(message: str) -> bool:
         return True
     if not _looks_like_kubernetes_prompt(message):
         return False
-    if re.search(r"\b[a-z0-9]+-[a-z0-9-]*k8s[a-z0-9-]*\b", msg):
+    if re.search(r"\b[a-z0-9]{1,63}-[a-z0-9-]{0,63}k8s[a-z0-9-]{0,63}\b", msg):
         return True
     if any("." in token and ("k8s" in token or "node" in token or "-" in token) for token in tokens):
         return True
@@ -980,8 +982,8 @@ def _keyword_route(message: str, history: list = None) -> dict:
     ):
         node_match = (
             re.search(r"\bnode[:\s]+([a-z0-9][a-z0-9.-]+)\b", msg)
-            or re.search(r"\b(?:to|for|on)\s+([a-z0-9][a-z0-9.-]*-[a-z0-9.-]*)\b", msg)
-            or re.search(r"\b([a-z0-9][a-z0-9.-]*-[a-z0-9.-]*)\b", msg)
+            or re.search(r"\b(?:to|for|on)\s{1,8}([a-z0-9][a-z0-9.-]{0,126}-[a-z0-9.-]{0,126})\b", msg)
+            or re.search(r"\b([a-z0-9][a-z0-9.-]{0,126}-[a-z0-9.-]{0,126})\b", msg)
         )
         if node_match:
             node_name = node_match.group(1).strip("?.!,")
@@ -3153,4 +3155,4 @@ def reject_step(run_id: str, step_id: int, req: RejectRequest, request: Request)
         return {"success": True, "message": "Run aborted by user."}
     except Exception as exc:
         logger.warning("Failed to reject step: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, context="reject agent step") from exc

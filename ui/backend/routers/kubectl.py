@@ -1,3 +1,4 @@
+
 """Live kubectl endpoints — require kubectl access from the backend host.
 
 POST /api/investigate       → investigate_pod (triage + optional AI)
@@ -26,6 +27,8 @@ from k8s.wrappers import (
     get_rollout_status, find_workload, list_kubeconfig_contexts,
     get_current_context, switch_kubeconfig_context, add_kubeconfig_context,
 )
+
+from http_errors import internal_error
 
 router = APIRouter()
 
@@ -99,7 +102,7 @@ def _wrap(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, context="kubectl endpoint") from e
 
 
 @router.post("/investigate")
