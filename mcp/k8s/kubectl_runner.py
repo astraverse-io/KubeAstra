@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from config.settings import settings
+from config.settings import get_settings
 
 from . import binaries
 
@@ -225,6 +225,7 @@ class KubectlRunner:
         kubeconfig_path: Optional[str] = None,
         context: Optional[str] = None,
     ):
+        settings = get_settings()
         self.timeout = settings.kubectl_timeout_seconds
         self.max_output_bytes = settings.max_output_bytes
         self.kubeconfig_path = Path(kubeconfig_path).expanduser().resolve() if kubeconfig_path else settings.kubeconfig_path_resolved
@@ -396,7 +397,7 @@ class KubectlRunner:
         """
         Run kubectl command and parse JSON output.
 
-        Uses a large output cap (settings.max_json_bytes) so that JSON is
+        Uses a large output cap (MAX_JSON_BYTES) so that JSON is
         never truncated mid-stream — a truncated document is not "less data",
         it is unparseable. If the cap *is* hit, this raises rather than
         letting json.loads fail: the resulting JSONDecodeError blamed kubectl
@@ -420,7 +421,7 @@ class KubectlRunner:
         if "-o" not in args and "--output" not in args:
             args = args + ["-o", "json"]
 
-        json_max_bytes = settings.max_json_bytes
+        json_max_bytes = get_settings().max_json_bytes
 
         result = self.run(args, namespace=namespace, max_output=json_max_bytes)
         result.raise_for_status()

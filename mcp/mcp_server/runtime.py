@@ -5,12 +5,13 @@ import logging
 from mcp.server import Server
 import mcp.types as types
 
-from config.settings import settings
+from config.settings import get_settings
 from mcp_server.tools import register_tools, get_tools_definitions
 
 
 def log_runtime_settings(logger: logging.Logger) -> None:
     """Validate config and log the effective runtime settings."""
+    settings = get_settings()
     settings.validate_settings()
     logger.info("Allowed namespaces: %s", settings.allowed_namespaces_list)
     logger.info("Kubectl timeout: %ss", settings.kubectl_timeout_seconds)

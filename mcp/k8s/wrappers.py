@@ -29,7 +29,7 @@ from k8s.validators import (
     validate_tail_lines,
     get_allowed_namespaces,
 )
-from config.settings import settings
+from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -1345,7 +1345,7 @@ def describe_pod(namespace: str, pod_name: str) -> Dict[str, Any]:
         "truncated": result.truncated,
     }
 
-    if settings.enable_log_summarization and result.stdout:
+    if get_settings().enable_log_summarization and result.stdout:
         try:
             from services.summarizer import summarize_describe
             ds = summarize_describe(result.stdout)
@@ -1411,7 +1411,7 @@ def get_pod_logs(
         # Additional truncation if needed
         log_text, was_truncated = truncate_logs(
             result.stdout,
-            settings.max_log_tail_lines
+            get_settings().max_log_tail_lines
         )
         
         response = {
@@ -1427,7 +1427,7 @@ def get_pod_logs(
 
         # Tool-result summarization (Phase 2.1). Raw `logs` stays canonical
         # for the UI; AI consumers should prefer `logs_summary` when present.
-        if settings.enable_log_summarization and log_text:
+        if get_settings().enable_log_summarization and log_text:
             try:
                 from services.summarizer import summarize_logs
                 summary = summarize_logs(log_text)
@@ -2191,7 +2191,7 @@ def get_events(namespace: str, field_selector: Optional[str] = None) -> Dict[str
         "truncated": truncated,
     }
 
-    if settings.enable_log_summarization and events:
+    if get_settings().enable_log_summarization and events:
         try:
             from services.summarizer import summarize_events
             es = summarize_events(events)
@@ -2472,7 +2472,7 @@ def k8sgpt_analyze(
     Returns:
         Dict with k8sgpt output or error message
     """
-    if not settings.enable_k8sgpt:
+    if not get_settings().enable_k8sgpt:
         return {
             "enabled": False,
             "message": "k8sgpt is not enabled. Set ENABLE_K8SGPT=true in .env",
@@ -2511,7 +2511,7 @@ def k8sgpt_analyze(
         #         cmd.extend(["--kubecontext", runner.context])
         #     logger.info("SSH exec for k8sgpt on %s: %s", runner.host, " ".join(cmd))
         #     stdout, stderr, returncode = runner.run_shell_command(
-        #         cmd, timeout=settings.kubectl_timeout_seconds
+        #         cmd, timeout=get_settings().kubectl_timeout_seconds
         #     )
         # else:
         #     if hasattr(runner, "kubeconfig_path") and runner.kubeconfig_path:
@@ -2523,7 +2523,7 @@ def k8sgpt_analyze(
             cmd,
             capture_output=True,
             text=True,
-            timeout=settings.kubectl_timeout_seconds,
+            timeout=get_settings().kubectl_timeout_seconds,
             check=False,
             shell=False
         )
@@ -2534,12 +2534,12 @@ def k8sgpt_analyze(
         # SAFETY: Truncate output if too large
         truncated = False
 
-        if len(stdout) > settings.max_output_bytes:
-            stdout = stdout[:settings.max_output_bytes]
+        if len(stdout) > get_settings().max_output_bytes:
+            stdout = stdout[:get_settings().max_output_bytes]
             truncated = True
         
-        if len(stderr) > settings.max_output_bytes:
-            stderr = stderr[:settings.max_output_bytes]
+        if len(stderr) > get_settings().max_output_bytes:
+            stderr = stderr[:get_settings().max_output_bytes]
         
         if returncode == 0:
             try:
@@ -2575,7 +2575,7 @@ def k8sgpt_analyze(
         return {
             "enabled": True,
             "success": False,
-            "error": f"k8sgpt command timed out after {settings.kubectl_timeout_seconds}s",
+            "error": f"k8sgpt command timed out after {get_settings().kubectl_timeout_seconds}s",
         }
     except Exception as e:
         logger.exception("Unexpected error running k8sgpt")
@@ -2698,7 +2698,7 @@ def add_kubeconfig_context(
             }
         
         # Get local kubeconfig path
-        kubeconfig_path = settings.kubeconfig_path_resolved or Path.home() / ".kube" / "config"
+        kubeconfig_path = get_settings().kubeconfig_path_resolved or Path.home() / ".kube" / "config"
         
         # Ensure .kube directory exists
         kubeconfig_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2955,7 +2955,7 @@ def _ensure_deployment_repo() -> Dict[str, Any]:
         Dict with success status and repo path or error message
     """
     try:
-        repo_url = settings.deployment_repo_url
+        repo_url = get_settings().deployment_repo_url
         
         # Check if repo exists
         if DEPLOYMENT_REPO_PATH.exists():
@@ -2990,11 +2990,11 @@ def _ensure_deployment_repo() -> Dict[str, Any]:
             clone_cmd = ["git", "clone"]
             
             # Add authentication if using HTTPS with token
-            if repo_url.startswith("https://") and settings.github_token:
+            if repo_url.startswith("https://") and get_settings().github_token:
                 # Insert token into URL
                 repo_url_with_token = repo_url.replace(
                     "https://",
-                    f"https://{settings.github_token}@"
+                    f"https://{get_settings().github_token}@"
                 )
                 clone_cmd.extend([repo_url_with_token, str(DEPLOYMENT_REPO_PATH)])
             else:
@@ -3019,7 +3019,7 @@ def _ensure_deployment_repo() -> Dict[str, Any]:
                     error_msg = (
                         f"Repository not found or access denied. "
                         f"Please ensure:\n"
-                        f"1. The repository URL is correct: {settings.deployment_repo_url}\n"
+                        f"1. The repository URL is correct: {get_settings().deployment_repo_url}\n"
                         f"2. You have access to the repository\n"
                         f"3. For private repos:\n"
                         f"   - SSH: Your SSH keys are configured (~/.ssh/id_rsa or ~/.ssh/id_ed25519)\n"
@@ -3030,7 +3030,7 @@ def _ensure_deployment_repo() -> Dict[str, Any]:
                 return {
                     "success": False,
                     "error": error_msg,
-                    "repo_url": settings.deployment_repo_url
+                    "repo_url": get_settings().deployment_repo_url
                 }
             
             logger.info(f"Successfully cloned deployment repo")
@@ -3347,7 +3347,7 @@ def exec_pod_command(
         Dict with command output or error
     """
     # Check if recovery operations are enabled
-    if not settings.enable_recovery_operations:
+    if not get_settings().enable_recovery_operations:
         return {
             "success": False,
             "error": "Recovery operations are disabled. Set ENABLE_RECOVERY_OPERATIONS=true in .env to enable.",
@@ -3461,8 +3461,8 @@ def _run_dry_preview(
     fp = fingerprint(operation, **fingerprint_kwargs)
     token_value: Optional[str] = None
     ttl = 0
-    if settings.require_destructive_confirmation:
-        ttl = settings.confirmation_token_ttl_seconds
+    if get_settings().require_destructive_confirmation:
+        ttl = get_settings().confirmation_token_ttl_seconds
         record = token_store.issue(operation=operation, fingerprint=fp, ttl_seconds=ttl, user=user)
         token_value = record.token
         audit_token_event(
@@ -3479,7 +3479,7 @@ def _run_dry_preview(
         "dry_run": True,
         "preview": preview_text or preview_stderr or "(no output from --dry-run=server)",
         "confirmation_token": token_value,
-        "confirmation_required": settings.require_destructive_confirmation,
+        "confirmation_required": get_settings().require_destructive_confirmation,
         "expires_in_seconds": ttl if token_value else None,
         "operation": operation,
     }
@@ -3497,7 +3497,7 @@ def _require_confirmation_token(
     response dict when validation fails. When `require_destructive_confirmation`
     is False, returns None unconditionally (legacy mode).
     """
-    if not settings.require_destructive_confirmation:
+    if not get_settings().require_destructive_confirmation:
         return None
 
     from services.confirmation import token_store, fingerprint, audit_token_event
@@ -3562,16 +3562,16 @@ def delete_pod(
         dry_run: When True, runs kubectl --dry-run=server and returns a preview
         confirmation_token: Token from a prior dry_run call (required in strict mode)
     """
-    if not settings.enable_recovery_operations:
+    if not get_settings().enable_recovery_operations:
         return _disabled_response("delete_pod")
 
     namespace = validate_namespace(namespace)
     pod_name = validate_resource_name(pod_name, "pod")
 
-    if grace_period < 0 or grace_period > settings.max_grace_period_seconds:
+    if grace_period < 0 or grace_period > get_settings().max_grace_period_seconds:
         return {
             "success": False,
-            "error": f"Grace period must be between 0 and {settings.max_grace_period_seconds} seconds.",
+            "error": f"Grace period must be between 0 and {get_settings().max_grace_period_seconds} seconds.",
             "operation": "delete_pod",
         }
 
@@ -3623,7 +3623,7 @@ def rollout_restart(
 ) -> Dict[str, Any]:
     """Restart a deployment (rolling restart of all pods). See delete_pod for the
     dry_run / confirmation_token ritual."""
-    if not settings.enable_recovery_operations:
+    if not get_settings().enable_recovery_operations:
         return _disabled_response("rollout_restart")
 
     namespace = validate_namespace(namespace)
@@ -3679,16 +3679,16 @@ def scale_deployment(
 ) -> Dict[str, Any]:
     """Scale a deployment to a specific number of replicas. See delete_pod for the
     dry_run / confirmation_token ritual."""
-    if not settings.enable_recovery_operations:
+    if not get_settings().enable_recovery_operations:
         return _disabled_response("scale_deployment")
 
     namespace = validate_namespace(namespace)
     deployment_name = validate_resource_name(deployment_name, "deployment")
 
-    if replicas < 0 or replicas > settings.max_scale_replicas:
+    if replicas < 0 or replicas > get_settings().max_scale_replicas:
         return {
             "success": False,
-            "error": f"Replicas must be between 0 and {settings.max_scale_replicas}.",
+            "error": f"Replicas must be between 0 and {get_settings().max_scale_replicas}.",
             "operation": "scale_deployment",
         }
 
@@ -3752,7 +3752,7 @@ def apply_patch(
 ) -> Dict[str, Any]:
     """Apply a patch to a Kubernetes resource. See delete_pod for the
     dry_run / confirmation_token ritual."""
-    if not settings.enable_recovery_operations:
+    if not get_settings().enable_recovery_operations:
         return _disabled_response("apply_patch")
 
     namespace = validate_namespace(namespace)
