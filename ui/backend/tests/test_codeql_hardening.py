@@ -285,3 +285,86 @@ def test_third_party_actions_are_pinned_to_a_commit():
         "Pin third-party actions to a full commit SHA, with the version in a "
         "trailing comment:\n  " + "\n  ".join(offenders)
     )
+
+
+# ── provider errors do not travel in the response body ────────────────────
+
+
+def _llm_service_with_a_failing_provider(monkeypatch):
+    """An LLMService whose provider raises with a message worth not leaking."""
+    from services.llm.base import LLMProviderError
+    import services.llm_service as llm_service
+
+    # Shaped like the real thing: gemini_provider raises
+    # LLMProviderError(str(exc)) around an SDK exception built from the request
+    # URL, and Google puts the API key in that URL as ?key=.
+    secret = "https://generativelanguage.googleapis.com/v1/models/x:generate?key=AIzaSyFAKE"
+
+    class Failing:
+        name = "gemini"
+        enabled = True
+
+        def generate(self, *args, **kwargs):
+            raise LLMProviderError(f"400 Bad Request for {secret}")
+
+    return llm_service.LLMService(provider=Failing()), secret
+
+
+def test_a_provider_failure_does_not_reach_the_summary_body(monkeypatch):
+    service, secret = _llm_service_with_a_failing_provider(monkeypatch)
+
+    text = service.summarize_cluster_issues([{"error": "x"}])
+
+    assert secret not in text
+    assert "key=" not in text
+    assert "error id" in text, "the operator still needs a way to find the cause"
+
+
+def test_a_provider_failure_does_not_reach_the_runbook_body(monkeypatch):
+    service, secret = _llm_service_with_a_failing_provider(monkeypatch)
+
+    text = service.generate_runbook("OOMKilled", ["out of memory"])
+
+    assert secret not in text
+    assert "key=" not in text
+    assert "error id" in text
+
+
+def test_a_provider_failure_does_not_reach_the_analysis_error_field(monkeypatch):
+    service, secret = _llm_service_with_a_failing_provider(monkeypatch)
+
+    result = service.analyze_live_investigation("pod-1", "default", {})
+
+    assert result["ai_analysis"] is None
+    assert secret not in result["error"]
+    assert "error id" in result["error"]
+
+
+def test_each_provider_failure_gets_its_own_id(monkeypatch):
+    service, _ = _llm_service_with_a_failing_provider(monkeypatch)
+
+    first = service.generate_runbook("OOMKilled", [])
+    second = service.generate_runbook("OOMKilled", [])
+    assert first != second
+
+
+def test_no_llm_service_path_interpolates_an_exception_into_its_return():
+    """The guard. These returns are content, not error responses.
+
+    A reintroduced `f"...: {e}"` here does not look like a leak — it looks like
+    a helpful message — and it is served with a 200, so nothing downstream
+    treats it as an error worth redacting.
+    """
+    path = MCP_DIR / "services" / "llm_service.py"
+    offenders = []
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith(("#", "*", '"', "`")) or "``" in stripped:
+            continue
+        if "return" in stripped and re.search(r"\{e\}|\{exc\}|str\(e\)|str\(exc\)", stripped):
+            offenders.append(f"llm_service.py:{lineno}: {stripped}")
+
+    assert not offenders, (
+        "Use _provider_failure so the provider's message reaches the log, not "
+        "the caller:\n  " + "\n  ".join(offenders)
+    )
