@@ -88,7 +88,13 @@ def test_the_cap_is_configurable(runner, monkeypatch):
     """Cluster size varies by orders of magnitude; 10 MB is a default, not a law."""
     from config import settings as settings_module
 
-    monkeypatch.setattr(settings_module.settings, "max_json_bytes", 25 * 1024 * 1024)
+    # Patch what `run_json` actually reads. Today `settings_module.settings` is
+    # the same object `get_settings()` returns, so patching either would work —
+    # but only until something calls `get_settings.cache_clear()` (the desktop
+    # settings router does, on every save). After that the module-level name
+    # still points at the old instance while `run_json` reads the new one, and
+    # a test patching the former would pass while asserting nothing.
+    monkeypatch.setattr(settings_module.get_settings(), "max_json_bytes", 25 * 1024 * 1024)
     seen = {}
 
     def capture(args, namespace=None, max_output=None, **kwargs):

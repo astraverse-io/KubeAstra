@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
-from config.settings import settings
+from config.settings import get_settings
 from k8s.kubectl_runner import KubectlError, KubectlResult, KubectlTimeoutError
 from k8s.remote_connection import (
     REMOTE_CONNECTION_REASONS,
@@ -276,10 +276,10 @@ class SSHKubectlRunner:
         self._password = password
         self._credential_path = credential_path
         self.port = port
-        self.timeout = float(timeout or settings.kubectl_timeout_seconds)
+        self.timeout = float(timeout or get_settings().kubectl_timeout_seconds)
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
-        self.max_output_bytes = settings.max_output_bytes
+        self.max_output_bytes = get_settings().max_output_bytes
         self.context = context
         self.known_hosts_path = (
             known_hosts_path

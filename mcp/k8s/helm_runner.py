@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
 
-from config.settings import settings
+from config.settings import get_settings
 from k8s.kubectl_runner import get_runner
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,7 @@ class HelmRunner:
         context: Optional[str] = None,
         ssh_runner=None,
     ):
+        settings = get_settings()
         self.timeout = settings.kubectl_timeout_seconds
         self.max_output_bytes = settings.max_output_bytes
         self.kubeconfig_path = kubeconfig_path
