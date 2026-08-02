@@ -129,13 +129,35 @@ function uid() {
   return Math.random().toString(36).slice(2);
 }
 
+// A session id is not a display detail: /chat/:sessionId is a shareable URL,
+// so anyone who can guess an id can read that investigation — pod names, log
+// excerpts, the cluster's shape. Math.random() is seeded from the clock and
+// yields roughly 52 bits of predictable state, which is a guess away, not a
+// search away. Only a CSPRNG belongs here.
+function randomSessionId(): string {
+  // Bound once and probed with optional calls: `"x" in crypto` narrows the
+  // type to `never` after the first branch returns, because Crypto always
+  // declares randomUUID even where the runtime does not provide it.
+  const source = typeof crypto !== "undefined" ? crypto : undefined;
+  if (source?.randomUUID) {
+    return source.randomUUID();
+  }
+  if (source?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    source.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  // No CSPRNG at all: refuse rather than quietly issue a guessable id. Every
+  // browser this app supports has one, so reaching here means something is
+  // wrong that a weak fallback would only hide.
+  throw new Error("This browser has no secure random source; cannot start a session.");
+}
+
 function getOrCreateSessionId(): string {
-  if (typeof window === "undefined") return uid();
+  if (typeof window === "undefined") return randomSessionId();
   let sid = localStorage.getItem("k8s_session_id");
   if (!sid) {
-    sid = typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : uid() + uid();
+    sid = randomSessionId();
     localStorage.setItem("k8s_session_id", sid);
   }
   return sid;
