@@ -40,6 +40,61 @@ _MAX_PRIVATE_KEY_BYTES = 1024 * 1024
 SSHConnectionError = RemoteConnectionError
 
 
+class HostKeyUnavailable(Exception):
+    """No reviewed host key is available for the target, so the connection is refused."""
+
+
+def harden_host_keys(
+    client: Any,
+    *,
+    known_hosts_path: str | None = None,
+) -> None:
+    """Apply fail-closed host-key verification to a paramiko client.
+
+    Exists so that this decision is made in exactly one place. It was made in
+    two: ``SSHKubectlRunner`` used ``RejectPolicy`` and is covered by
+    ``test_ssh_runner_secure.py``, while ``add_kubeconfig_context`` opened its
+    own paramiko client with ``AutoAddPolicy`` — silently trusting whatever key
+    the far end offered, on the code path whose entire purpose is to send an
+    operator's SSH password to a Kubernetes control plane. The README claimed
+    the project "never uses Paramiko ``AutoAddPolicy``"; that sentence was true
+    of the runner and false of the codebase, which is the more dangerous kind
+    of wrong, because it reads as a reviewed guarantee.
+
+    ``AutoAddPolicy`` does not warn and does not fail. A machine positioned
+    between the operator and the cluster presents its own key, is trusted on
+    the spot, and receives the password — and the only visible difference is
+    that nothing went wrong.
+
+    Fail-closed with no trust-on-first-use escape hatch, matching the runner:
+    an unknown host is refused, and registering the key is a deliberate act the
+    operator performs outside this tool.
+    """
+    import paramiko
+
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+
+    path = known_hosts_path or os.environ.get(DEFAULT_KNOWN_HOSTS_PATH_ENV, "").strip()
+    if path:
+        candidate = Path(path)
+        if not candidate.is_file():
+            raise HostKeyUnavailable(
+                f"known_hosts file not found at {path}. Point "
+                f"{DEFAULT_KNOWN_HOSTS_PATH_ENV} at a reviewed file, or unset it "
+                "to use the system known-hosts files."
+            )
+        try:
+            client.load_host_keys(str(candidate))
+        except (OSError, ValueError, paramiko.SSHException) as exc:
+            raise HostKeyUnavailable(f"could not read known_hosts at {path}: {exc}") from None
+        return
+
+    try:
+        client.load_system_host_keys()
+    except (OSError, paramiko.SSHException) as exc:
+        raise HostKeyUnavailable(f"could not read the system known-hosts files: {exc}") from None
+
+
 @dataclass(frozen=True, slots=True)
 class SSHBastionConfig:
     """Server-managed bastion configuration.
