@@ -125,6 +125,10 @@ const EXAMPLES = [
 
 /* ── helpers ─────────────────────────────────────────────────── */
 
+// React keys only. Never use this for anything a URL exposes or an access
+// check consults — see randomSessionId below for why. Deliberately kept
+// distinct rather than pointed at the CSPRNG, so the next reader has to make
+// the same choice rather than inherit it by accident.
 function uid() {
   return Math.random().toString(36).slice(2);
 }
@@ -1348,7 +1352,11 @@ export default function ChatPage() {
       setHistoryLoaded(true);
       return;
     }
-    const newId = uid() + uid();
+    // Was `uid() + uid()`. Two Math.random() draws look like more entropy than
+    // one and are not: both come from the same clock-seeded state, so the pair
+    // is no harder to predict than the first. This is the id that ends up in
+    // /chat/:sessionId, so it gets the CSPRNG like every other session id.
+    const newId = randomSessionId();
     setSessionId(newId);
     if (typeof window !== "undefined") localStorage.setItem("k8s_session_id", newId);
     setMessages([]);

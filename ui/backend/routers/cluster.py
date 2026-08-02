@@ -138,8 +138,8 @@ def _connectivity_check(kubeconfig_path: Optional[str] = None, context: Optional
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "Connection timed out after 10 seconds"}
-    except Exception as e:
-        return {"ok": False, "error": safe_error_text(e, context="connectivity check")}
+    except Exception:
+        return {"ok": False, "error": safe_error_text(context="connectivity check")}
 
     if result.returncode != 0:
         return {"ok": False, "error": result.stderr.strip()[:500]}
@@ -244,12 +244,12 @@ def autodetect():
             "current_context": config.get("current-context"),
             "message": f"Found {len(contexts)} context(s) in {kubeconfig_path}",
         }
-    except Exception as e:
+    except Exception:
         return {
             "in_cluster": False,
             "contexts": [],
             "kubeconfig_path": kubeconfig_path,
-            "error": safe_error_text(e, context="kubeconfig autodetect"),
+            "error": safe_error_text(context="kubeconfig autodetect"),
             "message": "Could not read or parse the kubeconfig on this host.",
         }
 
