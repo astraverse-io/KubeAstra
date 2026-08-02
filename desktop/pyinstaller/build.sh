@@ -61,11 +61,41 @@ fi
 
 # 4. It has to actually start. Everything above can pass on a binary that dies
 #    immediately — which is exactly what shipped before.
+#
+# KUBEASTRA_NO_KEYCHAIN keeps this headless. Reading a keychain item is not a
+# headless operation: macOS identifies an app by its code signature, an ad-hoc
+# signed build gets a new identity every rebuild, and so the freshly built
+# backend is an unknown application asking for a stored secret — which puts up
+# a dialog and waits for a human. On a developer machine that has used the app
+# this hung for twenty-two minutes with no output. CI never saw it because a
+# fresh runner has an empty keychain and the lookup misses without asking.
+#
+# Starting without credentials is a state the backend already handles (it is
+# what a first-run install looks like), and /health does not need them.
 echo "==> Smoke test: launching the frozen backend"
-python3 - "$OUT/kubeastra-backend" <<'PY'
-import subprocess, sys, urllib.request
+KUBEASTRA_NO_KEYCHAIN=1 python3 - "$OUT/kubeastra-backend" <<'PY'
+import os, subprocess, sys, threading, urllib.request
 
-proc = subprocess.Popen([sys.argv[1]], stdout=subprocess.PIPE, text=True)
+# A readiness check with no deadline cannot fail, only hang — and a build that
+# hangs is worse than one that fails, because nothing reports it. Killing the
+# child closes its stdout, which ends the read loop below and turns "waiting
+# forever" into an ordinary failure with a message.
+READY_TIMEOUT = 90
+
+env = dict(os.environ, KUBEASTRA_NO_KEYCHAIN="1")
+proc = subprocess.Popen([sys.argv[1]], stdout=subprocess.PIPE, text=True, env=env)
+timed_out = threading.Event()
+
+
+def _give_up():
+    timed_out.set()
+    proc.kill()
+
+
+watchdog = threading.Timer(READY_TIMEOUT, _give_up)
+watchdog.daemon = True
+watchdog.start()
+
 port = None
 ready = False
 try:
@@ -76,6 +106,11 @@ try:
         elif line.strip() == "READY":
             ready = True
             break
+    if timed_out.is_set():
+        sys.exit(
+            f"FAIL: backend produced no READY within {READY_TIMEOUT}s. "
+            "If a keychain dialog appeared, KUBEASTRA_NO_KEYCHAIN did not reach it."
+        )
     if not (port and ready):
         sys.exit("FAIL: backend never reached READY")
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=30) as r:
@@ -83,6 +118,7 @@ try:
             sys.exit(f"FAIL: /health returned {r.status}")
     print(f"    /health OK on port {port}")
 finally:
+    watchdog.cancel()
     proc.terminate()
     try:
         proc.wait(timeout=10)

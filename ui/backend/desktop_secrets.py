@@ -125,6 +125,34 @@ def _write_fallback(data: dict) -> None:
 _secret_cache: Dict[str, Optional[str]] = {}
 
 
+def keychain_disabled() -> bool:
+    """True when this process must not touch the keychain at all.
+
+    Reading a keychain item is not a headless operation. macOS derives an
+    application's identity from its code signature, and an ad-hoc signed build
+    gets a fresh identity on every rebuild — so a newly built binary is an
+    unknown application asking for another application's secret, and the OS
+    puts up a dialog and waits. Forever, if nobody is at the keyboard.
+
+    That is fine in the app and fatal in a build. `build.sh` launches the
+    frozen backend and waits for it to print READY; with a prompt in the way it
+    never prints anything. CI does not see this because a fresh runner has an
+    empty keychain, so the lookup misses without asking — the hang only happens
+    on a developer machine that has actually used the app, which is the machine
+    least likely to be watched during a build.
+
+    Setting KUBEASTRA_NO_KEYCHAIN=1 makes every read miss, exactly as it would
+    on a first-run install. Nothing else changes: no credential is invented, no
+    fallback file is consulted, and the app still starts — it just starts
+    without credentials, which is a state it already has to handle.
+    """
+    return os.environ.get("KUBEASTRA_NO_KEYCHAIN", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
 def set_secret(name: str, value: str) -> None:
     _secret_cache[name] = value
     if is_secure():
@@ -136,6 +164,11 @@ def set_secret(name: str, value: str) -> None:
 
 
 def get_secret(name: str) -> Optional[str]:
+    # Before the cache, so the answer cannot depend on what a previous call
+    # happened to store.
+    if keychain_disabled():
+        return None
+
     if name in _secret_cache:
         return _secret_cache[name]
 
