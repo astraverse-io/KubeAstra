@@ -2,6 +2,7 @@
 
 import json
 import logging
+import uuid
 from typing import Any, Optional
 
 from config.settings import get_settings
@@ -10,6 +11,37 @@ from services.llm.base import LLMProviderError
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def _provider_failure(action: str, exc: LLMProviderError, provider_name: str) -> str:
+    """Report a provider failure without quoting the provider back to the caller.
+
+    The strings these methods return are not error responses — they are the
+    *content* the caller renders: a runbook body, an executive summary, the
+    ``error`` field of a 200. Whatever goes here reaches whoever asked, so
+    ``f"...: {e}"`` handed them the provider's own message.
+
+    That message is not ours and we cannot bound it. ``gemini_provider`` raises
+    ``LLMProviderError(str(exc))`` around the raw SDK exception, and the SDK
+    builds those from a request URL that carries the API key as a query
+    parameter; the Anthropic path wraps its exception whole too. Even at its
+    most benign it names the endpoint, the model and the provider's internals
+    to any authenticated user.
+
+    So: an id, and nothing derived from the exception. Not even its type — the
+    ``except`` clauses here are all ``LLMProviderError``, so the type would be a
+    constant dressed up as information, and leaving it out means there is no
+    expression at all for a reader to have to check.
+    """
+    error_id = uuid.uuid4().hex[:12]
+    logger.error(
+        "%s %s failed id=%s", provider_name, action, error_id, exc_info=exc
+    )
+    return (
+        f"{action} failed (error id {error_id}). The provider's message is in "
+        "the server log."
+    )
+
 
 SYSTEM_PROMPT = """You are a senior Site Reliability Engineer and Kubernetes/Ansible expert.
 
@@ -221,9 +253,8 @@ Important evidence rules:
             parsed = self._parse(text)
             return {"ai_analysis": parsed, "ai_enabled": True}
         except LLMProviderError as e:
-            logger.error("%s live analysis error: %s", self._provider.name, e)
             return {"ai_analysis": None, "ai_enabled": True,
-                    "error": f"AI analysis failed: {e}"}
+                    "error": _provider_failure("AI analysis", e, self._provider.name)}
 
     def analyze_workload_investigation(
         self,
@@ -313,11 +344,10 @@ Respond ONLY with valid JSON matching this schema:
             parsed = self._parse(text)
             return {"ai_analysis": parsed, "ai_enabled": True}
         except LLMProviderError as e:
-            logger.error("%s workload analysis error: %s", self._provider.name, e)
             return {
                 "ai_analysis": None,
                 "ai_enabled": True,
-                "error": f"AI analysis failed: {e}",
+                "error": _provider_failure("AI analysis", e, self._provider.name),
             }
 
     def analyze_namespace_health(
@@ -375,11 +405,10 @@ Respond ONLY with valid JSON matching this schema:
             parsed = self._parse(text)
             return {"ai_analysis": parsed, "ai_enabled": True}
         except LLMProviderError as e:
-            logger.error("%s namespace analysis error: %s", self._provider.name, e)
             return {
                 "ai_analysis": None,
                 "ai_enabled": True,
-                "error": f"AI analysis failed: {e}",
+                "error": _provider_failure("AI analysis", e, self._provider.name),
             }
 
     def summarize_cluster_issues(self, issues: list[dict]) -> str:
@@ -402,8 +431,7 @@ Keep it concise and actionable."""
         try:
             return self._provider.generate(prompt, temperature=0.3)
         except LLMProviderError as e:
-            logger.error("%s summarize error: %s", self._provider.name, e)
-            return f"Summary generation failed: {e}"
+            return _provider_failure("Summary generation", e, self._provider.name)
 
     def generate_runbook(self, error_category: str, examples: list[str]) -> str:
         """Generate a markdown runbook for a recurring error category."""
@@ -426,7 +454,7 @@ Format the runbook as:
         try:
             return self._provider.generate(prompt, temperature=0.2)
         except LLMProviderError as e:
-            return f"Runbook generation failed: {e}"
+            return _provider_failure("Runbook generation", e, self._provider.name)
 
     def _parse(self, text: str) -> dict:
         cleaned = (text or "").strip()
