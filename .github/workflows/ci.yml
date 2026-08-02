@@ -1,10 +1,25 @@
 name: CI
 
+# `feat/desktop` is here for the same reason it is in codeql.yml: multi-phase
+# work lands on a long-lived integration branch (CLAUDE.md § "Multi-phase work
+# stays off main"), so most pull requests target it rather than `main`. With
+# only `main` listed, five of the last six pull requests merged without CI
+# running at all — the suite went green on somebody's laptop or not at all, and
+# the first real run was the eventual merge to `main`, by which point a
+# bisect spans a phase of work instead of a commit.
 on:
   push:
-    branches: [main]
+    branches: [main, feat/desktop]
   pull_request:
-    branches: [main]
+    branches: [main, feat/desktop]
+
+# Least privilege for the automatic GITHUB_TOKEN. Without this the token
+# inherits the repository default, which on many repos is write — and these
+# workflows run code from pull requests. They only ever need to read the
+# tree, so say so rather than relying on a repo setting that can change
+# without anyone editing this file.
+permissions:
+  contents: read
 
 # Least privilege for the automatic GITHUB_TOKEN. Without this the token
 # inherits the repository default, which on many repos is write — and these

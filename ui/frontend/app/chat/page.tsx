@@ -161,6 +161,9 @@ function getOrCreateSessionId(): string {
   if (typeof window === "undefined") return randomSessionId();
   let sid = localStorage.getItem("k8s_session_id");
   if (!sid) {
+    // Was `crypto.randomUUID() ?? uid() + uid()`. The fallback is the whole
+    // problem: it fires exactly where the CSPRNG is missing, so the weakest
+    // ids were issued in the situations least able to tolerate them.
     sid = randomSessionId();
     localStorage.setItem("k8s_session_id", sid);
   }
