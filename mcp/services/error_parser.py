@@ -376,11 +376,11 @@ def extract_context(
         ctx["node"] = node_match.group(1)
 
     # Ansible context extraction
-    task_match = re.search(r"TASK\s+\[(.+?)\]", error_text)
+    task_match = re.search(r"TASK\s{1,20}\[([^\]\n]{1,200})\]", error_text)
     if task_match:
         ctx["task"] = task_match.group(1)
 
-    host_match = re.search(r"fatal:\s+\[(.+?)\]", error_text)
+    host_match = re.search(r"fatal:\s{1,20}\[([^\]\n]{1,200})\]", error_text)
     if host_match:
         ctx["host"] = host_match.group(1)
 

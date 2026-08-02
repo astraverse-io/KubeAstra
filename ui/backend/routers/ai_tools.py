@@ -19,6 +19,8 @@ import ai_tools.fix as _fix
 import ai_tools.report as _report
 import ai_tools.runbook as _runbook
 
+from http_errors import internal_error
+
 router = APIRouter()
 
 
@@ -63,7 +65,7 @@ def analyze_error(req: AnalyzeRequest):
         raw = _analyze.run(req.error_text, req.tool, req.environment)
         return json.loads(raw)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, context="ai tools endpoint") from e
 
 
 @router.post("/fix")
@@ -74,7 +76,7 @@ def get_fix_commands(req: FixRequest):
         )
         return json.loads(raw)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, context="ai tools endpoint") from e
 
 
 @router.get("/categories")
@@ -83,7 +85,7 @@ def list_categories():
         raw = _fix.list_categories()
         return json.loads(raw)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, context="ai tools endpoint") from e
 
 
 @router.post("/runbook")
@@ -94,7 +96,7 @@ def generate_runbook(req: RunbookRequest):
         )
         return json.loads(raw)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, context="ai tools endpoint") from e
 
 
 @router.post("/report")
@@ -103,7 +105,7 @@ def cluster_report(req: ReportRequest):
         raw = _report.cluster_report(req.events_text, req.namespace)
         return json.loads(raw)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, context="ai tools endpoint") from e
 
 
 @router.post("/summary")
@@ -112,4 +114,4 @@ def error_summary(req: SummaryRequest):
         raw = _report.error_summary(req.errors, req.tool)
         return json.loads(raw)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_error(e, context="ai tools endpoint") from e

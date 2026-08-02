@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 import os
 import secrets
 import sys
@@ -625,9 +626,26 @@ def create_app(http_config: HTTPConfig | None = None) -> FastAPI:
             server_result = await handler(mcp_request)
             result = server_result.root
         except Exception as e:
-            logger.error("Error calling tool %s: %s", body.tool_name, e, exc_info=True)
+            # The id, not the text. A failing tool call carries the kubectl
+            # command line, kubeconfig path and cluster context in its message;
+            # this endpoint is reachable by any client holding the bearer token,
+            # which is not the same set of people as those allowed to see the
+            # server's filesystem layout. The full exception is one grep away in
+            # the server log.
+            error_id = uuid.uuid4().hex[:12]
+            logger.error(
+                "Error calling tool %s: id=%s %s",
+                body.tool_name, error_id, e, exc_info=True,
+            )
             return JSONResponse(
-                {"success": False, "tool": body.tool_name, "error": str(e)},
+                {
+                    "success": False,
+                    "tool": body.tool_name,
+                    "error": (
+                        f"{type(e).__name__} while running the tool "
+                        f"(error id {error_id}); see server logs for detail"
+                    ),
+                },
                 status_code=500,
             )
 

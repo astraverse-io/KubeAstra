@@ -22,6 +22,8 @@ import auth
 import cluster_session
 import db
 
+from http_errors import safe_error_text
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -137,7 +139,7 @@ def _connectivity_check(kubeconfig_path: Optional[str] = None, context: Optional
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "Connection timed out after 10 seconds"}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": safe_error_text(e, context="connectivity check")}
 
     if result.returncode != 0:
         return {"ok": False, "error": result.stderr.strip()[:500]}
@@ -162,6 +164,40 @@ def _get_local_kubeconfig_path() -> Optional[str]:
                 return path
     default = Path.home() / ".kube" / "config"
     return str(default) if default.is_file() else None
+
+
+def _allowed_kubeconfig_path(candidate: Optional[str]) -> Optional[str]:
+    """Return ``candidate`` only if it is a kubeconfig this server chose to expose.
+
+    ``kubeconfig_path`` arrives in the request body, and every use of it — the
+    ``--kubeconfig`` flag, the ``read_text()`` that parses contexts — took it on
+    trust. An authenticated user could therefore name any path on the backend
+    host and have it opened and parsed as YAML. In desktop mode that is the
+    operator's own machine and no escalation; in server mode it is a read
+    primitive against a shared host, granted to anyone with an account.
+
+    Only two origins are legitimate: a file this process wrote into _TEMP_DIR
+    from pasted content, or the kubeconfig the server itself resolved. Anything
+    else is refused rather than sanitised — there is no reason for a third
+    value to exist, so accepting one would only widen what has to be reasoned
+    about later.
+    """
+    if not candidate:
+        return None
+    try:
+        resolved = Path(candidate).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+
+    if resolved.parent == _TEMP_DIR.resolve():
+        return str(resolved) if resolved.is_file() else None
+
+    server_choice = _get_local_kubeconfig_path()
+    if server_choice and resolved == Path(server_choice).expanduser().resolve():
+        return str(resolved)
+
+    logger.warning("refused kubeconfig path outside the allowed locations")
+    return None
 
 
 def _is_in_cluster() -> bool:
@@ -213,8 +249,8 @@ def autodetect():
             "in_cluster": False,
             "contexts": [],
             "kubeconfig_path": kubeconfig_path,
-            "error": str(e),
-            "message": f"Failed to parse kubeconfig: {e}",
+            "error": safe_error_text(e, context="kubeconfig autodetect"),
+            "message": "Could not read or parse the kubeconfig on this host.",
         }
 
 
@@ -242,9 +278,19 @@ def upload_kubeconfig(body: KubeconfigBody, request: Request):
 @router.post("/cluster/connect/context")
 def connect_context(body: ContextSelectBody, request: Request):
     auth.require_owned_session(request, body.session_id)
-    kubeconfig_path = body.kubeconfig_path
-    if body.mode == "autodetect" and not kubeconfig_path:
+    if body.mode == "autodetect" and not body.kubeconfig_path:
         kubeconfig_path = _get_local_kubeconfig_path()
+    else:
+        # Body-supplied, so it must be one this server put there.
+        kubeconfig_path = _allowed_kubeconfig_path(body.kubeconfig_path)
+        if body.kubeconfig_path and not kubeconfig_path:
+            return {
+                "connected": False,
+                "error": (
+                    "That kubeconfig path is not one this server manages. Upload "
+                    "the kubeconfig, or connect with autodetect."
+                ),
+            }
 
     check = _connectivity_check(kubeconfig_path, body.context_name)
     if not check["ok"]:

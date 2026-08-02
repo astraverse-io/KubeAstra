@@ -82,7 +82,7 @@ def public_user(user: Optional[dict]) -> Optional[dict]:
     }
 
 
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{1,63}$")
 
 
 def normalize_email(email: Optional[str]) -> Optional[str]:
