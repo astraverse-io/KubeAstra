@@ -1,0 +1,71 @@
+name: CodeQL
+
+# Replaces GitHub's default setup, which only scans pull requests targeting the
+# *default* branch. This repository deliberately lands multi-phase work on a
+# long-lived integration branch (see CLAUDE.md § "Multi-phase work stays off
+# main"), so most pull requests target `feat/desktop` — five of the last six.
+# Default setup would have scanned one of them, and the rest would have been
+# analysed only weeks later, at the point where the branch merged and a finding
+# is most expensive to act on.
+#
+# The first scan of this repository found 47 alerts, including SSH code that
+# accepted any host key on the path that sends an operator's password to a
+# control-plane node. Finding that on the pull request that introduces it is
+# the entire value of the tool.
+
+on:
+  push:
+    branches: [main, feat/desktop]
+  pull_request:
+    branches: [main, feat/desktop]
+  schedule:
+    # Keeps parity with default setup's weekly run. Worth keeping even with
+    # per-PR analysis: new queries ship regularly, and they find things in code
+    # that has not changed.
+    - cron: "27 4 * * 1"
+
+# Read-only by default; the analyze job adds exactly the write scope it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Required to upload results to the Security tab.
+      security-events: write
+      contents: read
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+          - language: javascript-typescript
+          - language: actions
+          - language: rust
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # No compilation needed for any of these. Rust is analysed from
+          # source too — the Tauri shell is small and has no build step worth
+          # reproducing here.
+          build-mode: none
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
