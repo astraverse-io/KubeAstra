@@ -42,9 +42,10 @@ def test_internal_error_reveals_an_id_and_nothing_else():
     from http_errors import internal_error
 
     secret = "/home/deploy/.kube/config context=prod-eu-1"
-    exc = RuntimeError(f"failed reading {secret}")
-
-    http_exc = internal_error(exc, context="test")
+    try:
+        raise RuntimeError(f"failed reading {secret}")
+    except RuntimeError:
+        http_exc = internal_error(context="test")
 
     assert http_exc.status_code == 500
     assert secret not in http_exc.detail
@@ -55,18 +56,53 @@ def test_each_failure_gets_a_distinct_id():
     """Two users hitting the same bug must be separable in the log."""
     from http_errors import internal_error
 
-    a = internal_error(RuntimeError("x")).detail
-    b = internal_error(RuntimeError("x")).detail
-    assert a != b
+    def once() -> str:
+        try:
+            raise RuntimeError("x")
+        except RuntimeError:
+            return internal_error().detail
+
+    assert once() != once()
 
 
 def test_safe_error_text_names_the_type_but_not_the_detail():
     from http_errors import safe_error_text
 
-    text = safe_error_text(PermissionError("/etc/shadow denied"), context="test")
+    try:
+        raise PermissionError("/etc/shadow denied")
+    except PermissionError:
+        text = safe_error_text(context="test")
 
     assert "PermissionError" in text, "the operator needs a direction to look"
     assert "/etc/shadow" not in text
+    assert "error id" in text
+
+
+def test_the_original_exception_still_chains_without_an_explicit_from():
+    """`raise` inside `except` sets __context__, so dropping `from e` costs nothing.
+
+    This is what makes the parameterless signature affordable: the call sites
+    gave up `from e`, and an operator reading an unhandled traceback still sees
+    the original underneath.
+    """
+    from http_errors import internal_error
+
+    original = RuntimeError("the actual cause")
+    try:
+        try:
+            raise original
+        except RuntimeError:
+            raise internal_error(context="test")
+    except Exception as raised:
+        assert raised.__context__ is original
+
+
+def test_calling_outside_an_except_block_does_not_explode():
+    """Misuse should degrade to a useless-but-safe answer, not a second 500."""
+    from http_errors import safe_error_text
+
+    text = safe_error_text(context="misused")
+    assert "UnknownError" in text
     assert "error id" in text
 
 
@@ -81,6 +117,28 @@ def test_no_router_hands_an_exception_string_to_a_500():
     assert not offenders, (
         "Use http_errors.internal_error so the detail reaches the log, not the "
         "client:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_no_call_site_passes_the_exception_in():
+    """The structural half of the guarantee.
+
+    ``internal_error(e, …)`` would still be *safe* — the helper never put the
+    exception in the response even when it took one. It would not be
+    *provable*: a tainted object crossing into a function whose return value
+    reaches the client is what a reader, and CodeQL, has to treat as a leak. So
+    the signature takes no exception, and this test keeps it that way.
+    """
+    call = re.compile(r"(?:internal_error|safe_error_text)\(\s*(?!context=|\))")
+    offenders = []
+    for path in sorted((BACKEND_DIR / "routers").glob("*.py")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if call.search(line):
+                offenders.append(f"{path.name}:{lineno}: {line.strip()}")
+
+    assert not offenders, (
+        "These helpers read sys.exc_info(); call them from inside an except "
+        "block with context= only:\n  " + "\n  ".join(offenders)
     )
 
 
@@ -189,3 +247,41 @@ def test_nothing_supplied_is_not_an_error():
 
     assert cluster._allowed_kubeconfig_path(None) is None
     assert cluster._allowed_kubeconfig_path("") is None
+
+
+# The Alertmanager URL-scheme tests live on `feat/desktop` with the module they
+# cover: desktop_alerts.py polls Alertmanager from a laptop, and exists only
+# there. Nothing on this branch calls urlopen on an operator-supplied URL.
+
+
+# ── third-party actions are pinned ────────────────────────────────────────
+
+
+def test_third_party_actions_are_pinned_to_a_commit():
+    """A moved tag runs someone else's code against a token that can write here.
+
+    Only third-party actions are checked. ``actions/*`` and
+    ``github/codeql-action`` are GitHub's own, published from the same
+    infrastructure that would have to be compromised for a pin to help — so
+    pinning them costs monthly upkeep and buys nothing.
+    """
+    workflows = BACKEND_DIR.parent.parent / ".github" / "workflows"
+    first_party = ("actions/", "github/")
+    sha = re.compile(r"^[0-9a-f]{40}$")
+
+    offenders = []
+    for path in sorted(workflows.glob("*.yml")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            match = re.search(r"uses:\s*([^\s@]+)@([^\s#]+)", line)
+            if not match:
+                continue
+            action, ref = match.group(1), match.group(2).strip()
+            if action.startswith(first_party):
+                continue
+            if not sha.match(ref):
+                offenders.append(f"{path.name}:{lineno}: {action}@{ref}")
+
+    assert not offenders, (
+        "Pin third-party actions to a full commit SHA, with the version in a "
+        "trailing comment:\n  " + "\n  ".join(offenders)
+    )

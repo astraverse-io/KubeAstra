@@ -1081,8 +1081,13 @@ def _keyword_route(message: str, history: list = None) -> dict:
 
     # ── Named workload lookup without namespace → search all ──────────────────
     # "check status of argocd", "is nginx running", "where is prometheus"
+    # `is .+? running` was `.+?` unbounded, so "is is is is …" backtracked
+    # quadratically: every prefix is a candidate for the lazy group and every
+    # one of them has to be tried before the match fails. Bounded to 60 and
+    # newline-free — the alternative it sits in is matching a workload name, and
+    # no workload name reaches 60 characters or spans a line.
     workload_match = re.search(
-        r"(?:status of|check|find|where is|is .+? running)\s+([a-z0-9][a-z0-9\-\.]{1,40})",
+        r"(?:status of|check|find|where is|is [^\n]{1,60}? running)\s+([a-z0-9][a-z0-9\-\.]{1,40})",
         msg,
     )
     if workload_match and not re.search(r"namespace[:\s]|in\s+\w+\s+namespace", msg):
@@ -3153,6 +3158,5 @@ def reject_step(run_id: str, step_id: int, req: RejectRequest, request: Request)
         db.reject_agent_step(run_id, step_id)
         db.fail_agent_run(run_id, error="User rejected the operation.", status="aborted")
         return {"success": True, "message": "Run aborted by user."}
-    except Exception as exc:
-        logger.warning("Failed to reject step: %s", exc)
-        raise internal_error(exc, context="reject agent step") from exc
+    except Exception:
+        raise internal_error(context="reject agent step")

@@ -61,8 +61,8 @@ class PatchRequest(BaseModel):
 def _wrap(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
-    except Exception as e:
-        raise internal_error(e, context="recovery endpoint") from e
+    except Exception:
+        raise internal_error(context="recovery endpoint")
 
 
 @router.post("/exec")

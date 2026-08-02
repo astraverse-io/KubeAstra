@@ -46,6 +46,9 @@ def get_cost_summary(
     try:
         data = db.aggregate_run_costs(group_by=group_by, since=since, user_id=user_id)
         return data
-    except Exception as exc:
-        logger.exception("Failed to aggregate run costs")
-        raise internal_error(exc, context="cost aggregation") from exc
+    except Exception:
+        # internal_error logs the traceback itself, tagged with the id the
+        # client is told to quote. A second log line here would record the same
+        # failure without that id, which is the one thing that makes the two
+        # halves findable together.
+        raise internal_error(context="cost aggregation")
