@@ -101,8 +101,8 @@ class AddContextRequest(BaseModel):
 def _wrap(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
-    except Exception as e:
-        raise internal_error(e, context="kubectl endpoint") from e
+    except Exception:
+        raise internal_error(context="kubectl endpoint")
 
 
 @router.post("/investigate")

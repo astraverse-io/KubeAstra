@@ -46,8 +46,16 @@ jobs:
           python-version: '3.11'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        # `toolchain` is passed explicitly rather than left to the default. This
+        # action ships a separate action.yml on each of its `stable`/`nightly`/…
+        # branches, and the only thing that selected the toolchain before was
+        # which branch `@stable` resolved to. A commit pin has no branch, so a
+        # future re-pin to a SHA from `master` — where `toolchain` is required
+        # and has no default — would fail the build with "'toolchain' is a
+        # required input" and no hint as to why.
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install Frontend Dependencies & Build Static SPA
@@ -127,7 +135,7 @@ jobs:
       # add the secrets and the signed path takes over on its own.
       - name: Build Tauri App (unsigned)
         if: env.HAS_APPLE_CERT != 'true'
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -143,7 +151,7 @@ jobs:
 
       - name: Build Tauri App (signed and notarized)
         if: env.HAS_APPLE_CERT == 'true'
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}

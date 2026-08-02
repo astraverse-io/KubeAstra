@@ -87,6 +87,14 @@ def _bounded_audit_entry(entry: str) -> bytes:
     return raw[: _AUDIT_ENTRY_MAX_BYTES - len(suffix)] + suffix
 
 
+# The audit log is created 0600, not 0640. It records every kubectl command
+# this process ran, arguments included — namespaces, resource names, the shape
+# of the cluster and, in server mode, which operator asked for what. The group
+# bit bought nothing: nothing in the deployment reads this file as a group, and
+# a container image with an unrelated service in the same group is exactly the
+# case where a read-only audit trail turns into reconnaissance.
+
+
 def _rotate_audit_file(path: Path, max_bytes: int) -> None:
     """Rotate by atomic rename. Appenders remain lock-free and open per entry."""
     try:
@@ -98,7 +106,7 @@ def _rotate_audit_file(path: Path, max_bytes: int) -> None:
     lock_path = path.with_name(path.name + ".rotate.lock")
     lock_fd: Optional[int] = None
     try:
-        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o640)
+        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
         try:
             import fcntl
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -117,7 +125,7 @@ def _rotate_audit_file(path: Path, max_bytes: int) -> None:
         marker = _bounded_audit_entry(
             f"{datetime.now().isoformat()} | AUDIT_LOG_ROTATED | previous_size={size}"
         )
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             os.write(fd, marker)
         finally:
@@ -135,7 +143,7 @@ def _append_audit_entry(path: Path, entry: str, max_bytes: int) -> None:
     payload = _bounded_audit_entry(entry)
     for attempt in range(2):
         try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             try:
                 os.write(fd, payload)
             finally:

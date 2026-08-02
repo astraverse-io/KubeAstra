@@ -20,12 +20,36 @@ import logging
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 
 import desktop_config
 
 logger = logging.getLogger(__name__)
+
+
+def _http_url(base_url: str) -> str:
+    """Accept an Alertmanager base URL only if it is http(s), else refuse.
+
+    ``urllib.request.urlopen`` is not an HTTP client — it dispatches on scheme,
+    and ``file:///etc/shadow`` is a URL it will happily open and hand back as a
+    response body. The value arrives from the settings screen, so nothing here
+    guarantees it is a URL at all, let alone a remote one; a background thread
+    polling it every 30 seconds is the last place to find that out.
+
+    Rejects rather than coerces. Somebody who typed a path where a URL belongs
+    needs to see that, not have it quietly rewritten into a different mistake.
+    """
+    parsed = urllib.parse.urlsplit(base_url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(
+            "Alertmanager URL must start with http:// or https:// "
+            f"(got {parsed.scheme or 'no'} scheme)"
+        )
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")
+    )
 
 # Cap the queue. A cluster that starts flapping must not grow this without
 # bound while the shell is not draining it — the user is not going to read
@@ -124,10 +148,7 @@ class AlertPoller:
     # ── polling ───────────────────────────────────────────────────────────
 
     def fetch(self, base_url: str, timeout: float = 10.0) -> List[Dict[str, Any]]:
-        url = (
-            f"{base_url.rstrip('/')}/api/v2/alerts"
-            "?active=true&silenced=false&inhibited=false"
-        )
+        url = _http_url(base_url) + "/api/v2/alerts?active=true&silenced=false&inhibited=false"
         request = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status != 200:

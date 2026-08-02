@@ -24,11 +24,24 @@ Deliberately narrow: this is for *unexpected* exceptions only. A 4xx that
 deliberately explains itself — a validation message, the 409 telling an operator
 which cluster an alert is bound to — is not a leak and must keep its wording.
 Routing those through here would be a downgrade dressed as a fix.
+
+**Both helpers take the exception from ``sys.exc_info()`` rather than as an
+argument, and must therefore be called from inside an ``except`` block.** That
+is not a stylistic preference. Passing the exception in was the obvious first
+design, and it worked — but it also meant a tainted object crossed into a
+function that returns something the client receives, which is indistinguishable
+from a leak to anything reading the code, human or static analyser. CodeQL
+reported all 24 call sites as ``py/stack-trace-exposure`` for exactly that
+reason. Reading from ``sys.exc_info()`` removes the path instead of annotating
+it, so the guarantee is structural: there is no parameter through which
+exception text could reach the response, and a future edit cannot add one
+without changing this signature.
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 import uuid
 
 from fastapi import HTTPException
@@ -41,7 +54,28 @@ _GENERIC = (
 )
 
 
-def safe_error_text(exc: BaseException, *, context: str = "") -> str:
+def _log_current_exception(context: str) -> tuple[str, str]:
+    """Log whatever is being handled right now; return its id and type name.
+
+    ``logger.exception`` already reads ``sys.exc_info()``. This reads it too,
+    but only for the type *name* — "TimeoutError", "PermissionError" — which is
+    the one piece of an exception that is safe to hand back, and useless to an
+    attacker who cannot see the message it came with.
+    """
+    error_id = uuid.uuid4().hex[:12]
+    exc_type = sys.exc_info()[0]
+    logger.exception(
+        "unhandled error id=%s%s",
+        error_id,
+        f" context={context}" if context else "",
+    )
+    # Called outside an except block: a bug in the caller, not something to
+    # crash a request over. The id and the "no active exception" log line are
+    # still enough to find it.
+    return error_id, exc_type.__name__ if exc_type else "UnknownError"
+
+
+def safe_error_text(*, context: str = "") -> str:
     """The same treatment for endpoints that return a dict rather than raising.
 
     Several endpoints report failure in the body (``{"ok": false, "error": …}``)
@@ -52,27 +86,18 @@ def safe_error_text(exc: BaseException, *, context: str = "") -> str:
     "PermissionError" tells an operator which way to look without naming a
     path, a host, or a command line.
     """
-    error_id = uuid.uuid4().hex[:12]
-    logger.exception(
-        "unhandled error id=%s%s",
-        error_id,
-        f" context={context}" if context else "",
-        exc_info=exc,
-    )
-    return f"{type(exc).__name__} (error id {error_id}) — see server logs for detail"
+    error_id, exc_name = _log_current_exception(context)
+    return f"{exc_name} (error id {error_id}) — see server logs for detail"
 
 
-def internal_error(exc: BaseException, *, context: str = "") -> HTTPException:
-    """Log ``exc`` with a fresh id and return a 500 that reveals only that id.
+def internal_error(*, context: str = "") -> HTTPException:
+    """Log the exception being handled, and return a 500 revealing only its id.
 
-    Returns rather than raises so the call site keeps `raise ... from exc`,
-    which preserves the original traceback in the server log.
+    Returns rather than raises so the call site reads ``raise internal_error(…)``
+    and stays one statement. Raising it from inside an ``except`` block sets
+    ``__context__`` to the original automatically, so the chain survives without
+    an explicit ``from`` — and without ``from`` there is no expression at the
+    call site holding the exception either.
     """
-    error_id = uuid.uuid4().hex[:12]
-    logger.exception(
-        "unhandled error id=%s%s",
-        error_id,
-        f" context={context}" if context else "",
-        exc_info=exc,
-    )
+    error_id, _ = _log_current_exception(context)
     return HTTPException(status_code=500, detail=_GENERIC.format(error_id=error_id))
