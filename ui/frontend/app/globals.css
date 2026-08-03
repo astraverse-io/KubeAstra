@@ -162,7 +162,7 @@
 
 /* Compact-mode overrides for the classic header controls hosted inside
    the 52-px MissionControlHeader row. Applies in all themes. */
-.mc-header-controls .sym-btn-ghost {
+.mc-header-controls .app-btn-ghost {
   padding: 4px 8px !important;
   font-size: 11px !important;
   border-radius: 4px !important;
@@ -201,10 +201,8 @@ html, body {
 ::-webkit-scrollbar-thumb:hover { background: var(--ink-4); }
 
 /* ── Utility classes ───────────────────────────────────────────────────── */
-/* Legacy .sym-* names are kept as aliases — 8 components still reference
-   them. New code should prefer .app-* below. */
 
-.app-btn-primary, .sym-btn-primary {
+.app-btn-primary {
   background: var(--brand);
   color: #ffffff;
   font-weight: 600;
@@ -215,18 +213,17 @@ html, body {
   cursor: pointer;
   font-family: var(--sans);
 }
-.app-btn-primary:hover:not(:disabled),
-.sym-btn-primary:hover:not(:disabled) {
+.app-btn-primary:hover:not(:disabled) {
   background: var(--brand-bright);
   box-shadow: 0 0 12px var(--brand-bg);
 }
-.app-btn-primary:disabled, .sym-btn-primary:disabled {
+.app-btn-primary:disabled {
   background: var(--paper-3);
   color: var(--ink-3);
   cursor: not-allowed;
 }
 
-.app-btn-ghost, .sym-btn-ghost {
+.app-btn-ghost {
   background: transparent;
   border: 1px solid var(--rule);
   color: var(--ink-2);
@@ -236,13 +233,13 @@ html, body {
   cursor: pointer;
   font-family: var(--sans);
 }
-.app-btn-ghost:hover, .sym-btn-ghost:hover {
+.app-btn-ghost:hover {
   border-color: var(--brand-bd);
   color: var(--brand);
   background: var(--paper-2);
 }
 
-.app-input, .sym-input {
+.app-input {
   background: var(--paper);
   border: 1px solid var(--rule);
   color: var(--ink);
@@ -251,8 +248,8 @@ html, body {
   padding: 8px 12px;
   font-family: var(--sans);
 }
-.app-input::placeholder, .sym-input::placeholder { color: var(--ink-3); }
-.app-input:focus, .sym-input:focus {
+.app-input::placeholder { color: var(--ink-3); }
+.app-input:focus {
   outline: none;
   border-color: var(--brand);
   box-shadow: 0 0 0 2px var(--brand-bg);
@@ -443,3 +440,147 @@ button { font-family: var(--sans); }
   border: 1px solid var(--rule);
 }
 .markdown-body strong { font-weight: 600; }
+
+/* ── Header: the target bar ──────────────────────────────────────────────
+   Replaces a flat row of same-weight buttons. The cluster this session is
+   aimed at is the header's subject, not one control among nine, so it gets
+   the size and the left edge. Everything set-once moved behind .ka-overflow.
+   Colours come from the existing brand tokens — the differentiation here is
+   structural, not chromatic. */
+
+.ka-target {
+  display: flex;
+  align-items: stretch;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  min-width: 0;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.ka-target:hover { background: var(--paper-3); }
+.ka-target:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+.ka-target-glyph {
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem 0 0.625rem;
+  flex: none;
+}
+
+/* The aim line: the one place the brand colour carries weight up here. */
+.ka-aimline {
+  width: 2px;
+  flex: none;
+  border-radius: 1px;
+  background: linear-gradient(180deg, transparent, var(--brand) 22%, var(--brand) 78%, transparent);
+  opacity: 0.85;
+}
+.ka-aimline-idle {
+  background: linear-gradient(180deg, transparent, var(--amber) 22%, var(--amber) 78%, transparent);
+  animation: kaBreathe 2.6s ease-in-out infinite;
+}
+@keyframes kaBreathe { 0%, 100% { opacity: 0.35 } 50% { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) {
+  .ka-aimline-idle { animation: none; opacity: 0.9; }
+}
+
+.ka-target-body {
+  padding: 0.25rem 1rem 0.25rem 0.75rem;
+  min-width: 0;
+}
+.ka-target-label {
+  display: block;
+  font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  line-height: 1;
+  margin-bottom: 0.375rem;
+}
+.ka-target-ctx {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 26rem;
+}
+.ka-target-ctx-empty { color: var(--brand); font-weight: 500; }
+.ka-target-ns { color: var(--ink-3); font-weight: 400; }
+.ka-target-live {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  margin-top: 0.3125rem;
+  font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  line-height: 1;
+}
+.ka-pip { width: 5px; height: 5px; border-radius: 50%; flex: none; }
+
+/* ── Header: overflow ──────────────────────────────────────────────────── */
+
+.ka-overflow { position: relative; display: flex; align-items: center; }
+.ka-overflow-trigger {
+  background: none;
+  border: 0;
+  color: var(--ink-3);
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: 6px;
+  line-height: 0;
+  transition: color 0.15s, background 0.15s;
+}
+.ka-overflow-trigger:hover { color: var(--ink); background: var(--paper-3); }
+.ka-overflow-trigger:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+.ka-overflow-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.5rem);
+  z-index: 50;
+  min-width: 13.5rem;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: 0 22px 48px -14px rgba(0, 0, 0, 0.32);
+  padding: 0.375rem;
+}
+.ka-overflow-group {
+  font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  padding: 0.5rem 0.625rem 0.3125rem;
+}
+.ka-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+  cursor: pointer;
+  padding: 0.5rem 0.625rem;
+  border-radius: 6px;
+  text-align: left;
+}
+.ka-overflow-item:hover { background: var(--paper-3); color: var(--ink); }
+.ka-overflow-item:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+.ka-overflow-item svg { flex: none; opacity: 0.65; }

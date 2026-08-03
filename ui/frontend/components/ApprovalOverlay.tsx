@@ -61,7 +61,7 @@ export function ApprovalOverlay({ onClose, onConfirm, commandInfo, contextName }
               Execution Approval Required
             </div>
             <div style={{ fontSize: "10px", color: "var(--amber)", fontFamily: "var(--mono)", marginTop: "1px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {contextName || "Local Cluster"} · Recovery command
+              {contextName || "Local"} · Recovery command
             </div>
           </div>
           <button onClick={onClose} style={{

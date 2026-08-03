@@ -37,7 +37,7 @@ function Input({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="sym-input"
+      className="app-input"
       style={{ width: "100%", fontSize: "0.875rem" }}
     />
   );
@@ -61,7 +61,7 @@ function TextArea({
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       rows={rows}
-      className="sym-input"
+      className="app-input"
       style={{ width: "100%", fontSize: "0.875rem", fontFamily: "var(--mono)", resize: "vertical" }}
     />
   );
@@ -81,7 +81,7 @@ function Select({
       name="tool-select"
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="sym-input"
+      className="app-input"
       style={{ width: "100%", fontSize: "0.875rem" }}
     >
       {options.map((o) => (
@@ -137,7 +137,7 @@ function SubmitButton({
     <button
       type="submit"
       disabled={loading || disabled}
-      className="sym-btn-primary"
+      className="app-btn-primary"
       style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.875rem", padding: "0.5rem 1rem" }}
     >
       {loading ? (
@@ -243,7 +243,7 @@ function AnalyzeTab({ onResult, onLoading, onError }: Props) {
             name="error-category"
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="sym-input"
+            className="app-input"
             style={{ width: "100%" }}
           >
             <option value="">-- auto-detect from error text --</option>

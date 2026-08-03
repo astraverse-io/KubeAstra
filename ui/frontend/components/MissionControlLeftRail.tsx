@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState } from "react";
-import type { ClusterStatus } from "../lib/api";
 
 export type MissionControlSession = { id: string; title: string; timestamp: number };
 
@@ -11,8 +10,6 @@ type MissionControlLeftRailProps = {
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
   onDeleteSession: (id: string) => void;
-  clusterStatus: ClusterStatus | null;
-  onEditCluster?: () => void;
 };
 
 type SectionProps = {
@@ -86,14 +83,11 @@ export function MissionControlLeftRail({
   onSelectSession,
   onNewSession,
   onDeleteSession,
-  clusterStatus,
-  onEditCluster,
 }: MissionControlLeftRailProps) {
-  const connected = !!clusterStatus?.connected;
 
   return (
     <aside
-      aria-label="Sessions and cluster context"
+      aria-label="Investigations"
       className="mc-grid-bg"
       style={{
         width: 260,
@@ -134,7 +128,7 @@ export function MissionControlLeftRail({
       </div>
 
       <div style={{ flex: 1, overflowY: "auto" }}>
-        <Section title="Sessions" count={String(sessions.length)}>
+        <Section title="Investigations" count={String(sessions.length)}>
           <div style={{ padding: "4px 8px 12px" }}>
             {sessions.length === 0 && (
               <div
@@ -145,7 +139,7 @@ export function MissionControlLeftRail({
                   color: "var(--ink-4, var(--fg-4))",
                 }}
               >
-                no prior sessions
+                no prior investigations
               </div>
             )}
             {sessions.map((s) => {
@@ -226,110 +220,19 @@ export function MissionControlLeftRail({
           </div>
         </Section>
 
-        <Section title="Cluster" count={connected ? "online" : "offline"}>
-          <div style={{ padding: "6px 14px 14px" }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                marginBottom: 8,
-              }}
-            >
-              <span
-                aria-hidden="true"
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: 4,
-                  background: connected ? "var(--green)" : "var(--ink-4, var(--fg-4))",
-                  boxShadow: connected ? "0 0 8px var(--green)" : "none",
-                }}
-              />
-              <span
-                style={{
-                  fontFamily: "var(--mono)",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: connected ? "var(--green)" : "var(--ink-3, var(--fg-3))",
-                }}
-              >
-                {connected ? "connected" : "not connected"}
-              </span>
-            </div>
+        {/* The Cluster section that used to sit here is gone. It restated the
+            header's target — connected, cluster, context, namespace, mode —
+            and ended in a CONNECT CLUSTER button that opened the same popover
+            the target block opens. Two places showing one fact is how they
+            drift apart: this panel read from `clusterStatus` while the header
+            pills read their own props, so a session connected over SSH showed
+            "not connected" here and a host name up there.
 
-            <MetaRow label="cluster" value={clusterStatus?.cluster_name ?? "—"} />
-            <MetaRow label="context" value={clusterStatus?.context_name ?? "—"} />
-            <MetaRow label="namespace" value={clusterStatus?.namespace ?? "default"} />
-            {clusterStatus?.mode && <MetaRow label="mode" value={clusterStatus.mode} />}
-
-            {onEditCluster && (
-              <button
-                type="button"
-                onClick={onEditCluster}
-                style={{
-                  marginTop: 10,
-                  width: "100%",
-                  padding: "6px 8px",
-                  background: "transparent",
-                  border: "1px solid var(--line-2, var(--rule-2))",
-                  color: "var(--ink-2, var(--fg-2))",
-                  fontFamily: "var(--mono)",
-                  fontSize: 10,
-                  letterSpacing: "0.05em",
-                  borderRadius: 4,
-                  cursor: "pointer",
-                  transition: "border-color 0.15s, color 0.15s",
-                }}
-              >
-                {connected ? "SWITCH CONTEXT" : "CONNECT CLUSTER"}
-              </button>
-            )}
-          </div>
-        </Section>
+            The rail is now only what it is named for: the investigations. */}
       </div>
     </aside>
   );
 }
 
-function MetaRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "baseline",
-        gap: 8,
-        padding: "3px 0",
-        borderBottom: "1px dashed var(--line, var(--rule))",
-      }}
-    >
-      <span
-        style={{
-          fontFamily: "var(--mono)",
-          fontSize: 9,
-          textTransform: "uppercase",
-          letterSpacing: "0.10em",
-          color: "var(--ink-3, var(--fg-3))",
-          minWidth: 62,
-        }}
-      >
-        {label}
-      </span>
-      <span
-        style={{
-          fontFamily: "var(--mono)",
-          fontSize: 10,
-          color: "var(--ink-2, var(--fg-2))",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-        title={value}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
 
 export default MissionControlLeftRail;
