@@ -37,7 +37,7 @@ export function YamlProposer({ yamlText, onApply }: YamlProposerProps) {
         </div>
         <button
           onClick={() => onApply(yamlText)}
-          className="sym-btn-primary"
+          className="app-btn-primary"
           style={{
             display: "flex",
             alignItems: "center",

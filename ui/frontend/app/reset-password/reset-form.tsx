@@ -43,7 +43,7 @@ export default function ResetPasswordForm({ token }: { token: string }) {
             <p style={{ margin: 0, color: "var(--danger)", fontSize: "0.8125rem" }}>
               This reset link is missing its token. Request a new link to continue.
             </p>
-            <Link href="/forgot-password" className="sym-btn-primary" style={{ padding: "0.5rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, textAlign: "center", textDecoration: "none" }}>
+            <Link href="/forgot-password" className="app-btn-primary" style={{ padding: "0.5rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, textAlign: "center", textDecoration: "none" }}>
               Request a new link
             </Link>
           </div>
@@ -52,7 +52,7 @@ export default function ResetPasswordForm({ token }: { token: string }) {
             <p style={{ margin: 0, color: "var(--brand)", fontSize: "0.8125rem" }}>
               Your password has been reset. All sessions have been signed out.
             </p>
-            <Link href="/chat" className="sym-btn-primary" style={{ padding: "0.5rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, textAlign: "center", textDecoration: "none" }}>
+            <Link href="/chat" className="app-btn-primary" style={{ padding: "0.5rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, textAlign: "center", textDecoration: "none" }}>
               Sign in
             </Link>
           </div>
@@ -61,7 +61,7 @@ export default function ResetPasswordForm({ token }: { token: string }) {
             <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
               New password
               <input
-                className="sym-input"
+                className="app-input"
                 type="password"
                 value={newPassword}
                 autoFocus
@@ -71,7 +71,7 @@ export default function ResetPasswordForm({ token }: { token: string }) {
             <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
               Confirm new password
               <input
-                className="sym-input"
+                className="app-input"
                 type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
@@ -82,7 +82,7 @@ export default function ResetPasswordForm({ token }: { token: string }) {
             </label>
             {error && <p style={{ color: "var(--danger)", fontSize: "0.75rem", margin: 0 }}>{error}</p>}
             <button
-              className="sym-btn-primary"
+              className="app-btn-primary"
               disabled={busy || !newPassword || !confirmPassword}
               onClick={submit}
               style={{ padding: "0.625rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, opacity: busy ? 0.6 : 1 }}

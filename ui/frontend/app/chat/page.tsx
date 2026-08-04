@@ -6,6 +6,8 @@ import { SlideToConfirm } from "../../components/SlideToConfirm";
 import AccountSettings from "../../components/AccountSettings";
 import ResultCard from "../../components/ResultCard";
 import ClusterConnect from "../../components/ClusterConnect";
+import TargetBar from "../../components/TargetBar";
+import HeaderOverflow, { type OverflowItem } from "../../components/HeaderOverflow";
 import { SessionSidebar } from "../../components/SessionSidebar";
 import { IntentBar } from "../../components/IntentBar";
 import { copyToClipboard } from "../../lib/clipboard";
@@ -281,17 +283,6 @@ function KubeAstraEmblem({ size = 32 }: { size?: number }) {
 }
 
 /** Full KubeAstra wordmark: emblem + "Kube" ink + "Astra" brand-cyan */
-function KubeAstraWordmark() {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", userSelect: "none" }}>
-      <KubeAstraEmblem size={28} />
-      <span style={{ fontFamily: "var(--sans)", fontSize: "1.25rem", fontWeight: 600, letterSpacing: "-0.01em" }}>
-        <span style={{ color: "var(--ink)" }}>Kube</span>
-        <span style={{ color: "var(--brand)" }}>Astra</span>
-      </span>
-    </div>
-  );
-}
 
 /* ── SSH reconnect banner ────────────────────────────────────── */
 
@@ -333,20 +324,20 @@ function ReconnectBanner({ target, onReconnect, onDismiss }: ReconnectBannerProp
             onKeyDown={(e) => e.key === "Enter" && handleReconnect()}
             placeholder="Password to reconnect"
             autoFocus
-            className="sym-input"
+            className="app-input"
             style={{ borderRadius: "0.5rem", padding: "0.375rem 0.75rem", fontSize: "0.875rem", width: "11rem" }}
           />
           <button
             onClick={handleReconnect}
             disabled={!password || busy}
-            className="sym-btn-primary"
+            className="app-btn-primary"
             style={{ padding: "0.375rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.875rem", fontWeight: 500 }}
           >
             {busy ? "Connecting…" : "Reconnect"}
           </button>
           <button
             onClick={onDismiss}
-            className="sym-btn-ghost"
+            className="app-btn-ghost"
             style={{ padding: "0.375rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.875rem" }}
           >
             Dismiss
@@ -397,17 +388,17 @@ function AuthPanel({ status, onAuthenticated }: { status: AuthStatus; onAuthenti
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
           <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
             Username
-            <input name="auth-username" className="sym-input" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
+            <input name="auth-username" className="app-input" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
           </label>
           {mode === "signup" && (
             <>
               <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
                 Display name
-                <input name="auth-display-name" className="sym-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+                <input name="auth-display-name" className="app-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
               </label>
               <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
                 Email <span style={{ color: "var(--ink-4)" }}>(optional, for password reset)</span>
-                <input className="sym-input" type="email" value={email} placeholder="you@example.com" onChange={(e) => setEmail(e.target.value)} />
+                <input className="app-input" type="email" value={email} placeholder="you@example.com" onChange={(e) => setEmail(e.target.value)} />
               </label>
             </>
           )}
@@ -415,7 +406,7 @@ function AuthPanel({ status, onAuthenticated }: { status: AuthStatus; onAuthenti
             Password
             <input
               name="auth-password"
-              className="sym-input"
+              className="app-input"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -426,7 +417,7 @@ function AuthPanel({ status, onAuthenticated }: { status: AuthStatus; onAuthenti
           </label>
           {error && <p style={{ color: "var(--danger)", fontSize: "0.75rem", margin: 0 }}>{error}</p>}
           <button
-            className="sym-btn-primary"
+            className="app-btn-primary"
             disabled={busy || !username.trim() || !password}
             onClick={submitAuth}
             style={{ padding: "0.625rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, opacity: busy ? 0.6 : 1 }}
@@ -435,7 +426,7 @@ function AuthPanel({ status, onAuthenticated }: { status: AuthStatus; onAuthenti
           </button>
           {canSignup && (
             <button
-              className="sym-btn-ghost"
+              className="app-btn-ghost"
               onClick={() => {
                 setError("");
                 setMode(mode === "signup" ? "login" : "signup");
@@ -527,7 +518,7 @@ function SSHPanel({ sessionId, onConnect, onDisconnect, connected, isOpen, onTog
         </span>
         <button
           onClick={handleDisconnect}
-          className="sym-btn-ghost"
+          className="app-btn-ghost"
           style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
         >
           Disconnect
@@ -538,27 +529,17 @@ function SSHPanel({ sessionId, onConnect, onDisconnect, connected, isOpen, onTog
 
   return (
     <div style={{ position: "relative" }}>
-      <button
-        onClick={() => setOpen(!open)}
-        className="sym-btn-ghost"
-        style={{ display: "flex", alignItems: "center", gap: "0.375rem", padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" style={{ width: "0.875rem", height: "0.875rem" }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <rect x="2" y="2" width="20" height="8" rx="2" />
-          <rect x="2" y="14" width="20" height="8" rx="2" />
-          <line x1="6" y1="6" x2="6.01" y2="6" />
-          <line x1="6" y1="18" x2="6.01" y2="18" />
-        </svg>
-        SSH Cluster
-      </button>
-
+      {/* No trigger of its own. SSH is a *way to reach* a cluster, not a peer
+          of "choose a cluster", so it is opened from inside the target
+          popover. Rendering a second top-level button here is what produced
+          two controls for one decision. */}
       {open && (
         <div
-          style={{ position: "absolute", right: 0, top: "2.25rem", zIndex: 50, width: "20rem", borderRadius: "1rem", boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)", padding: "1rem", display: "flex", flexDirection: "column", gap: "0.75rem", background: "var(--paper-2)", border: "1px solid var(--rule)" }}
+          style={{ position: "absolute", left: 0, top: "calc(100% + 0.5rem)", zIndex: 50, width: "20rem", borderRadius: "1rem", boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)", padding: "1rem", display: "flex", flexDirection: "column", gap: "0.75rem", background: "var(--paper-2)", border: "1px solid var(--rule)" }}
         >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <h3 style={{ fontSize: "0.875rem", fontWeight: 600, color: "var(--ink)", margin: 0 }}>
-              Connect to Remote Cluster
+              Aim at a cluster over SSH
             </h3>
             <button
               onClick={() => setOpen(false)}
@@ -576,25 +557,25 @@ function SSHPanel({ sessionId, onConnect, onDisconnect, connected, isOpen, onTog
             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "0.25rem" }}>
               <label style={{ fontSize: "0.75rem", color: "var(--ink-3)" }}>Hostname / IP</label>
               <input name="ssh-host" type="text" value={host} onChange={(e) => setHost(e.target.value)}
-                placeholder="10.0.1.5" className="sym-input" style={{ width: "100%", boxSizing: "border-box" }} />
+                placeholder="10.0.1.5" className="app-input" style={{ width: "100%", boxSizing: "border-box" }} />
             </div>
             <div style={{ width: "4rem", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
               <label style={{ fontSize: "0.75rem", color: "var(--ink-3)" }}>Port</label>
               <input name="ssh-port" type="number" value={port} onChange={(e) => setPort(e.target.value)}
-                className="sym-input" style={{ width: "100%", boxSizing: "border-box" }} />
+                className="app-input" style={{ width: "100%", boxSizing: "border-box" }} />
             </div>
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
             <label style={{ fontSize: "0.75rem", color: "var(--ink-3)" }}>Username</label>
             <input name="ssh-username" type="text" value={username} onChange={(e) => setUsername(e.target.value)}
-              placeholder="ansible" className="sym-input" style={{ width: "100%", boxSizing: "border-box" }} />
+              placeholder="ansible" className="app-input" style={{ width: "100%", boxSizing: "border-box" }} />
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
             <label style={{ fontSize: "0.75rem", color: "var(--ink-3)" }}>Password</label>
             <input name="ssh-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••" className="sym-input" style={{ width: "100%", boxSizing: "border-box" }} />
+              placeholder="••••••••" className="app-input" style={{ width: "100%", boxSizing: "border-box" }} />
           </div>
 
           {testStatus === "err" && (
@@ -606,7 +587,7 @@ function SSHPanel({ sessionId, onConnect, onDisconnect, connected, isOpen, onTog
           <button
             onClick={handleConnect}
             disabled={!host.trim() || !username.trim() || !password || testStatus === "testing"}
-            className="sym-btn-primary"
+            className="app-btn-primary"
             style={{ marginTop: "0.25rem", width: "100%", padding: "0.5rem 0", borderRadius: "0.75rem", fontSize: "0.875rem", fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem" }}
           >
             {testStatus === "testing" ? (
@@ -640,6 +621,7 @@ export default function ChatPage() {
   const [clusterConn, setClusterConn] = useState<ClusterStatus | null>(null);
   const [pendingReconnect, setPendingReconnect] = useState<SSHTarget | null>(null);
   const [activePopover, setActivePopover] = useState<"none" | "cluster" | "ssh">("none");
+  const [overflowOpen, setOverflowOpen] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [sessionAccessMode, setSessionAccessMode] = useState<SessionViewMode>("owned");
   const [sharedSessionMeta, setSharedSessionMeta] = useState<{ owner?: string | null; title?: string | null }>({});
@@ -1123,7 +1105,7 @@ export default function ChatPage() {
         setSessions((prev) => (
           prev.some((s) => s.id === nextSessionId)
             ? prev
-            : [{ id: nextSessionId, title: text.trim().slice(0, 60) || "New chat", timestamp: Date.now() }, ...prev]
+            : [{ id: nextSessionId, title: text.trim().slice(0, 60) || "New investigation", timestamp: Date.now() }, ...prev]
         ));
       }
       const unwrapped = unwrapHistoryResult(res.result ?? undefined);
@@ -1439,78 +1421,23 @@ export default function ChatPage() {
   // classic-UI fallback; today it collapses to a single code path.
   const isMissionControl = true;
 
-  const themePickerButton = (
-    <button
-      onClick={() => setTheme(t => t === "light" ? "dark" : "light")}
-      className="sym-btn-ghost"
-      style={{ width: "2rem", height: "2rem", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}
-      title={!mounted ? "Switch theme" : `Switch to ${theme === "light" ? "dark" : "light"} mode`}
-      aria-label={!mounted ? "Switch theme" : `Current theme: ${theme}. Click to switch to ${theme === "light" ? "dark" : "light"}.`}
-    >
-      {!mounted ? (
-        <div style={{ width: "16px", height: "16px" }} />
-      ) : theme === "light" ? (
-        // Preview next state (dark) — moon
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-      ) : (
-        // Preview next state (light) — sun
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-      )}
-    </button>
-  );
-
   const exportPMButton = (
     <button
       onClick={handleExportPM}
       disabled={!isOwnedSession || exportingPM || messages.length === 0}
-      className="sym-btn-ghost"
+      className="app-btn-ghost"
       style={{ display: "flex", alignItems: "center", gap: "0.375rem", padding: "0.375rem 0.625rem", borderRadius: "0.375rem", fontSize: "0.75rem", fontWeight: 500, color: "var(--ink)", opacity: (!isOwnedSession || exportingPM || messages.length === 0) ? 0.5 : 1, transition: "background 0.15s, opacity 0.15s" }}
-      title={isOwnedSession ? "Generate Post-Mortem Report from this session" : "Export is disabled for read-only shared chats"}
+      title={isOwnedSession ? "Write up this investigation as a post-mortem report" : "Saving a report is disabled for read-only shared sessions"}
     >
       {exportingPM ? (
         <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
       ) : (
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       )}
-      <span>Export PM</span>
+      {/* Was "Export PM". "PM" reads as post-mortem to whoever wrote it and
+          project manager to everyone else. */}
+      <span>Save report</span>
     </button>
-  );
-
-  const healthPills = (
-    !healthLoaded ? (
-      <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
-        <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: "var(--rule)", animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" }} />
-        Checking…
-      </span>
-    ) : !health ? (
-      <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.75rem", color: "var(--danger)" }}>
-        <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: "var(--danger)" }} />
-        Backend offline
-      </span>
-    ) : (
-      <>
-        <span
-          style={{ display: "flex", alignItems: "center", gap: "0.375rem", color: health.kubectl_available ? "var(--success)" : "var(--warning)" }}
-          title={
-            health.kubectl_available
-              ? `kubectl connected (${health.kubectl_mode ?? "unknown mode"}${health.kubectl_context ? `, context: ${health.kubectl_context}` : ""})`
-              : "No cluster configured — use SSH Cluster to connect"
-          }
-        >
-          <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: health.kubectl_available ? "var(--success)" : "var(--warning)" }} />
-          {health.kubectl_available ? "kubectl" : "no cluster"}
-          {health.kubectl_available && health.kubectl_mode && (
-            <span style={{ fontSize: "0.6875rem", color: "var(--ink-3)", fontFamily: "var(--font-mono, monospace)" }}>
-              [{health.kubectl_mode === "in_cluster" ? "in-cluster" : "kubeconfig"}]
-            </span>
-          )}
-        </span>
-        <span style={{ display: "flex", alignItems: "center", gap: "0.375rem", color: health.ai_enabled ? "var(--brand)" : "var(--ink-3)" }}>
-          <span style={{ width: "0.375rem", height: "0.375rem", borderRadius: "50%", background: health.ai_enabled ? "var(--brand)" : "var(--rule)" }} />
-          AI
-        </span>
-      </>
-    )
   );
 
   const alertsButton = !isDeniedSharedSession && (
@@ -1521,7 +1448,7 @@ export default function ChatPage() {
         }
         window.location.href = "/alerts";
       }}
-      className="sym-btn-ghost"
+      className="app-btn-ghost"
       style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem", marginLeft: "0.5rem" }}
       title="View triggered investigations and RCAs"
     >
@@ -1529,84 +1456,114 @@ export default function ChatPage() {
     </button>
   );
 
-  const shareAndNewChat = (messages.length > 0 || !isOwnedSession) && (
-    <>
-      {messages.length > 0 && !isDeniedSharedSession && (
-        <button
-          onClick={handleShare}
-          className="sym-btn-ghost"
-          style={{ marginLeft: "0.5rem", padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
-        >
-          {shareCopied ? "Copied" : "Share"}
-        </button>
-      )}
-      <button
-        onClick={handleNewChat}
-        className="sym-btn-ghost"
-        style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
-      >
-        New chat
-      </button>
-    </>
+  const newInvestigationButton = (
+    <button
+      onClick={handleNewChat}
+      className="app-btn-ghost"
+      style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
+      title="Start a new investigation"
+    >
+      New investigation
+    </button>
   );
 
-  const accountControls = authIsEnabled && currentUser && (
-    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginLeft: "0.5rem" }}>
-      <span style={{ color: "var(--ink-3)", fontSize: "0.75rem" }}>
-        {currentUser.display_name || currentUser.username}
-      </span>
-      <button
-        className="sym-btn-ghost"
-        style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
-        onClick={() => setAccountOpen(true)}
-      >
-        Account
-      </button>
-      <button
-        className="sym-btn-ghost"
-        style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}
-        onClick={async () => {
-          await logout();
-          setAuthStatus({ auth_enabled: true, allow_signup: authStatus?.allow_signup ?? false, user: null });
-          setMessages([]);
-          setSessions([]);
-          setClusterConn(null);
-          setSshCreds(null);
-          setHistoryLoaded(true);
-        }}
-      >
-        Logout
-      </button>
+  // Set-once items only. Anything you might reach for while something is
+  // broken — the target, alerts, saving a report — stays in the bar.
+  const overflowItems: OverflowItem[] = [
+    ...(messages.length > 0 && !isDeniedSharedSession
+      ? [{
+          group: "This investigation",
+          label: shareCopied ? "Link copied" : "Copy a read-only link",
+          onSelect: handleShare,
+          icon: (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12v8h16v-8"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v14"/></svg>
+          ),
+        }]
+      : []),
+    {
+      group: "Appearance",
+      label: !mounted ? "Switch theme" : theme === "light" ? "Dark theme" : "Light theme",
+      onSelect: () => setTheme(t => (t === "light" ? "dark" : "light")),
+      icon: !mounted || theme === "light" ? (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      ) : (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      ),
+    },
+    ...(authIsEnabled && currentUser
+      ? [
+          {
+            group: currentUser.display_name || currentUser.username,
+            label: "Account",
+            onSelect: () => setAccountOpen(true),
+            icon: (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>
+            ),
+          },
+          {
+            label: "Sign out",
+            onSelect: async () => {
+              await logout();
+              setAuthStatus({ auth_enabled: true, allow_signup: authStatus?.allow_signup ?? false, user: null });
+              setMessages([]);
+              setSessions([]);
+              setClusterConn(null);
+              setSshCreds(null);
+              setHistoryLoaded(true);
+            },
+            icon: (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+            ),
+          },
+        ]
+      : []),
+  ];
+
+  // The header's subject: what this session is aimed at. Sits on the left,
+  // holds the popover, and replaces six controls that all described it.
+  const targetControl = isOwnedSession ? (
+    <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+      <ClusterConnect
+        sessionId={sessionId}
+        status={clusterConn}
+        onStatusChange={(status) => setClusterConn(status?.connected ? status : null)}
+        isOpen={activePopover === "cluster"}
+        onToggle={(open) => setActivePopover(open ? "cluster" : "none")}
+        onUseSsh={() => setActivePopover("ssh")}
+        trigger={({ open, toggle }) => (
+          <TargetBar
+            contextName={clusterConn?.context_name || clusterConn?.cluster_name}
+            namespace={clusterConn?.namespace}
+            sshHost={sshCreds ? `${sshCreds.username}@${sshCreds.host}` : null}
+            mode={health?.kubectl_mode}
+            loaded={healthLoaded}
+            reachable={Boolean(clusterConn?.connected || sshCreds || health?.kubectl_available)}
+            onClick={toggle}
+            expanded={open}
+          />
+        )}
+      />
+      <SSHPanel
+        sessionId={sessionId}
+        connected={sshCreds}
+        onConnect={handleConnect}
+        onDisconnect={handleDisconnect}
+        isOpen={activePopover === "ssh"}
+        onToggle={(open) => setActivePopover(open ? "ssh" : "none")}
+      />
     </div>
-  );
+  ) : null;
 
   const headerRightControls = (
-    <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", fontSize: "0.75rem" }}>
-      {themePickerButton}
-      {exportPMButton}
-      {isOwnedSession && (
-        <>
-          <ClusterConnect
-            sessionId={sessionId}
-            status={clusterConn}
-            onStatusChange={(status) => setClusterConn(status?.connected ? status : null)}
-            isOpen={activePopover === "cluster"}
-            onToggle={(open) => setActivePopover(open ? "cluster" : "none")}
-          />
-          <SSHPanel
-            sessionId={sessionId}
-            connected={sshCreds}
-            onConnect={handleConnect}
-            onDisconnect={handleDisconnect}
-            isOpen={activePopover === "ssh"}
-            onToggle={(open) => setActivePopover(open ? "ssh" : "none")}
-          />
-        </>
-      )}
-      {healthPills}
+    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.75rem" }}>
       {alertsButton}
-      {shareAndNewChat}
-      {accountControls}
+      {exportPMButton}
+      {newInvestigationButton}
+      <HeaderOverflow
+        open={overflowOpen}
+        onOpenChange={setOverflowOpen}
+        items={overflowItems}
+      />
     </div>
   );
 
@@ -1632,30 +1589,6 @@ export default function ChatPage() {
           }}
           onNewSession={handleNewChat}
           onDeleteSession={handleDeleteSession}
-          clusterStatus={clusterConn}
-          onEditCluster={() => {
-            // The ClusterConnect popover is anchored inside the header
-            // (top-right). If we only flip activePopover state, the popover
-            // opens far from the LeftRail click and users don't notice it.
-            // Programmatically click the actual header button so its popover
-            // opens in-place with the same interaction affordance the user
-            // gets when clicking the header button directly.
-            if (typeof document === "undefined") return;
-            const headerBtn = Array.from(document.querySelectorAll<HTMLButtonElement>("header button, [role='banner'] button, .mc-header-controls button")).find(
-              // Match either the disconnected "Connect Cluster" button or the
-              // connected-state "Switch" button — both open the same picker.
-              (b) => /^(connect cluster|switch)$/i.test((b.textContent || "").trim()),
-            );
-            if (headerBtn) {
-              headerBtn.click();
-              headerBtn.scrollIntoView({ behavior: "smooth", block: "nearest" });
-            } else {
-              // Fallback if the header button couldn't be located (e.g.
-              // read-only shared session). Still open via state so at least
-              // the popover renders.
-              setActivePopover("cluster");
-            }
-          }}
         />
       ) : (
         <SessionSidebar
@@ -1682,7 +1615,7 @@ export default function ChatPage() {
               onConfirm={approvePendingAction}
               title={pendingApproval.action.label || "Review and execute fix"}
               coordinates={[
-                { label: "cluster", value: sshCreds?.host || clusterConn?.cluster_name || clusterConn?.context_name || "Local Cluster" },
+                { label: "cluster", value: sshCreds?.host || clusterConn?.cluster_name || clusterConn?.context_name || "Local" },
                 ...(pendingApproval.action.risk ? [{ label: "risk", value: pendingApproval.action.risk }] : []),
               ]}
               preflightChecks={[
@@ -1708,7 +1641,7 @@ export default function ChatPage() {
                 explanation: `${pendingApproval.action.label || "Review and execute fix"}${pendingApproval.action.risk ? ` (${pendingApproval.action.risk} risk)` : ""}. AI DevOps Assistant requires your approval before running this recovery action.`,
                 stdin: pendingApproval.action.stdin
               }}
-              contextName={sshCreds?.host || clusterConn?.context_name || "Local Cluster"}
+              contextName={sshCreds?.host || clusterConn?.context_name || "Local"}
             />
           )
         )}
@@ -1731,30 +1664,30 @@ export default function ChatPage() {
             <MissionControlHeader
               clusterStatus={clusterConn}
               busy={loading}
+              targetSlot={targetControl}
               rightSlot={headerRightControls}
             />
           </div>
         ) : (
         <header
-          style={{ flexShrink: 0, padding: "1rem 1.5rem", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--rule)", background: "var(--paper-2)" }}
+          style={{ flexShrink: 0, padding: "0.5rem 1rem 0.5rem 0.5rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem", borderBottom: "1px solid var(--rule)", background: "var(--paper-2)" }}
         >
-          {/* Left: KubeAstra wordmark + product label */}
-          <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-            <button onClick={() => setSidebarOpen(true)} className="sym-btn-ghost" style={{ padding: "0.25rem", borderRadius: "0.5rem", display: sidebarOpen ? "none" : "block" }} title="History">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          {/* The target is the header. The wordmark and the "paste an error or
+              ask a question" strapline left with it: the mark is already in
+              the target glyph, and the strapline restated the placeholder text
+              sitting in the input box below. */}
+          <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", minWidth: 0 }}>
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="app-btn-ghost"
+              style={{ padding: "0.5rem", borderRadius: "0.5rem", border: "none", background: "none", display: sidebarOpen ? "none" : "flex", alignItems: "center", color: "var(--ink-3)" }}
+              title="Investigations"
+              aria-label="Show investigations"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
             </button>
-            <KubeAstraWordmark />
-            {/* Divider */}
-          <span style={{ width: "1px", height: "1.5rem", flexShrink: 0, background: "var(--rule)" }} />
-          <div>
-            <p style={{ fontSize: "0.75rem", fontWeight: 500, lineHeight: 1, color: "var(--ink-2)", margin: 0 }}>
-              KubeAstra Assistant
-            </p>
-            <p style={{ fontSize: "10px", marginTop: "0.125rem", lineHeight: 1, color: "var(--ink-3)", margin: "0.125rem 0 0 0" }}>
-              Paste an error or ask a question
-            </p>
+            {targetControl}
           </div>
-        </div>
 
           {headerRightControls}
         </header>
@@ -1821,7 +1754,7 @@ export default function ChatPage() {
                     </div>
                     {isOwnedSession && !sshCreds && !clusterConn?.connected && (
                       <div style={{ marginTop: 12, fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-3, var(--fg-3))" }}>
-                        No cluster attached — use the sidebar to connect.
+                        No target — choose a cluster from the header to begin.
                       </div>
                     )}
                   </>
@@ -1841,8 +1774,8 @@ export default function ChatPage() {
                     </p>
                     {isOwnedSession && !sshCreds && (
                       <p style={{ marginTop: "0.5rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
-                        Connect to a remote cluster via the{" "}
-                        <span style={{ color: "var(--brand)" }}>SSH Cluster</span> button above.
+                        To reach a cluster on another host, choose{" "}
+                        <span style={{ color: "var(--brand)" }}>Over SSH</span> from the target in the header.
                       </p>
                     )}
                   </>
@@ -1885,7 +1818,7 @@ export default function ChatPage() {
               <p style={{ maxWidth: "32rem", margin: 0, color: "var(--ink-2)" }}>
                 {sharedAccessError || "You do not have access to this shared chat."}
               </p>
-              <button onClick={handleNewChat} className="sym-btn-primary" style={{ borderRadius: "0.5rem", padding: "0.5rem 1rem", fontSize: "0.875rem" }}>
+              <button onClick={handleNewChat} className="app-btn-primary" style={{ borderRadius: "0.5rem", padding: "0.5rem 1rem", fontSize: "0.875rem" }}>
                 Start a new chat
               </button>
             </div>
@@ -2313,7 +2246,7 @@ export default function ChatPage() {
           <CommandBar
             onSend={(text) => submit(text)}
             busy={loading}
-            clusterLabel={sshCreds?.host || clusterConn?.cluster_name || clusterConn?.context_name || "Local Cluster"}
+            clusterLabel={sshCreds?.host || clusterConn?.cluster_name || clusterConn?.context_name || "Local"}
             clusterConnected={!!(clusterConn?.connected || sshCreds)}
           />
         ) : (
@@ -2321,7 +2254,7 @@ export default function ChatPage() {
             onSend={(text) => submit(text)}
             listening={loading}
             onStop={handleStop}
-            contextName={sshCreds?.host || clusterConn?.context_name || "Local Cluster"}
+            contextName={sshCreds?.host || clusterConn?.context_name || "Local"}
           />
         )
       ) : (

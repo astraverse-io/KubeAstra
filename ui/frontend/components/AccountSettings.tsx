@@ -118,7 +118,7 @@ export default function AccountSettings({ user, onClose, onAuthChanged }: Accoun
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.25rem" }}>
           <h2 style={{ margin: 0, fontSize: "1rem", fontWeight: 700 }}>Account settings</h2>
           <button
-            className="sym-btn-ghost"
+            className="app-btn-ghost"
             onClick={onClose}
             aria-label="Close"
             style={{ padding: "0.25rem 0.5rem", borderRadius: "0.5rem", fontSize: "0.875rem" }}
@@ -138,7 +138,7 @@ export default function AccountSettings({ user, onClose, onAuthChanged }: Accoun
           <label style={labelStyle}>
             Email address
             <input
-              className="sym-input"
+              className="app-input"
               type="email"
               value={email}
               placeholder="you@example.com"
@@ -148,7 +148,7 @@ export default function AccountSettings({ user, onClose, onAuthChanged }: Accoun
           <label style={labelStyle}>
             Current password
             <input
-              className="sym-input"
+              className="app-input"
               type="password"
               value={emailPassword}
               onChange={(e) => setEmailPassword(e.target.value)}
@@ -157,7 +157,7 @@ export default function AccountSettings({ user, onClose, onAuthChanged }: Accoun
           {emailError && <p style={{ color: "var(--danger)", fontSize: "0.75rem", margin: 0 }}>{emailError}</p>}
           {emailOk && <p style={{ color: "var(--brand)", fontSize: "0.75rem", margin: 0 }}>{emailOk}</p>}
           <button
-            className="sym-btn-primary"
+            className="app-btn-primary"
             disabled={emailBusy || !emailPassword}
             onClick={submitEmail}
             style={{ padding: "0.5rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, opacity: emailBusy ? 0.6 : 1 }}
@@ -174,7 +174,7 @@ export default function AccountSettings({ user, onClose, onAuthChanged }: Accoun
           <label style={labelStyle}>
             Current password
             <input
-              className="sym-input"
+              className="app-input"
               type="password"
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
@@ -183,7 +183,7 @@ export default function AccountSettings({ user, onClose, onAuthChanged }: Accoun
           <label style={labelStyle}>
             New password
             <input
-              className="sym-input"
+              className="app-input"
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
@@ -192,7 +192,7 @@ export default function AccountSettings({ user, onClose, onAuthChanged }: Accoun
           <label style={labelStyle}>
             Confirm new password
             <input
-              className="sym-input"
+              className="app-input"
               type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
@@ -204,7 +204,7 @@ export default function AccountSettings({ user, onClose, onAuthChanged }: Accoun
           {pwError && <p style={{ color: "var(--danger)", fontSize: "0.75rem", margin: 0 }}>{pwError}</p>}
           {pwOk && <p style={{ color: "var(--brand)", fontSize: "0.75rem", margin: 0 }}>{pwOk}</p>}
           <button
-            className="sym-btn-primary"
+            className="app-btn-primary"
             disabled={pwBusy || !currentPassword || !newPassword}
             onClick={submitPassword}
             style={{ padding: "0.5rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, opacity: pwBusy ? 0.6 : 1 }}

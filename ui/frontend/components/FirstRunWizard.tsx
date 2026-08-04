@@ -231,7 +231,7 @@ export default function FirstRunWizard({ state, onComplete }: FirstRunWizardProp
                   value={apiKey}
                   onChange={(event) => setApiKey(event.target.value)}
                   placeholder={selected.keyHint}
-                  className="sym-input"
+                  className="app-input"
                   style={{
                     borderRadius: "0.5rem",
                     padding: "0.5rem 0.75rem",
@@ -258,7 +258,7 @@ export default function FirstRunWizard({ state, onComplete }: FirstRunWizardProp
               id="wizard-embed-provider"
               value={embeddingProvider}
               onChange={(event) => setEmbeddingProvider(event.target.value)}
-              className="sym-input"
+              className="app-input"
               style={{ borderRadius: "0.5rem", padding: "0.5rem 0.75rem", fontSize: "0.875rem" }}
             >
               {EMBEDDING_PROVIDERS.map((entry) => (
@@ -280,7 +280,7 @@ export default function FirstRunWizard({ state, onComplete }: FirstRunWizardProp
               placeholder={
                 EMBEDDING_PROVIDERS.find((e) => e.id === embeddingProvider)?.keyHint
               }
-              className="sym-input"
+              className="app-input"
               style={{
                 borderRadius: "0.5rem",
                 padding: "0.5rem 0.75rem",
@@ -317,7 +317,7 @@ export default function FirstRunWizard({ state, onComplete }: FirstRunWizardProp
                 setStep("provider");
               }}
               disabled={busy}
-              className="sym-btn-ghost"
+              className="app-btn-ghost"
               style={{ borderRadius: "0.5rem", padding: "0.5rem 0.875rem", fontSize: "0.8125rem" }}
             >
               Back
@@ -328,7 +328,7 @@ export default function FirstRunWizard({ state, onComplete }: FirstRunWizardProp
               type="button"
               onClick={onComplete}
               disabled={busy}
-              className="sym-btn-ghost"
+              className="app-btn-ghost"
               style={{ borderRadius: "0.5rem", padding: "0.5rem 0.875rem", fontSize: "0.8125rem" }}
             >
               Skip — use keyword memory
@@ -348,7 +348,7 @@ export default function FirstRunWizard({ state, onComplete }: FirstRunWizardProp
               (step === "key" && selected.needsKey && !apiKey.trim()) ||
               (step === "embeddings" && !embeddingKey.trim())
             }
-            className="sym-btn-primary"
+            className="app-btn-primary"
             style={{ borderRadius: "0.5rem", padding: "0.5rem 1rem", fontSize: "0.8125rem", fontWeight: 500 }}
           >
             {busy
