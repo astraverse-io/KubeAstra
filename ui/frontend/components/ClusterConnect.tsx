@@ -16,6 +16,16 @@ interface ClusterConnectProps {
   onStatusChange: (status: ClusterStatus | null) => void;
   isOpen?: boolean;
   onToggle?: (open: boolean) => void;
+  /**
+   * Render the control that opens this popover. Given one, the component
+   * stops drawing its own "Connect Cluster" / context pill / "Switch" /
+   * "Disconnect" row — four controls describing one piece of state — and
+   * "Disconnect" moves inside the panel, next to the contexts it applies to.
+   * The header passes the target block here.
+   */
+  trigger?: (args: { open: boolean; toggle: () => void }) => React.ReactNode;
+  /** Hand off to the SSH flow — the other way to reach a cluster. */
+  onUseSsh?: () => void;
 }
 
 export default function ClusterConnect({
@@ -24,6 +34,8 @@ export default function ClusterConnect({
   onStatusChange,
   isOpen,
   onToggle,
+  trigger,
+  onUseSsh,
 }: ClusterConnectProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const open = isOpen !== undefined ? isOpen : internalOpen;
@@ -112,7 +124,9 @@ export default function ClusterConnect({
 
   return (
     <div style={{ position: "relative", display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.75rem" }}>
-      {status?.connected ? (
+      {trigger ? (
+        trigger({ open, toggle: () => setOpen(!open) })
+      ) : status?.connected ? (
         <>
           <span
             style={{
@@ -126,26 +140,27 @@ export default function ClusterConnect({
           <button
             onClick={() => setOpen(!open)}
             disabled={busy}
-            className="sym-btn-ghost"
+            className="app-btn-ghost"
             style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem" }}
             title="Switch to a different cluster context"
           >
             Switch
           </button>
-          <button onClick={handleDisconnect} disabled={busy} className="sym-btn-ghost" style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem" }}>
+          <button onClick={handleDisconnect} disabled={busy} className="app-btn-ghost" style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem" }}>
             Disconnect
           </button>
         </>
       ) : (
-        <button onClick={() => setOpen(!open)} className="sym-btn-ghost" style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}>
-          Connect Cluster
+        <button onClick={() => setOpen(!open)} className="app-btn-ghost" style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem" }}>
+          Aim at a cluster
         </button>
       )}
 
       {open && (
         <div
           style={{
-            position: "absolute", right: 0, top: "2.25rem", zIndex: 50, width: "28rem",
+            position: "absolute", left: trigger ? 0 : "auto", right: trigger ? "auto" : 0,
+            top: trigger ? "calc(100% + 0.5rem)" : "2.25rem", zIndex: 50, width: "28rem",
             borderRadius: "1rem", boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)", padding: "1rem",
             display: "flex", flexDirection: "column", gap: "0.75rem",
             background: "var(--paper-2)", border: "1px solid var(--rule)"
@@ -153,12 +168,26 @@ export default function ClusterConnect({
         >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <h3 style={{ fontSize: "0.875rem", fontWeight: 600, color: "var(--ink)", margin: 0 }}>
-              Connect Kubernetes Cluster
+              {status?.connected ? "Aim at a different cluster" : "Aim at a cluster"}
             </h3>
-            <button onClick={() => setOpen(false)} style={{ color: "var(--ink-3)", background: "none", border: "none", fontSize: "1.25rem", cursor: "pointer", padding: 0 }}>
+            <button onClick={() => setOpen(false)} aria-label="Close" style={{ color: "var(--ink-3)", background: "none", border: "none", fontSize: "1.25rem", cursor: "pointer", padding: 0 }}>
               &times;
             </button>
           </div>
+
+          {/* Disconnect lives here rather than in the header: it only exists
+              when connected, and a control that appears and disappears from a
+              toolbar makes every neighbour move. */}
+          {trigger && status?.connected && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem", padding: "0.5rem 0.625rem", borderRadius: "0.5rem", background: "var(--brand-bg)", border: "1px solid var(--brand-bd)" }}>
+              <span style={{ color: "var(--ink-2)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                Currently aimed at <strong style={{ color: "var(--ink)" }}>{status.context_name || status.cluster_name}</strong>
+              </span>
+              <button onClick={handleDisconnect} disabled={busy} className="app-btn-ghost" style={{ padding: "0.25rem 0.625rem", borderRadius: "0.5rem", flex: "none" }}>
+                Disconnect
+              </button>
+            </div>
+          )}
 
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button
@@ -183,6 +212,19 @@ export default function ClusterConnect({
             >
               Paste kubeconfig
             </button>
+            {onUseSsh && (
+              <button
+                onClick={onUseSsh}
+                style={{
+                  borderRadius: "0.5rem", padding: "0.375rem 0.75rem", fontSize: "0.75rem", cursor: "pointer",
+                  background: "var(--paper-3)", color: "var(--ink-2)", border: "1px solid var(--rule)",
+                  marginLeft: "auto",
+                }}
+                title="Reach a cluster on another host over SSH"
+              >
+                Over SSH
+              </button>
+            )}
           </div>
 
           {mode === "kubeconfig-upload" && (
@@ -192,10 +234,10 @@ export default function ClusterConnect({
                 value={content}
                 onChange={(event) => setContent(event.target.value)}
                 placeholder="Paste kubeconfig YAML..."
-                className="sym-input"
+                className="app-input"
                 style={{ minHeight: "8rem", borderRadius: "0.75rem", padding: "0.5rem 0.75rem", fontSize: "0.75rem", fontFamily: "var(--mono)", resize: "vertical" }}
               />
-              <button onClick={handleUpload} disabled={busy || !content.trim()} className="sym-btn-primary" style={{ borderRadius: "0.5rem", padding: "0.5rem 0.75rem", fontSize: "0.75rem" }}>
+              <button onClick={handleUpload} disabled={busy || !content.trim()} className="app-btn-primary" style={{ borderRadius: "0.5rem", padding: "0.5rem 0.75rem", fontSize: "0.75rem" }}>
                 Parse kubeconfig
               </button>
             </div>
@@ -209,7 +251,7 @@ export default function ClusterConnect({
               name="kube-context"
               value={currentContext ?? ""}
               onChange={(event) => setCurrentContext(event.target.value)}
-              className="sym-input"
+              className="app-input"
               style={{ borderRadius: "0.5rem", padding: "0.5rem 0.75rem", fontSize: "0.875rem", width: "100%" }}
               disabled={busy || contexts.length === 0}
             >
@@ -231,7 +273,7 @@ export default function ClusterConnect({
           <button
             onClick={handleConnect}
             disabled={busy || !currentContext}
-            className="sym-btn-primary"
+            className="app-btn-primary"
             style={{ borderRadius: "0.75rem", padding: "0.5rem 1rem", fontSize: "0.875rem", fontWeight: 500, marginTop: "0.25rem" }}
           >
             {busy ? "Working..." : "Connect"}

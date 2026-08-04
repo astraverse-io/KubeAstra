@@ -190,7 +190,6 @@ export default function MissionControlPreviewPage() {
           onSelectSession={() => {}}
           onNewSession={() => {}}
           onDeleteSession={() => {}}
-          clusterStatus={CLUSTER}
         />
 
         <main

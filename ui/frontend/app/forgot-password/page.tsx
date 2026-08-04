@@ -42,7 +42,7 @@ export default function ForgotPasswordPage() {
               If an account with that email exists, a reset link has been sent. Check your inbox
               and follow the link to choose a new password.
             </p>
-            <Link href="/chat" className="sym-btn-primary" style={{ padding: "0.5rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, textAlign: "center", textDecoration: "none" }}>
+            <Link href="/chat" className="app-btn-primary" style={{ padding: "0.5rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, textAlign: "center", textDecoration: "none" }}>
               Back to sign in
             </Link>
           </div>
@@ -51,7 +51,7 @@ export default function ForgotPasswordPage() {
             <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", fontSize: "0.75rem", color: "var(--ink-3)" }}>
               Email address
               <input
-                className="sym-input"
+                className="app-input"
                 type="email"
                 value={email}
                 placeholder="you@example.com"
@@ -64,7 +64,7 @@ export default function ForgotPasswordPage() {
             </label>
             {error && <p style={{ color: "var(--danger)", fontSize: "0.75rem", margin: 0 }}>{error}</p>}
             <button
-              className="sym-btn-primary"
+              className="app-btn-primary"
               disabled={busy || !email.trim()}
               onClick={submit}
               style={{ padding: "0.625rem 0.75rem", borderRadius: "0.75rem", fontWeight: 600, opacity: busy ? 0.6 : 1 }}

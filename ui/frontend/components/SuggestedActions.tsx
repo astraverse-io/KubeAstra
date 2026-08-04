@@ -60,7 +60,7 @@ export function SuggestedActions({ actions, onExecute, onFollowUp }: SuggestedAc
             </span>
             <button
               onClick={() => action.follow_up_prompt && onFollowUp(action.follow_up_prompt)}
-              className="sym-btn-ghost"
+              className="app-btn-ghost"
               style={{ flexShrink: 0, borderRadius: "0.5rem", padding: "0.25rem 0.75rem", fontSize: "0.75rem", fontWeight: 500, border: "1px solid var(--rule)" }}
             >
               {action.label || "Trace source/config"}
@@ -75,7 +75,7 @@ export function SuggestedActions({ actions, onExecute, onFollowUp }: SuggestedAc
             </code>
             <button
               onClick={() => onExecute(action)}
-              className="sym-btn-primary"
+              className="app-btn-primary"
               style={{ flexShrink: 0, borderRadius: "0.5rem", padding: "0.25rem 0.75rem", fontSize: "0.75rem", fontWeight: 500 }}
             >
               {action.confirm ? "Review and execute fix" : "Run"}

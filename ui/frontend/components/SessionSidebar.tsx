@@ -1,4 +1,5 @@
 import React from "react";
+import { AstraGlyph } from "./AstraGlyph";
 
 interface SessionSidebarProps {
   isOpen: boolean;
@@ -45,17 +46,28 @@ export function SessionSidebar({
           borderBottom: "1px solid var(--rule)",
         }}
       >
-        <span style={{ fontSize: "0.875rem", fontWeight: 600, color: "var(--ink)" }}>History</span>
+        {/* The wordmark lives here rather than in the header. The header's
+            subject is the cluster you are aimed at; a product name competing
+            for that space says nothing an operator needs mid-incident. */}
+        <span style={{ display: "flex", alignItems: "center", gap: "0.5rem", minWidth: 0 }}>
+          <AstraGlyph size={18} />
+          <span style={{ fontSize: "0.875rem", fontWeight: 600, color: "var(--ink)", letterSpacing: "-0.01em" }}>
+            KubeAstra
+          </span>
+        </span>
         <button
           onClick={onClose}
+          aria-label="Hide investigations"
           style={{ background: "none", border: "none", color: "var(--ink-3)", cursor: "pointer" }}
         >
           &times;
         </button>
       </div>
 
-      {/* New chat button */}
-      <div style={{ padding: "1rem" }}>
+      {/* Sessions are investigations everywhere else in this UI — the trail,
+          the post-mortem, the alert that starts one. "Chat" named the input
+          method rather than the work. */}
+      <div style={{ padding: "1rem 1rem 0.75rem" }}>
         <button
           onClick={onNewSession}
           style={{
@@ -71,8 +83,21 @@ export function SessionSidebar({
             transition: "all 0.15s",
           }}
         >
-          + New chat
+          New investigation
         </button>
+      </div>
+
+      <div
+        style={{
+          padding: "0 1rem 0.5rem",
+          fontFamily: "var(--font-ibm-plex-mono), ui-monospace, monospace",
+          fontSize: "9px",
+          letterSpacing: "0.16em",
+          textTransform: "uppercase",
+          color: "var(--ink-4)",
+        }}
+      >
+        Investigations
       </div>
 
       {/* Session list */}
