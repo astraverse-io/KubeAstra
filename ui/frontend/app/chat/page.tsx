@@ -6,6 +6,7 @@ import { SlideToConfirm } from "../../components/SlideToConfirm";
 import AccountSettings from "../../components/AccountSettings";
 import ResultCard from "../../components/ResultCard";
 import ClusterConnect from "../../components/ClusterConnect";
+import SetupNotice from "../../components/SetupNotice";
 import TargetBar from "../../components/TargetBar";
 import HeaderOverflow, { type OverflowItem } from "../../components/HeaderOverflow";
 import { SessionSidebar } from "../../components/SessionSidebar";
@@ -105,6 +106,7 @@ interface HealthCheck {
 
 interface Health {
   ai_enabled: boolean;
+  llm_provider?: string;
   kubectl_available: boolean;
   kubectl_context?: string | null;
   kubectl_mode?: "in_cluster" | "kubeconfig" | "unavailable";
@@ -1554,6 +1556,10 @@ export default function ChatPage() {
     </div>
   ) : null;
 
+  // Server mode with no provider configured. Desktop has the first-run
+  // wizard instead, so `desktopSetup` being present suppresses this.
+  const noModel = Boolean(healthLoaded && health && !health.ai_enabled && !desktopSetup);
+
   const headerRightControls = (
     <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.75rem" }}>
       {alertsButton}
@@ -1745,17 +1751,33 @@ export default function ChatPage() {
                       <AstraGlyph size={56} animate />
                     </div>
                     <div style={{ fontFamily: "var(--sans)", fontSize: 20, fontWeight: 600, color: "var(--ink, var(--fg-0))" }}>
-                      {isReadonlySharedSession ? "Empty shared chat" : "Astra is online"}
+                      {isReadonlySharedSession
+                        ? "Empty shared chat"
+                        : noModel
+                          ? "Astra needs a model"
+                          : "Astra is online"}
                     </div>
                     <div style={{ marginTop: 6, fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-3, var(--fg-3))", letterSpacing: "0.05em" }}>
+                      {/* "Ready to investigate" above "no language model
+                          connected" is the contradiction this whole change
+                          exists to remove. */}
                       {isReadonlySharedSession
                         ? "read-only · no messages"
-                        : "Ready to investigate · standing by"}
+                        : noModel
+                          ? "cluster tools ready · reasoning offline"
+                          : "Ready to investigate · standing by"}
                     </div>
                     {isOwnedSession && !sshCreds && !clusterConn?.connected && (
                       <div style={{ marginTop: 12, fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-3, var(--fg-3))" }}>
                         No target — choose a cluster from the header to begin.
                       </div>
+                    )}
+                    {/* Only once health has answered, so a slow first request
+                        does not flash "no model" at someone who has one, and
+                        only in server mode — desktop has the first-run wizard
+                        and `desktopSetup` is null here otherwise. */}
+                    {noModel && isOwnedSession && (
+                      <SetupNotice provider={health?.llm_provider} />
                     )}
                   </>
                 ) : (
