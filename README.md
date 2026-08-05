@@ -11,7 +11,7 @@
 
 **Your clusters are talking. This assistant helps you listen.**
 
-An AI-powered Kubernetes troubleshooting assistant that lets teams investigate, diagnose, and resolve cluster issues through natural language — via a **chat-based web UI** or directly inside your **IDE (Cursor / Claude Desktop / VS Code via MCP)**.
+An AI-powered Kubernetes troubleshooting assistant that lets teams investigate, diagnose, and resolve cluster issues through natural language — as a **local app on your laptop** (`kubeastra open`), a **chat-based web UI** deployed for a team, or directly inside your **IDE (Cursor / Claude Desktop / VS Code via MCP)**.
 
 Combines live `kubectl` access with pluggable LLM providers (Gemini, Ollama/local, more coming) for root-cause analysis that turns cryptic Kubernetes failures into clear answers and actionable fix commands.
 
@@ -249,7 +249,25 @@ Open http://localhost:3300 and ask *"what's broken in the demo namespace?"*.
 
 > The demo generates its own kubeconfig automatically — it does not touch your host's current kubectl context. See [`demo/README.md`](demo/README.md) for full prerequisites and troubleshooting.
 
-### Option 2: Run locally against your own cluster
+### Option 2: Run it as a local app (no Docker)
+
+Prerequisites: Python 3.11+, Node 20+, and a kubeconfig you already use.
+
+```bash
+git clone https://github.com/astraverse-io/KubeAstra.git
+cd KubeAstra
+npm run build:desktop --prefix ui/frontend   # once
+pip install -e cli
+kubeastra open
+```
+
+Starts a loopback-only backend, serves the UI from that same origin, and opens
+your browser. It reads the kubeconfig already on this machine — nothing is
+installed into any cluster, and nothing listens on an external interface.
+
+Add `--no-browser` to start it and print the URL instead.
+
+### Option 3: Run locally against your own cluster
 
 Prerequisites: a running Kubernetes cluster with `kubectl` access, and a [Google Gemini API key](https://aistudio.google.com/) (free tier) **or** [Ollama](https://ollama.com/) running locally.
 
@@ -265,7 +283,7 @@ docker compose up --build
 # 3. Open http://localhost:3300
 ```
 
-### Option 3: Use via MCP (Cursor / Claude Desktop)
+### Option 4: Use via MCP (Cursor / Claude Desktop)
 
 ```bash
 cd mcp
@@ -280,14 +298,14 @@ ALLOWED_NAMESPACES=prod,staging,default
 
 Restart your IDE — all 51 tools appear as MCP tools.
 
-### Option 4: Use the CLI
+### Option 5: Use the CLI
 
 For terminal-first workflows: a thin HTTP + SSE client for the backend, published as a standalone Python package.
 
 ```bash
 pipx install kubeastra                # or: cd cli && pip install -e .
 
-# assuming the backend from Option 2 is running on localhost:8000
+# assuming the backend from Option 3 is running on localhost:8000
 kubeastra ask "why is checkout-service crashlooping in production?"
 kubeastra investigate --pod api-gateway --ns production
 kubeastra doctor                      # health-check CLI + backend + kubeconfig
@@ -300,7 +318,7 @@ kubeastra config set backend-url https://kubeastra.mycompany.com
 
 Full command reference in [`cli/README.md`](cli/README.md).
 
-### Option 5: Deploy to Kubernetes via Helm
+### Option 6: Deploy to Kubernetes via Helm
 
 Baseline install — chat UI + backend, no advanced features:
 
@@ -523,6 +541,9 @@ kubeastra/
 │   │   └── vector_db.py         # Qdrant client
 │   ├── tool_registry.py         # Single source of truth: 51 tools
 │   └── config/settings.py
+├── cli/                         # `kubeastra` CLI (PyPI) — ask, investigate,
+│                                #   connect, doctor, config, and `open`
+├── desktop/                     # Local-app packaging (macOS, in progress)
 ├── helm/kubeastra/              # Helm chart — backend, frontend, Qdrant StatefulSet,
 │                                #   RAG ingestion CronJob, NetworkPolicies
 ├── evals/                       # DeepEval baselines + eval runner

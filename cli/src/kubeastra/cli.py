@@ -1,12 +1,13 @@
 """KubeAstra CLI entry point.
 
-Six commands total in this shim release:
+Seven commands total in this shim release:
   - ``kubeastra --version``          version info
   - ``kubeastra ask "..."``          natural-language investigation, streams
   - ``kubeastra investigate --pod``  scoped investigation shortcut
   - ``kubeastra connect``            pick a kubeconfig context
   - ``kubeastra config set/get``     backend URL + api token persistence
   - ``kubeastra doctor``             health-check the CLI + backend
+  - ``kubeastra open``              run the product locally as an app
 
 Every command shares a friendly-error contract: connectivity failures
 suggest the docker-compose spinup; auth failures suggest the config
