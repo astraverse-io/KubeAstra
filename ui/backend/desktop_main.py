@@ -153,11 +153,11 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("DB_PATH", str(desktop_paths.db_path()))
     os.environ.setdefault("AUDIT_LOG_PATH", str(desktop_paths.audit_log_path()))
     os.environ.setdefault("KUBEASTRA_KUBECONFIG_DIR", str(desktop_paths.kubeconfig_dir()))
-    # Investigation memory: embedded vectors, no Qdrant server, embeddings via
-    # the user's provider API (no torch in the desktop bundle).
+    # Investigation memory: embedded vectors, no Qdrant server. EMBEDDINGS_MODE
+    # is deliberately not set here — `restore_to_environ` below derives it from
+    # the stored chat provider, and this file's fallback runs after it.
     os.environ.setdefault("VECTOR_DB_MODE", "local")
     os.environ.setdefault("VECTOR_DB_PATH", str(desktop_paths.vectors_path()))
-    os.environ.setdefault("EMBEDDINGS_MODE", "api")
     # ALLOWED_NAMESPACES defaults to "default", which is a multi-tenant server
     # guardrail: it stops one team's operator reaching another team's
     # namespaces. On a laptop there is one tenant — the user — and the
@@ -185,6 +185,13 @@ def main(argv: list[str] | None = None) -> int:
             announce("LLM_PROVIDER=none (run setup)")
     except Exception as error:  # a broken keychain must not block startup
         print(f"warning: could not restore stored credentials: {error}", file=sys.stderr)
+
+    # Last resort, after restore has had its say. `local` would mean
+    # sentence-transformers, and torch is not in the desktop bundle — so an
+    # install with no stored provider gets `api` and no backend, which is the
+    # keyword-only path the wizard exists to move people off.
+    os.environ.setdefault("EMBEDDINGS_MODE", "api")
+    announce(f"EMBEDDINGS_MODE={os.environ['EMBEDDINGS_MODE']}")
 
     sock, port = bind_socket(args.host, args.port)
     os.environ["KUBEASTRA_DESKTOP_PORT"] = str(port)

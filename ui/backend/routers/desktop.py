@@ -292,16 +292,76 @@ def _apply_provider(provider: str) -> None:
         if key:
             os.environ[env_name] = key
     _persist_choice("llm_provider", provider)
+    _follow_chat_provider_for_embeddings(provider)
     _reset_caches()
 
 
-def _apply_embeddings(provider: str) -> None:
+def _follow_chat_provider_for_embeddings(provider: str) -> None:
+    """Point embeddings somewhere the chat choice implies.
+
+    The wizard asks for an embeddings key only when the chat provider is
+    Anthropic, because the other three either publish an embeddings API or
+    run locally. Nothing acted on that: `EMBEDDINGS_PROVIDER` stayed empty,
+    and an empty provider under `EMBEDDINGS_MODE=api` — the desktop default —
+    resolves to `_NullBackend`. Memory dropped to keyword-only for three of
+    four providers, and the wizard reported success.
+
+    Ollama overrides an explicit choice; the rest defer to it. Someone moving
+    the chat model onto their own machine is asking for a local setup, and
+    quietly continuing to POST investigation text to Voyage would be a worse
+    failure than the one this function exists to fix.
+    """
+    if provider == "ollama":
+        os.environ["EMBEDDINGS_MODE"] = "ollama"
+        os.environ.pop("EMBEDDINGS_PROVIDER", None)
+        os.environ.pop("EMBEDDINGS_API_KEY", None)
+        return
+
+    chosen = _stored_embeddings_provider()
+    if chosen:
+        _apply_embeddings(chosen, persist=False)
+        return
+
+    if provider in EMBEDDING_PROVIDERS:
+        # The chat key is the embeddings key for these; a second prompt for
+        # the same credential is why the wizard skipped asking.
+        key = desktop_secrets.get_secret(f"llm.{provider}")
+        if key:
+            os.environ["EMBEDDINGS_MODE"] = "api"
+            os.environ["EMBEDDINGS_PROVIDER"] = provider
+            os.environ["EMBEDDINGS_API_KEY"] = key
+
+
+def _stored_embeddings_provider() -> Optional[str]:
+    """An embeddings provider the user picked deliberately, if it still works.
+
+    Deliberate means it went through `/setup/embeddings`, which verifies the
+    key before persisting. A recorded provider whose key has since been
+    removed is not a usable choice, so it does not count as one.
+    """
+    try:
+        import desktop_config
+
+        recorded = (desktop_config.load().get("embeddings_provider") or "").strip().lower()
+    except Exception:
+        logger.debug("could not read the persisted embeddings provider", exc_info=True)
+        return None
+
+    if recorded in EMBEDDING_PROVIDERS and desktop_secrets.has_secret(
+        f"embeddings.{recorded}"
+    ):
+        return recorded
+    return None
+
+
+def _apply_embeddings(provider: str, *, persist: bool = True) -> None:
     os.environ["EMBEDDINGS_MODE"] = "api"
     os.environ["EMBEDDINGS_PROVIDER"] = provider
     key = desktop_secrets.get_secret(f"embeddings.{provider}")
     if key:
         os.environ["EMBEDDINGS_API_KEY"] = key
-    _persist_choice("embeddings_provider", provider)
+    if persist:
+        _persist_choice("embeddings_provider", provider)
     _reset_caches()
 
 

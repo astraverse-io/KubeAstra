@@ -305,5 +305,23 @@ def restore_to_environ() -> Optional[str]:
             os.environ.setdefault("EMBEDDINGS_MODE", "api")
             os.environ.setdefault("EMBEDDINGS_PROVIDER", embeddings)
             os.environ["EMBEDDINGS_API_KEY"] = key
+            return provider
+
+    # No deliberate embeddings choice — derive one from the chat provider, the
+    # same way the wizard does. Skipping this was why memory came back
+    # keyword-only after every relaunch even when the wizard had just
+    # reported vector mode: `_apply_provider` set it up in a process that then
+    # exited, and nothing here reconstructed it.
+    #
+    # `setdefault` throughout, so an operator exporting EMBEDDINGS_MODE keeps
+    # what they exported.
+    if provider == "ollama":
+        os.environ.setdefault("EMBEDDINGS_MODE", "ollama")
+    elif provider in EMBEDDING_PROVIDERS and not os.environ.get("EMBEDDINGS_API_KEY"):
+        key = get_secret(f"llm.{provider}")
+        if key:
+            os.environ.setdefault("EMBEDDINGS_MODE", "api")
+            os.environ.setdefault("EMBEDDINGS_PROVIDER", provider)
+            os.environ["EMBEDDINGS_API_KEY"] = key
 
     return provider

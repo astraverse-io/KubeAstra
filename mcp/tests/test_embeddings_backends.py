@@ -92,9 +92,45 @@ def test_available_is_false_when_local_deps_absent(monkeypatch):
 
 
 def test_ollama_mode_needs_no_key(monkeypatch):
+    """No key, and no `_NullBackend` degradation for the want of one."""
     _configure(monkeypatch, embeddings_mode="ollama")
-    assert module.embeddings.available is True
+    assert isinstance(module.embeddings._resolve(), module._OllamaBackend)
     assert module.embeddings.dim == 768
+
+
+def test_ollama_availability_follows_the_daemon(monkeypatch):
+    """`available` used to be unconditionally True here.
+
+    It was harmless while nothing selected this backend: desktop mode landed
+    on `_NullBackend`, which reports False honestly. Wiring Ollama up made the
+    unconditional True a claim that a running daemon with the embedding model
+    pulled exists, which is two assumptions and neither is checked by having
+    picked Ollama for chat.
+    """
+    _configure(monkeypatch, embeddings_mode="ollama")
+
+    monkeypatch.setattr(
+        module, "_get_json", lambda url, timeout: {"models": [{"name": "llama3"}]}
+    )
+    assert module.embeddings.available is False
+
+    monkeypatch.setattr(
+        module,
+        "_get_json",
+        lambda url, timeout: {"models": [{"name": "nomic-embed-text:latest"}]},
+    )
+    assert module.embeddings.available is True
+
+
+def test_ollama_is_unavailable_when_nothing_answers(monkeypatch):
+    """A probe that raises is a "no", not a crash on the settings screen."""
+    _configure(monkeypatch, embeddings_mode="ollama")
+
+    def refuse(url, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(module, "_get_json", refuse)
+    assert module.embeddings.available is False
 
 
 @pytest.mark.parametrize(
