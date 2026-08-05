@@ -145,7 +145,12 @@ def test_the_kubeconfig_is_private_at_the_instant_it_is_created(tmp_path, monkey
     observed: dict[str, object] = {}
     real_open = os.open
 
-    def watched(path, flags, mode=0o777, **kwargs):
+    # `os.open` itself defaults this to 0o777. Mirroring that here would put a
+    # world-writable literal in a test whose whole subject is file modes — and
+    # CodeQL flagged it, correctly. The real call always passes a mode
+    # explicitly, so the default is never used; 0600 keeps it that way if a
+    # future caller forgets.
+    def watched(path, flags, mode=0o600, **kwargs):
         fd = real_open(path, flags, mode, **kwargs)
         if str(path).endswith("kubeastra-abc123.yaml"):
             observed["mode"] = stat.S_IMODE(os.fstat(fd).st_mode)
