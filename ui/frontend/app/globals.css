@@ -584,3 +584,48 @@ button { font-family: var(--sans); }
 .ka-overflow-item:hover { background: var(--paper-3); color: var(--ink); }
 .ka-overflow-item:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 .ka-overflow-item svg { flex: none; opacity: 0.65; }
+
+/* ── Setup notice: no language model connected ───────────────────────────
+   Amber rather than red: nothing is broken, something is unconfigured, and
+   the cluster tools still work. Left-aligned inside a centred empty state
+   because it is instructions to follow, not a headline to read. */
+
+.ka-setup-notice {
+  margin: 1.5rem auto 0;
+  max-width: 27rem;
+  text-align: left;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--amber-bd);
+  background: var(--amber-bg);
+  border-radius: 10px;
+}
+.ka-setup-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--amber);
+  line-height: 1.2;
+}
+.ka-setup-body {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.ka-setup-steps {
+  margin: 0.625rem 0 0;
+  padding-left: 1.125rem;
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+.ka-setup-steps code {
+  font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+  font-size: 0.75rem;
+  background: var(--paper-3);
+  border-radius: 4px;
+  padding: 0.0625rem 0.3125rem;
+}
+.ka-setup-steps a { color: var(--brand); }

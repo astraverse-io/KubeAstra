@@ -47,6 +47,11 @@ class HealthResponse(BaseModel):
     kubectl_available: bool
     kubectl_context: str | None
     ai_enabled: bool
+    # Which provider the backend is *configured* for, regardless of whether it
+    # is reachable. The UI needs this to tell someone how to fix an
+    # unconfigured install: "run ollama serve" and "add GEMINI_API_KEY" are
+    # both wrong advice half the time. Additive — existing clients ignore it.
+    llm_provider: str = ""
     qdrant_url: str
     kubectl_mode: Literal["in_cluster", "kubeconfig", "unavailable"]
     checks: dict[str, CheckResult] = Field(default_factory=dict)
@@ -260,6 +265,7 @@ def _health_status() -> HealthResponse:
         kubectl_context=current_context,
         kubectl_mode=mode,
         ai_enabled=ai_enabled,
+        llm_provider=provider,
         qdrant_url=qdrant_url,
         checks=checks,
     )
