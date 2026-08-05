@@ -90,3 +90,50 @@ def test_every_cli_command_is_documented():
         "These commands exist but cli/README.md never shows them:\n  "
         + "\n  ".join(f"kubeastra {c}" for c in undocumented)
     )
+
+
+# Number words are how prose counts things, and prose is where the drift hid:
+# `demo/README.md` said "six intentionally-broken workloads" in two places and
+# "These seven cover..." in a third, in the same file, after
+# `07-secret-missing-job.yaml` landed. The manifests are the fact.
+_NUMBER_WORDS = {
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+_WORKLOAD_CLAIM = re.compile(
+    r"\b(?P<count>" + "|".join(_NUMBER_WORDS) + r"|\d+)\b"
+    r"(?P<gap>[\w,\- ]{0,30}?)"
+    r"\b(?:broken|intentionally-broken)\b",
+    re.IGNORECASE,
+)
+
+DOCS_QUOTING_WORKLOAD_COUNT = [
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "demo" / "README.md",
+]
+
+
+def _real_workload_count() -> int:
+    manifests = (REPO_ROOT / "demo" / "broken-workloads").glob("*.yaml")
+    # 00-namespace.yaml sets the stage; it is not one of the broken things.
+    return sum(1 for m in manifests if not m.name.startswith("00-"))
+
+
+@pytest.mark.parametrize(
+    "path", DOCS_QUOTING_WORKLOAD_COUNT, ids=lambda p: str(p.relative_to(REPO_ROOT))
+)
+def test_documented_demo_workload_count_matches_the_manifests(path):
+    expected = _real_workload_count()
+    text = path.read_text(encoding="utf-8")
+
+    wrong = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for match in _WORKLOAD_CLAIM.finditer(line):
+            raw = match.group("count").lower()
+            claimed = _NUMBER_WORDS.get(raw, int(raw) if raw.isdigit() else None)
+            if claimed is not None and claimed != expected:
+                wrong.append(f"{path.name}:{lineno}: {line.strip()}")
+
+    assert not wrong, (
+        f"demo/broken-workloads/ holds {expected} broken workloads. "
+        "These say otherwise:\n  " + "\n  ".join(wrong)
+    )
