@@ -324,3 +324,80 @@ def test_deleting_a_secret_invalidates_the_cache(secure, clean_env):
 
     desktop_secrets.delete_secret("llm.gemini")
     assert desktop_secrets.get_secret("llm.gemini") is None
+
+
+# ── embeddings survive a relaunch ─────────────────────────────────────────
+#
+# `_apply_provider` wires embeddings when the wizard runs, but that lives in
+# a process that ends. Without the same reasoning here, every relaunch fell
+# back to `EMBEDDINGS_MODE=api` with no provider — `_NullBackend`, keyword-only
+# memory — and the user's only clue was that recall got worse over time.
+
+
+def test_restore_wires_embeddings_to_the_chat_provider(secure, clean_env, monkeypatch):
+    """OpenAI and Gemini embed with the key they already chat with."""
+    import os
+
+    import desktop_config
+
+    monkeypatch.delenv("EMBEDDINGS_MODE", raising=False)
+    desktop_secrets.set_secret("llm.openai", "oai-key")
+    monkeypatch.setattr(desktop_config, "load", lambda: {"llm_provider": "openai"})
+
+    desktop_secrets.restore_to_environ()
+
+    assert os.environ["EMBEDDINGS_MODE"] == "api"
+    assert os.environ["EMBEDDINGS_PROVIDER"] == "openai"
+    assert os.environ["EMBEDDINGS_API_KEY"] == "oai-key"
+
+
+def test_restore_keeps_ollama_local(secure, clean_env, monkeypatch):
+    """Nothing about a relaunch changes what choosing Ollama meant."""
+    import os
+
+    import desktop_config
+
+    monkeypatch.delenv("EMBEDDINGS_MODE", raising=False)
+    monkeypatch.setattr(desktop_config, "load", lambda: {"llm_provider": "ollama"})
+
+    desktop_secrets.restore_to_environ()
+
+    assert os.environ["EMBEDDINGS_MODE"] == "ollama"
+    assert "EMBEDDINGS_API_KEY" not in os.environ
+
+
+def test_restore_prefers_a_deliberate_embeddings_choice(secure, clean_env, monkeypatch):
+    """A provider picked in the wizard outranks the chat provider's key."""
+    import os
+
+    import desktop_config
+
+    monkeypatch.delenv("EMBEDDINGS_MODE", raising=False)
+    desktop_secrets.set_secret("llm.openai", "oai-key")
+    desktop_secrets.set_secret("embeddings.voyage", "vk-key")
+    monkeypatch.setattr(
+        desktop_config,
+        "load",
+        lambda: {"llm_provider": "openai", "embeddings_provider": "voyage"},
+    )
+
+    desktop_secrets.restore_to_environ()
+
+    assert os.environ["EMBEDDINGS_PROVIDER"] == "voyage"
+    assert os.environ["EMBEDDINGS_API_KEY"] == "vk-key"
+
+
+def test_restore_does_not_override_an_explicit_embeddings_mode(
+    secure, clean_env, monkeypatch
+):
+    """Same rule as the API keys: a shell export is the user being explicit."""
+    import os
+
+    import desktop_config
+
+    monkeypatch.setenv("EMBEDDINGS_MODE", "local")
+    monkeypatch.setattr(desktop_config, "load", lambda: {"llm_provider": "ollama"})
+
+    desktop_secrets.restore_to_environ()
+
+    assert os.environ["EMBEDDINGS_MODE"] == "local"

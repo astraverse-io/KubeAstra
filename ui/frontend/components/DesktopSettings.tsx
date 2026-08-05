@@ -321,7 +321,7 @@ export function DesktopSettings({ onClose, onCredentialCleared }: DesktopSetting
 
             <Section
               title="Investigation memory"
-              hint="Past investigations inform new ones. Semantic recall needs an embeddings key; without one it matches on keywords."
+              hint="Past investigations inform new ones. Semantic recall uses your provider's embeddings — Ollama needs `ollama pull nomic-embed-text`, Claude needs a separate embeddings key. Without one it matches on keywords."
             >
               <Row
                 label="Mode"

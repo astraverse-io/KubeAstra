@@ -298,6 +298,9 @@ class EmbeddingService:
             from importlib.util import find_spec
 
             return find_spec("sentence_transformers") is not None
+        probe = getattr(backend, "ready", None)
+        if probe is not None:
+            return probe()
         return True
 
     def embed(self, text: str) -> list[float]:
@@ -311,6 +314,19 @@ class EmbeddingService:
 # Request/response shapes follow each provider's published embeddings API.
 # Verify against current provider docs when touching these; the surrounding
 # retry/degradation behaviour is ours and is covered by tests.
+
+
+def _get_json(url: str, timeout: float) -> dict:
+    """Plain GET, for readiness probes rather than the embed path.
+
+    Deliberately not sharing `_post_json`'s retry classification: a probe that
+    retries is a probe that hangs the settings screen.
+    """
+    import httpx
+
+    response = httpx.get(url, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
 
 
 def _post_json(url: str, payload: dict, headers: dict, timeout: float) -> dict:
@@ -404,6 +420,32 @@ class _OllamaBackend(_HttpBackend):
             self.timeout,
         )
         return data["embeddings"]
+
+    def ready(self) -> bool:
+        """Whether an embed call would work, without making one.
+
+        Two things can be missing independently: the daemon, and the model.
+        `ollama serve` running says nothing about whether anyone has run
+        `ollama pull nomic-embed-text` — and the embedding model is not the
+        chat model, so a user with a working Ollama setup very likely does not
+        have it.
+
+        Consulted by `EmbeddingService.available`, which must not report
+        vector memory the first embed would refuse.
+        """
+        base = settings.ollama_url.rstrip("/")
+        try:
+            data = _get_json(f"{base}/api/tags", self.timeout)
+        except Exception:
+            logger.debug("Ollama tag listing failed", exc_info=True)
+            return False
+
+        # Ollama reports `nomic-embed-text:latest` for a bare model name.
+        wanted = self.model.split(":")[0]
+        return any(
+            str(entry.get("name", "")).split(":")[0] == wanted
+            for entry in data.get("models", [])
+        )
 
 
 embeddings = EmbeddingService()
