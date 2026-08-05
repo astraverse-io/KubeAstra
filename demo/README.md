@@ -65,7 +65,7 @@ Open http://localhost:3300 and try:
 | [`04-pending-nodeselector.yaml`](broken-workloads/04-pending-nodeselector.yaml) | `Pending` | `nodeSelector: accelerator=nvidia-tesla-v100` matches no node |
 | [`05-stuck-pvc.yaml`](broken-workloads/05-stuck-pvc.yaml) | `Pending` (unbound PVC) | PVC requests a storage class that doesn't exist; dependent `redis-master` pod can't schedule |
 | [`06-rbac-denied.yaml`](broken-workloads/06-rbac-denied.yaml) | `Forbidden` in logs | `ops-reporter` runs as a ServiceAccount with no cluster read permissions |
-| [`07-secret-missing-job.yaml`](broken-workloads/07-secret-missing-job.yaml) | `CreateContainerConfigError` | Job `missing-secret-job` fails because it references a  does not exist secret |
+| [`07-secret-missing-job.yaml`](broken-workloads/07-secret-missing-job.yaml) | `CreateContainerConfigError` | Job `backup-reporting-job` mounts `DATABASE_PRIVATE_KEY` from a secret that does not exist |
 
 These seven cover the overwhelming majority of real-world incidents a DevOps engineer gets paged for.
 
