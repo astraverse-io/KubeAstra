@@ -137,6 +137,19 @@ backend:
     geminiAvailableModels: "gemini-3.1-flash-lite"
     # Enable multi-step ReAct investigations (uses more LLM calls)
     useReactChat: "false"
+    # Accept Alertmanager/Grafana webhooks on POST /api/v1/alerts/webhook.
+    #
+    # Off by default, and an upgrade will not turn it on: this endpoint is
+    # exempt from interactive session auth (machine callers have no session),
+    # so switching it on publishes a route that starts LLM-backed cluster
+    # investigations. Set secrets.alertWebhookToken as well — without a token
+    # the endpoint is open to anything that can reach the backend, and the
+    # backend logs a warning on every unauthenticated call.
+    #
+    # UPGRADING: releases before this key existed had the webhook permanently
+    # on. If alert-driven investigation is already part of your setup, set this
+    # to "true" in the same upgrade, or ingestion stops.
+    alertmanagerWebhookEnabled: "false"
     # Ollama settings for local/self-hosted inference
     ollamaBaseUrl: "http://localhost:11434"
     ollamaModel: "llama3.1"
