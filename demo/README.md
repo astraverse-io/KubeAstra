@@ -7,7 +7,7 @@ Spin up a local Kubernetes cluster pre-seeded with realistic broken workloads so
 ## What you get
 
 - A two-node [kind](https://kind.sigs.k8s.io/) cluster (`kubeastra-demo`)
-- A `demo` namespace containing six intentionally-broken workloads covering the most common Kubernetes failure modes
+- A `demo` namespace containing seven intentionally-broken workloads covering the most common Kubernetes failure modes
 - The web UI running locally at http://localhost:3300, already pointed at the demo cluster
 
 ---
@@ -42,7 +42,7 @@ make up
 This will:
 
 1. Create the kind cluster (reused if it already exists)
-2. Apply the six broken workloads into the `demo` namespace
+2. Apply the seven broken workloads into the `demo` namespace
 3. Wait for the broken states to manifest
 4. Start the web UI (backend + frontend) via docker-compose
 
