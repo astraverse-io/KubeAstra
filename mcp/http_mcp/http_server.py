@@ -28,16 +28,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# Add MCP root to path before optional dependency imports so --version works in
+# minimal environments.
+_root = str(Path(__file__).resolve().parent.parent)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
+from version import VERSION_DISPLAY
+
+if "--version" in sys.argv[1:]:
+    print(VERSION_DISPLAY)
+    sys.exit(0)
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from starlette.responses import Response
-
-# Add MCP root to path
-_root = str(Path(__file__).resolve().parent.parent)
-if _root not in sys.path:
-    sys.path.insert(0, _root)
 
 try:
     from mcp.server import Server
@@ -769,6 +776,7 @@ def main() -> None:
                         help="Disable server-side session tracking (one-shot requests)")
     parser.add_argument("--reload", action="store_true",
                         help="Enable uvicorn auto-reload (development only)")
+    parser.add_argument("--version", action="version", version=VERSION_DISPLAY)
     args = parser.parse_args()
 
     cfg = HTTPConfig(
