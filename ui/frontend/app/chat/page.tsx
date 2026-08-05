@@ -1777,7 +1777,7 @@ export default function ChatPage() {
                         only in server mode — desktop has the first-run wizard
                         and `desktopSetup` is null here otherwise. */}
                     {noModel && isOwnedSession && (
-                      <SetupNotice provider={health.llm_provider} />
+                      <SetupNotice provider={health?.llm_provider} />
                     )}
                   </>
                 ) : (

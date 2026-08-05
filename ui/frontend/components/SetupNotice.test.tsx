@@ -15,7 +15,12 @@ describe("SetupNotice", () => {
 
     expect(screen.getByText(/No language model connected/i)).toBeTruthy();
     expect(screen.getByText("GEMINI_API_KEY")).toBeTruthy();
-    expect(screen.getByRole("link", { name: /aistudio\.google\.com/i })).toBeTruthy();
+    // Asserting the href rather than matching the text with a URL-shaped
+    // regex: the destination is what has to be right, and an unanchored
+    // pattern like /aistudio\.google\.com/ reads to a scanner as a host
+    // check that "evil.com/aistudio.google.com" would satisfy.
+    const link = screen.getByRole("link", { name: /aistudio/i });
+    expect(link.getAttribute("href")).toBe("https://aistudio.google.com/apikey");
   });
 
   it("tells an Ollama install to start the server, and never mentions an API key", () => {
