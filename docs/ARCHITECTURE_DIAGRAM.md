@@ -28,7 +28,7 @@ flowchart TB
         CHAT --> REACT["react.py<br/>ReAct loop (think → act → observe)"]
         CHAT --> TRIAGE["triage.py<br/>Proactive cluster greeting"]
         CHAT --> MEM["memory.py<br/>Per-user conversation memory"]
-        REACT --> REG["tool_registry.py<br/>Unified tool dispatch<br/>(48 tools across surfaces)"]
+        REACT --> REG["tool_registry.py<br/>Unified tool dispatch<br/>(51 tools across surfaces)"]
     end
 
     subgraph RAG["RAG / Retrieval"]
@@ -287,7 +287,7 @@ sequenceDiagram
 
     Note over H: Started by entrypoint.sh alongside the FastAPI app
     C->>H: GET /mcp/ (handshake)
-    H-->>C: tool list (48 tools, MCP surface filter applied)
+    H-->>C: tool list (51 tools, MCP surface filter applied)
     C->>H: POST /mcp/ (tool call)
     H->>REG: dispatch(tool, params)
     REG->>W: call handler
@@ -365,7 +365,7 @@ All three steps are wrapped in try/except — the pod still boots if Qdrant is u
 | `services/rag/schema.py` | bootstrap + ingestion + router | Lookup | Collection specs: `runbook`, `devops_doc`, `deployment_repo`, `session_memory`, `k8s_errors` |
 | `services/vector_db.py` | All RAG callers | All Qdrant traffic | Connect, ensure_collection_for, upsert, search; idempotent client |
 | `services/embeddings.py` | RAG router, capture, ingestion | Every embed | sentence-transformers `all-MiniLM-L6-v2`, 384-dim |
-| `tool_registry.py` | MCP server, chat router, react_loop | Tool dispatch | Single source of truth — 48 tools, per-surface filtering |
+| `tool_registry.py` | MCP server, chat router, react_loop | Tool dispatch | Single source of truth — 51 tools, per-surface filtering |
 | `k8s/wrappers.py` | tool_registry | Every kubectl-flavored tool | 41 high-level workflows; resolves runner from ContextVar |
 | `k8s/kubectl_runner.py` | wrappers | Default (no SSH) | Subprocess `kubectl` against mounted kubeconfig; audit-logged |
 | `k8s/ssh_runner.py` | wrappers | When SSH creds present in request | paramiko-backed remote `kubectl` |

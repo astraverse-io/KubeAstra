@@ -83,3 +83,13 @@ target/
 # of these next to whichever directory it was pointed at — so `git add -A` from
 # the repo root would sweep up several copies at once.
 graphify-out/
+
+# ── Desktop packaging output ──────────────────────────────────────────────
+# These rules lived only on `feat/desktop`, so a branch cut from `main` did
+# not have them. A `git add -A` after a local desktop build then swept 130 MB
+# of PyInstaller output — 523 files of vendored third-party Python — into a
+# pull request, where CodeQL dutifully scanned it and raised fourteen findings
+# against code nobody here wrote. They belong on both branches.
+desktop/build/
+desktop/src-tauri/binaries/
+desktop/src-tauri/gen/schemas/
