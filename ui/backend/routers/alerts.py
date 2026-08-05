@@ -68,6 +68,50 @@ def _resolve_playbook_path() -> str:
     return os.path.join(_resolve_mcp_path(), "data", "playbooks")
 
 
+def _webhook_settings():
+    """Settings, read per call rather than at import.
+
+    The router is imported while `main` is still assembling the app, before
+    tests (and `desktop_main`) have finished setting the environment. Reading
+    at import time would freeze whatever was set at that moment.
+    """
+    from config.settings import get_settings
+
+    return get_settings()
+
+
+def reset_webhook_settings() -> None:
+    """Drop the memoised Settings so a changed environment takes effect.
+
+    `get_settings` is `lru_cache`d. Exported for tests and for anything that
+    rewrites the environment after start-up.
+    """
+    from config.settings import get_settings
+
+    get_settings.cache_clear()
+
+
+def _require_webhook_enabled() -> None:
+    """Refuse the webhook unless the operator asked for it.
+
+    404 rather than 403: a deployment that has not enabled alert ingestion
+    should not advertise that it could. The detail names the variable anyway,
+    because the person reading this response is the operator turning it on —
+    the path is in the public README, so naming the flag tells an attacker
+    nothing they could not already read.
+    """
+    if _webhook_settings().alertmanager_webhook_enabled:
+        return
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            "Alert ingestion is disabled. Set ALERTMANAGER_WEBHOOK_ENABLED=true "
+            "to accept Alertmanager webhooks, and set ALERT_WEBHOOK_TOKEN so "
+            "the endpoint is not open."
+        ),
+    )
+
+
 def _verify_webhook_token(authorization: str | None) -> None:
     """Authenticate machine-to-machine webhook callers via a shared bearer token.
 
@@ -78,6 +122,17 @@ def _verify_webhook_token(authorization: str | None) -> None:
     webhook stays open for local/dev use."""
     expected = os.environ.get("ALERT_WEBHOOK_TOKEN")
     if not expected:
+        # Permitted — a local Alertmanager pointed at a laptop is a real setup,
+        # and requiring a token there would break it. But nothing else in the
+        # system will mention that cluster investigations are now reachable
+        # unauthenticated, so say it on every call rather than once at startup:
+        # the operator who needs to see this is reading logs because traffic
+        # arrived, not because the process booted.
+        logger.warning(
+            "Alert webhook accepted an unauthenticated request: "
+            "ALERTMANAGER_WEBHOOK_ENABLED is set but ALERT_WEBHOOK_TOKEN is not. "
+            "Anyone who can reach this backend can start investigations."
+        )
         return
     provided = ""
     if authorization and authorization.lower().startswith("bearer "):
@@ -164,6 +219,7 @@ async def receive_webhook(
     background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
 ) -> AlertWebhookResponse:
+    _require_webhook_enabled()
     _verify_webhook_token(authorization)
     # Use the migrated normalization logic to parse the incoming webhook
     try:

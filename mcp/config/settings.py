@@ -153,6 +153,16 @@ class Settings(BaseSettings):
     embeddings_timeout_seconds: float = 30.0
     ollama_url: str = "http://localhost:11434"
 
+    # ── Alert ingestion ───────────────────────────────────────────────────────
+    # `/api/v1/alerts/webhook` is exempt from interactive session auth, because
+    # Alertmanager has no user session. That made it reachable by anyone who
+    # could route to the backend, and a POST to it starts an LLM-backed
+    # investigation against the cluster. The README documented this flag with a
+    # default of `false` for as long as the feature existed; nothing read it, so
+    # the endpoint was in fact always on. Now the documented default is the
+    # actual one, and reaching the webhook is a deliberate act.
+    alertmanager_webhook_enabled: bool = False
+
     # ── RAG ingestion (Phase 1.2) ─────────────────────────────────────────────
     # Path to the YAML config consumed by scripts/reindex.py. Only the
     # CronJob honors this; the MCP/backend never reads it directly.

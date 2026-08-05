@@ -193,6 +193,28 @@ For clusters where you can't ship the assistant into the cluster:
 
 Pick your LLM — **Google Gemini** (default, free tier available), **Anthropic Claude** (Opus / Sonnet / Haiku), **OpenAI** (GPT-4o, or any OpenAI-compatible endpoint like Azure OpenAI / vLLM / LiteLLM), or **Ollama** (fully local — your cluster data never leaves your network). Set `LLM_PROVIDER` to `gemini`, `anthropic`, `openai`, or `ollama` and provide the matching API key.
 
+#### Running fully local with Ollama
+
+Investigation memory embeds past investigations so new ones can recall them. That needs an **embedding** model, which is not the chat model — so pull it as well:
+
+```bash
+ollama pull llama3.1            # chat
+ollama pull nomic-embed-text    # embeddings
+```
+
+Then point both at the local daemon:
+
+```bash
+LLM_PROVIDER=ollama
+EMBEDDINGS_MODE=ollama
+```
+
+Without `EMBEDDINGS_MODE=ollama`, embeddings fall back to whatever the mode is set to — which for a hosted provider means investigation text leaves your machine even though chat does not. Setting it is what makes "nothing leaves the network" true end to end.
+
+`nomic-embed-text` is the default; override it with `EMBEDDINGS_MODEL` if you prefer another. Whichever you choose has to be pulled — Ollama does not fetch it on first use, and an unpulled model surfaces as an embeddings error rather than as a missing-model message.
+
+> Note the two separate URLs: `OLLAMA_BASE_URL` points the chat provider at a daemon, `OLLAMA_URL` points embeddings at one. Set both if your Ollama is not on `localhost`.
+
 ### 🛡️ Safety First
 
 - **Read-only by default** — all `kubectl` commands are validated before execution
@@ -480,8 +502,14 @@ All settings are read from environment variables (or `.env`):
 | `OPENAI_API_KEY` | — | Required when `LLM_PROVIDER=openai` |
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI model to use |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Override for OpenAI-compatible endpoints (Azure OpenAI, vLLM, LiteLLM, ...) |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server for **chat** |
 | `OLLAMA_MODEL` | `llama3.1` | Ollama model name (must be pulled first) |
+| `EMBEDDINGS_MODE` | `local` | `local` (sentence-transformers, in-process), `api` (a provider's embeddings endpoint), or `ollama` |
+| `EMBEDDINGS_PROVIDER` | — | `voyage`, `openai`, or `gemini`. Only read when `EMBEDDINGS_MODE=api` |
+| `EMBEDDINGS_API_KEY` | — | Key for `EMBEDDINGS_PROVIDER`. Without one, memory degrades to keyword-only rather than failing |
+| `EMBEDDINGS_MODEL` | provider default | Override the embedding model. `nomic-embed-text` for Ollama |
+| `EMBEDDINGS_TIMEOUT_SECONDS` | `30` | Per-request timeout for embeddings |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama server for **embeddings** — a separate setting from `OLLAMA_BASE_URL` |
 | `ALLOWED_NAMESPACES` | `*` | Comma-separated list, or `*` for all |
 | `KUBECTL_TIMEOUT_SECONDS` | `15` | Per-command timeout |
 | `MAX_LOG_TAIL_LINES` | `200` | Max log lines per request |
@@ -494,9 +522,21 @@ All settings are read from environment variables (or `.env`):
 | `RAG_ROUTER_GROUNDED_THRESHOLD` | `0.70` | Similarity ≥ this on any doc returns a grounded (RAG-fed) answer |
 | `ENABLE_LOG_SUMMARIZATION` | `false` | Compress large `kubectl logs` / `describe` output via heuristic + LLM polish |
 | `SESSION_CAPTURE_ENABLED` | `false` | Auto-classify answers for promotion to the runbook cache |
-| `ALERTMANAGER_WEBHOOK_ENABLED` | `false` | Accept Alertmanager webhooks on `/api/v1/alerts/webhook` |
-| `ALERT_WEBHOOK_TOKEN` | — | Bearer token required on incoming Alertmanager webhook requests |
+| `ALERTMANAGER_WEBHOOK_ENABLED` | `false` | Accept Alertmanager webhooks on `/api/v1/alerts/webhook`. The endpoint 404s until this is `true` |
+| `ALERT_WEBHOOK_TOKEN` | — | Bearer token required on incoming Alertmanager webhook requests. Leave unset and the webhook is open to anything that can reach the backend |
 | `PROMETHEUS_URL` | — | Prometheus endpoint for `prom_query` (leave unset to disable) |
+
+> **Alert ingestion is two gates, not one.** `/api/v1/alerts/webhook` is exempt
+> from interactive session auth, because Alertmanager has no user session.
+> `ALERTMANAGER_WEBHOOK_ENABLED` controls whether the route exists at all;
+> `ALERT_WEBHOOK_TOKEN` controls who may call it. Turning the first on without
+> the second publishes a route that starts LLM-backed cluster investigations —
+> the backend logs a warning on every unauthenticated call, but set the token.
+>
+> **Upgrading:** before this flag was implemented the endpoint was always on,
+> regardless of what the environment said. If alert-driven investigation is
+> already part of your setup, set `ALERTMANAGER_WEBHOOK_ENABLED=true` when you
+> upgrade or ingestion will stop.
 
 ---
 

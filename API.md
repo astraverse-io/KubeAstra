@@ -142,6 +142,11 @@ Accepts the standard Alertmanager webhook payload. Each alert in the batch
 becomes its own investigation, dispatched to the orchestrator as a FastAPI
 background task. Returns immediately with the investigation IDs.
 
+Disabled by default — responds `404` unless `ALERTMANAGER_WEBHOOK_ENABLED=true`.
+The route is exempt from interactive session auth (Alertmanager has no user
+session), so `ALERT_WEBHOOK_TOKEN` is the only thing standing between a caller
+and an LLM-backed cluster investigation. Set it.
+
 **Auth:** bearer token via `Authorization: Bearer <token>` header. Backend
 reads the expected token from `ALERT_WEBHOOK_TOKEN` env var (set by the
 Helm chart from `secrets.alertWebhookToken_{Dev,Prod}` based on namespace).
