@@ -103,6 +103,12 @@ data:
   AUTH_ALLOWED_ORIGINS: {{ .Values.backend.config.authAllowedOrigins | default "" | quote }}
   APP_BASE_URL: {{ .Values.backend.config.appBaseUrl | default "http://localhost:3000" | quote }}
 
+  # ── Alert ingestion ────────────────────────────────────────────────────────
+  # Off unless asked for. /api/v1/alerts/webhook is exempt from session auth —
+  # Alertmanager has no user session — so with this on and ALERT_WEBHOOK_TOKEN
+  # unset, anything that can route to the backend can start an investigation.
+  ALERTMANAGER_WEBHOOK_ENABLED: {{ .Values.backend.config.alertmanagerWebhookEnabled | default "false" | quote }}
+
   # ── Machine agent API ──────────────────────────────────────────────────────
   AGENT_API_MAX_CONCURRENCY: {{ .Values.backend.agentApi.maxConcurrency | default "2" | quote }}
   AGENT_API_QUEUE_TIMEOUT_SECONDS: {{ .Values.backend.agentApi.queueTimeoutSeconds | default "5" | quote }}

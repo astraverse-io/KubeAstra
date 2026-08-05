@@ -48,7 +48,22 @@ def mock_qdrant(monkeypatch):
     vector_db._client = QdrantClient(":memory:")
 
 
-def test_alerts_webhook_and_list():
+@pytest.fixture
+def webhook_enabled(monkeypatch):
+    """Turn on alert ingestion for tests written before it had an off switch.
+
+    These predate ALERTMANAGER_WEBHOOK_ENABLED, when the endpoint was always
+    reachable. Their subject is token handling and payload shape, which only
+    arise once the feature is on — so they enable it rather than assert the
+    old always-on behaviour.
+    """
+    monkeypatch.setenv("ALERTMANAGER_WEBHOOK_ENABLED", "true")
+    alerts_router.reset_webhook_settings()
+    yield
+    alerts_router.reset_webhook_settings()
+
+
+def test_alerts_webhook_and_list(webhook_enabled):
     client = TestClient(app)
     
     payload = {
@@ -97,7 +112,7 @@ def test_webhook_exempt_from_session_auth():
     assert auth.is_public_path("/api/v1/alerts", "GET") is False
 
 
-def test_webhook_token_enforced(monkeypatch):
+def test_webhook_token_enforced(monkeypatch, webhook_enabled):
     """When ALERT_WEBHOOK_TOKEN is set, the webhook requires a matching bearer
     token; missing or wrong tokens are rejected, the correct one is accepted."""
     monkeypatch.setenv("ALERT_WEBHOOK_TOKEN", "supersecret-token-123")
@@ -116,14 +131,18 @@ def test_webhook_token_enforced(monkeypatch):
     assert ok.json()["status"] == "accepted"
 
 
-def test_webhook_open_when_token_unset(monkeypatch):
-    """With no ALERT_WEBHOOK_TOKEN configured the webhook stays open (dev mode)."""
+def test_webhook_open_when_token_unset(monkeypatch, webhook_enabled):
+    """Enabled but tokenless stays open, for a local Alertmanager (dev mode).
+
+    Reachability and authentication are separate gates now: this asserts the
+    second is optional, having explicitly passed the first.
+    """
     monkeypatch.delenv("ALERT_WEBHOOK_TOKEN", raising=False)
     client = TestClient(app)
     assert client.post("/api/v1/alerts/webhook", json=ALERT_PAYLOAD).status_code == 200
 
 
-def test_webhook_rejects_malformed_auth(monkeypatch):
+def test_webhook_rejects_malformed_auth(monkeypatch, webhook_enabled):
     """Empty bearer and a bare token (no scheme) are rejected; a lowercase
     `bearer` scheme is accepted (the scheme is case-insensitive per RFC 6750)."""
     monkeypatch.setenv("ALERT_WEBHOOK_TOKEN", "tok123")
@@ -134,7 +153,7 @@ def test_webhook_rejects_malformed_auth(monkeypatch):
     assert post({"Authorization": "bearer tok123"}).status_code == 200  # case-insensitive
 
 
-def test_webhook_empty_batch_is_accepted(monkeypatch):
+def test_webhook_empty_batch_is_accepted(monkeypatch, webhook_enabled):
     """An empty alerts array is handled gracefully: 200 with no investigations."""
     monkeypatch.delenv("ALERT_WEBHOOK_TOKEN", raising=False)
     client = TestClient(app)
@@ -948,3 +967,100 @@ def test_manual_trigger_routing():
     workload_classification = classifier.classify(workload_alert)
     assert workload_classification.playbook_id == "generic-workload"
     assert workload_classification.confidence == 0.99
+
+
+# ── ALERTMANAGER_WEBHOOK_ENABLED ──────────────────────────────────────────
+#
+# The README documented this variable, with a default of `false`, for as long
+# as the feature has existed. Nothing read it. `alerts.router` was registered
+# unconditionally and `/api/v1/alerts/webhook` sits in `auth.is_public_path`,
+# so an operator who read "false" and did not also set ALERT_WEBHOOK_TOKEN had
+# an open endpoint that starts LLM-backed investigations against their cluster.
+#
+# The flag is now real and the documented default is the actual default.
+
+
+def _enable(monkeypatch, value: str = "true"):
+    monkeypatch.setenv("ALERTMANAGER_WEBHOOK_ENABLED", value)
+    alerts_router.reset_webhook_settings()
+
+
+def test_webhook_is_off_until_enabled(monkeypatch):
+    """The documented default, asserted rather than assumed."""
+    monkeypatch.delenv("ALERTMANAGER_WEBHOOK_ENABLED", raising=False)
+    monkeypatch.delenv("ALERT_WEBHOOK_TOKEN", raising=False)
+    alerts_router.reset_webhook_settings()
+
+    response = TestClient(app).post("/api/v1/alerts/webhook", json=ALERT_PAYLOAD)
+
+    assert response.status_code == 404
+    # The operator turning this on is the one reading the error, so name the
+    # variable instead of leaving them to guess at a bare 404.
+    assert "ALERTMANAGER_WEBHOOK_ENABLED" in response.json()["detail"]
+
+
+def test_disabled_webhook_starts_no_investigation(monkeypatch):
+    """A 404 that still ran the work would be the worst of both."""
+    monkeypatch.delenv("ALERTMANAGER_WEBHOOK_ENABLED", raising=False)
+    alerts_router.reset_webhook_settings()
+
+    TestClient(app).post("/api/v1/alerts/webhook", json=ALERT_PAYLOAD)
+
+    with db._conn() as con:
+        assert con.execute("SELECT COUNT(*) FROM investigations").fetchone()[0] == 0
+
+
+def test_enabling_the_flag_accepts_alerts(monkeypatch):
+    monkeypatch.delenv("ALERT_WEBHOOK_TOKEN", raising=False)
+    _enable(monkeypatch)
+
+    response = TestClient(app).post("/api/v1/alerts/webhook", json=ALERT_PAYLOAD)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+
+
+def test_the_flag_is_a_boolean_not_a_truthy_string(monkeypatch):
+    """`ALERTMANAGER_WEBHOOK_ENABLED=false` must mean false.
+
+    Read through pydantic-settings rather than `os.environ` precisely so the
+    string "false" does not enable the endpoint, which a bare truthiness check
+    on the environment would.
+    """
+    _enable(monkeypatch, "false")
+
+    assert TestClient(app).post(
+        "/api/v1/alerts/webhook", json=ALERT_PAYLOAD
+    ).status_code == 404
+
+
+def test_token_is_still_enforced_once_enabled(monkeypatch):
+    """The flag gates reachability; the token gates who may call it."""
+    monkeypatch.setenv("ALERT_WEBHOOK_TOKEN", "tok-abc")
+    _enable(monkeypatch)
+    client = TestClient(app)
+
+    assert client.post("/api/v1/alerts/webhook", json=ALERT_PAYLOAD).status_code == 401
+    assert client.post(
+        "/api/v1/alerts/webhook",
+        json=ALERT_PAYLOAD,
+        headers={"Authorization": "Bearer tok-abc"},
+    ).status_code == 200
+
+
+def test_enabled_without_a_token_is_warned_about(monkeypatch, caplog):
+    """Open-but-enabled is a legitimate local setup and a bad production one.
+
+    It stays permitted — breaking existing dev setups over it would be worse —
+    but it must not be silent, because nothing else in the system will tell the
+    operator their cluster investigations are reachable unauthenticated.
+    """
+    monkeypatch.delenv("ALERT_WEBHOOK_TOKEN", raising=False)
+    _enable(monkeypatch)
+
+    with caplog.at_level("WARNING"):
+        TestClient(app).post("/api/v1/alerts/webhook", json=ALERT_PAYLOAD)
+
+    assert any(
+        "ALERT_WEBHOOK_TOKEN" in record.message for record in caplog.records
+    ), "enabling the webhook without a token produced no warning"
