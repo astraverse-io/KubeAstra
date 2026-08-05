@@ -13,7 +13,7 @@
 
 An AI-powered Kubernetes troubleshooting assistant that lets teams investigate, diagnose, and resolve cluster issues through natural language — as a **local app on your laptop** (`kubeastra open`), a **chat-based web UI** deployed for a team, or directly inside your **IDE (Cursor / Claude Desktop / VS Code via MCP)**.
 
-Combines live `kubectl` access with pluggable LLM providers (Gemini, Ollama/local, more coming) for root-cause analysis that turns cryptic Kubernetes failures into clear answers and actionable fix commands.
+Combines live `kubectl` access with pluggable LLM providers (Gemini, Claude, GPT, or a fully local Ollama model) for root-cause analysis that turns cryptic Kubernetes failures into clear answers and actionable fix commands.
 
 ## See it in action
 
@@ -21,7 +21,7 @@ Combines live `kubectl` access with pluggable LLM providers (Gemini, Ollama/loca
 
 ▶ [Watch the 90-second demo](https://www.youtube.com/watch?v=jS_kQVK0d8k) — Kubeastra walking through 7 real Kubernetes failures (CrashLoopBackOff, OOMKilled, ImagePullBackOff, stuck PVC, unschedulable pod, namespace-wide health, runbook generation).
 
-> Want to reproduce it locally? `make demo` spins up a kind cluster pre-seeded with six broken workloads. See [`demo/README.md`](demo/README.md).
+> Want to reproduce it locally? `make demo` spins up a kind cluster pre-seeded with seven broken workloads. See [`demo/README.md`](demo/README.md).
 
 ---
 
