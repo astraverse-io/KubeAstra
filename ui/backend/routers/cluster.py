@@ -27,18 +27,82 @@ from http_errors import safe_error_text
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Where kubeconfigs pasted into the UI are written. Desktop mode points this
-# at the per-user app-data directory (0700); the shared-/tmp default is a
-# predictable path and is unsafe on multi-user hosts.
-_TEMP_DIR = Path(
-    os.environ.get("KUBEASTRA_KUBECONFIG_DIR")
-    or Path(tempfile.gettempdir()) / "kubeastra-kubeconfigs"
-).expanduser()
-_TEMP_DIR.mkdir(parents=True, exist_ok=True)
-try:
-    _TEMP_DIR.chmod(0o700)
-except OSError:
-    pass
+class UnsafeKubeconfigDir(RuntimeError):
+    """The directory kubeconfigs would be written to cannot be trusted."""
+
+
+def _kubeconfig_dir_path() -> Path:
+    """Where pasted kubeconfigs live. Desktop overrides this to its app-data dir."""
+    configured = os.environ.get("KUBEASTRA_KUBECONFIG_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    # The uid is in the name so two accounts on one host do not contend for a
+    # single predictable path. Without it, whichever user starts first owns the
+    # directory and every other user fails the ownership check below — a fix
+    # for one problem that hands you a denial of service instead.
+    return Path(tempfile.gettempdir()) / f"kubeastra-kubeconfigs-{os.geteuid()}"
+
+
+def _ensure_private_dir(path: Path) -> Path:
+    """Create the directory 0700, or prove an existing one is safe to use.
+
+    The old code was ``mkdir(parents=True, exist_ok=True)`` followed by a
+    ``chmod(0o700)`` wrapped in ``except OSError: pass``. On a multi-user host
+    every part of that fails open:
+
+    * The path under ``/tmp`` is predictable, so a local user can create it
+      first — as a symlink to a directory they own.
+    * ``exist_ok=True`` accepts what it finds and reports nothing.
+    * ``chmod`` then fails because the directory is not ours, and the bare
+      ``except`` discards the only evidence.
+    * ``_write_temp_kubeconfig``'s ``path.resolve().parent != _TEMP_DIR.resolve()``
+      guard does not catch it either: both sides resolve *through* the same
+      symlink and compare equal.
+
+    The result was that uploaded kubeconfigs — cluster credentials — were
+    written into a directory an attacker controlled, silently.
+
+    So: create it exclusively, and if it already exists, verify with ``lstat``
+    (a symlink is the attack, and ``stat`` would follow it) that it is a real
+    directory, owned by this process, with nothing granted to group or other.
+    Anything else raises. There is no safe way to continue, and continuing is
+    what caused the problem.
+    """
+    try:
+        os.mkdir(path, 0o700)
+        return path
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise UnsafeKubeconfigDir(
+            f"cannot create the kubeconfig directory {path}: {exc.strerror}"
+        ) from exc
+
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode):
+        raise UnsafeKubeconfigDir(
+            f"{path} exists but is not a directory — refusing to write "
+            "kubeconfigs through it. If this is a symlink, remove it."
+        )
+    if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+        raise UnsafeKubeconfigDir(
+            f"{path} is owned by uid {info.st_uid}, not this process "
+            f"(uid {os.geteuid()}). Refusing to write cluster credentials into "
+            "a directory another account controls. Remove it, or set "
+            "KUBEASTRA_KUBECONFIG_DIR to a directory you own."
+        )
+    if info.st_mode & 0o077:
+        # Ours, merely loose. Tightening is safe and the common case after an
+        # upgrade from the version that created these 0755 under a bad umask.
+        os.chmod(path, 0o700)
+        logger.warning("tightened permissions on %s to 0700", path)
+    return path
+
+
+# Resolved once at import. A failure here is fatal on purpose: the alternative
+# is a server that accepts kubeconfig uploads and quietly puts them somewhere
+# unsafe.
+_TEMP_DIR = _ensure_private_dir(_kubeconfig_dir_path())
 
 
 class KubeconfigBody(BaseModel):
@@ -105,8 +169,29 @@ def _write_temp_kubeconfig(session_id: str, content: str) -> str:
     path = _TEMP_DIR / f"kubeastra-{safe_id}.yaml"
     if path.resolve().parent != _TEMP_DIR.resolve():
         raise ValueError("Invalid session path")
-    path.write_text(content)
-    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+    # `write_text` then `chmod` created the file at the process umask and
+    # narrowed it a moment later — on a 022 umask that is a world-readable
+    # window over a cluster credential. O_CREAT with an explicit mode gives it
+    # 0600 from birth; O_NOFOLLOW refuses to write through a symlink that
+    # appeared where the file should be.
+    fd = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
+    try:
+        stream = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        # fdopen takes ownership of the descriptor only when it succeeds, so
+        # this is the one path where we still have to close it ourselves.
+        os.close(fd)
+        raise
+    with stream:
+        stream.write(content)
+    # O_CREAT only applies the mode when the file is new, so an existing file
+    # from an older build keeps whatever it had until this runs.
+    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     logger.info("Wrote temp kubeconfig for session %s", safe_id)
     return str(path)
 
