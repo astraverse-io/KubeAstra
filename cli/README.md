@@ -69,6 +69,26 @@ kubeastra config set backend-url https://kubeastra.mycompany.internal
 
 ## Commands
 
+### `kubeastra open`
+Run the whole product locally as an app — no Docker, no cluster install, no
+backend to start first. This is the exception to the prerequisite above: it
+*is* the backend.
+
+```bash
+kubeastra open                # starts the app and opens your browser
+kubeastra open --no-browser   # start it, print the URL, open it yourself
+```
+
+It binds a loopback-only port, serves the built UI from that same origin, and
+uses the kubeconfig already on this machine. Nothing is installed into any
+cluster, and nothing listens on an external interface.
+
+Requires the UI to have been built once from a source checkout:
+
+```bash
+npm run build:desktop --prefix ui/frontend
+```
+
 ### `kubeastra ask "..."`
 Natural-language investigation. Streams the ReAct loop step-by-step.
 
