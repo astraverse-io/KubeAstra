@@ -7,7 +7,7 @@ A single, unified MCP (Model Context Protocol) server that merges the best of tw
 | `mcp-k8s-investigation-agent` | Live kubectl tools, multi-cluster support, recovery operations, deployment repo search |
 | `k8s-ansible-mcp` | LLM-powered error analysis, RAG similarity search, fix playbooks, runbook generation |
 
-**Result: 51 tools in one server**, covering the full DevOps loop — investigate → diagnose → fix → document.
+**Result: 52 tools in one server**, covering the full DevOps loop — investigate → diagnose → fix → document.
 
 The same toolset is available through two MCP transports:
 - `stdio` for local IDE integration
@@ -49,7 +49,7 @@ GEMINI_API_KEY=your_key_here
 ALLOWED_NAMESPACES=prod,staging,dev,default
 ```
 
-Restart Cursor — the `kubeastra` MCP server will be active with all 51 tools.
+Restart Cursor — the `kubeastra` MCP server will be active with all 52 tools.
 
 If you want to replace Gemini with a standalone Ollama VM, the Rocky Linux runbook lives in `docs/internal_docs/OLLAMA_ROCKY_LINUX_VM_SETUP.md` (internal — not shipped with the repo; ask a maintainer if you need it).
 

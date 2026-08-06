@@ -350,6 +350,16 @@ def _handle_get_events(params: dict, ctx: DispatchContext) -> Any:
 
 
 
+def _handle_get_recent_changes(params: dict, ctx: DispatchContext) -> dict:
+    from k8s.wrappers import get_recent_changes
+
+    return get_recent_changes(
+        params.get("namespace") or "default",
+        within_minutes=int(params.get("within_minutes") or 60),
+        workload_name=params.get("workload_name"),
+    )
+
+
 def _handle_get_deployment(params: dict, ctx: DispatchContext) -> dict:
     from k8s.wrappers import get_deployment
     return get_deployment(
@@ -743,6 +753,7 @@ from mcp_server.schemas import (
     InvestigateHelmReleaseInput,
     DescribePodInput, GetPodLogsInput, GetEventsInput,
     GetDeploymentInput, GetServiceInput, GetEndpointsInput,
+    GetRecentChangesInput,
     GetRolloutStatusInput, K8sgptAnalyzeInput,
     AddKubeconfigContextInput, ListKubeconfigContextsInput,
     SwitchKubeconfigContextInput, GetCurrentContextInput,
@@ -1104,6 +1115,22 @@ _reg(ToolDef(
         "zone/topology hints, and ports."
     ),
     category="cluster",
+    surfaces=_ALL,
+))
+
+_reg(ToolDef(
+    name="get_recent_changes",
+    handler=_handle_get_recent_changes,
+    schema=GetRecentChangesInput,
+    description=(
+        "Find what was deployed or changed in a namespace recently, and what "
+        "the change was. Reach for this FIRST when something broke suddenly: "
+        "a rollout minutes before an alert is the most common cause, and "
+        "'nothing changed' rules it out. Returns each workload that rolled "
+        "out inside the window with its revision, per-container image diff, "
+        "and change-cause when one was recorded."
+    ),
+    category="investigation",
     surfaces=_ALL,
 ))
 
