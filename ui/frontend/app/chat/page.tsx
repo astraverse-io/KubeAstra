@@ -20,6 +20,7 @@ import { YamlProposer } from "../../components/YamlProposer";
 import { SuggestedActions, firstExecutableAction, type SuggestedAction } from "../../components/SuggestedActions";
 import { AstraGlyph } from "../../components/AstraGlyph";
 import { MissionControlHeader } from "../../components/MissionControlHeader";
+import HeaderLiveCounters from "../../components/HeaderLiveCounters";
 import { MissionControlLeftRail } from "../../components/MissionControlLeftRail";
 import { MissionControlDiagnosis } from "../../components/MissionControlDiagnosis";
 import { MissionControlApprovalOverlay } from "../../components/MissionControlApprovalOverlay";
@@ -1562,6 +1563,7 @@ export default function ChatPage() {
 
   const headerRightControls = (
     <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.75rem" }}>
+      <HeaderLiveCounters sessionId={sessionId} />
       {alertsButton}
       {exportPMButton}
       {newInvestigationButton}
