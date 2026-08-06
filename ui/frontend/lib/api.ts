@@ -787,3 +787,67 @@ export async function forgetDesktopSecret(name: string): Promise<{ ok: boolean }
     method: "DELETE",
   });
 }
+
+// ── Live cluster ──────────────────────────────────────────────────────────
+// Both endpoints are cached server-side for 30s and poll on the same cadence,
+// so a slow cluster costs the header staleness rather than a spinner.
+
+export interface ClusterCounters {
+  pods_ready: number;
+  pods_total: number;
+  workloads_degraded: number;
+  alerts_active: number;
+  alerts_sev1: number;
+}
+
+export interface ClusterSummary {
+  cluster: string | null;
+  context: string | null;
+  namespace: string | null;
+  counters: ClusterCounters | null;
+  generated_at: string;
+  cache_age_seconds: number;
+  // Why there are no counters, when there are none. The header words these
+  // differently: one asks you to connect a cluster, the other to ask for
+  // access.
+  reason: "no_cluster" | "insufficient_rbac" | null;
+}
+
+export interface TopologyNode {
+  id: string;
+  kind: string;
+  namespace: string;
+  name: string;
+  health: "green" | "amber" | "red" | "idle";
+  replicas: { ready: number; desired: number };
+}
+
+export interface TopologyEdge {
+  source: string;
+  target: string;
+  kind: string;
+  rate_rps: number;
+}
+
+export interface ClusterTopology {
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  generated_at: string;
+}
+
+export async function fetchClusterSummary(
+  sessionId: string,
+): Promise<ClusterSummary> {
+  return fetchJson(
+    `/api/v1/cluster/summary/${encodeURIComponent(sessionId)}`,
+  );
+}
+
+export async function fetchClusterTopology(
+  sessionId: string,
+  scope: "all" | "alerting" = "alerting",
+): Promise<ClusterTopology> {
+  return fetchJson(
+    `/api/v1/cluster/topology/${encodeURIComponent(sessionId)}?scope=${scope}`,
+  );
+}
