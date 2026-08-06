@@ -31,9 +31,15 @@ def one_line(value: object, limit: int = DEFAULT_LIMIT) -> str:
     of silently becoming the single token `ab`.
     """
     text = str(value)
-    # `isprintable()` is False for \n, \r, \t and the C0/C1 control range, and
-    # True for ordinary text including non-ASCII — so this does not mangle a
-    # reason written in another language.
+    # The two that actually forge a record are handled explicitly first. The
+    # comprehension below would catch them too, but a static analyser reading
+    # this for a log-injection sanitizer is looking for exactly this, and an
+    # unrecognised sanitizer is an alert that never clears.
+    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    # Everything else non-printable — tabs, NUL, escape, the C1 range — is a
+    # display problem rather than a forgery, but has no business in a log line
+    # either. `isprintable()` is True for ordinary text including non-ASCII, so
+    # this does not mangle a reason written in another language.
     cleaned = "".join(ch if ch.isprintable() else " " for ch in text)
     if len(cleaned) > limit:
         return cleaned[:limit] + TRUNCATION_MARKER
