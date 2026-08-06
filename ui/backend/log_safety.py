@@ -30,17 +30,17 @@ def one_line(value: object, limit: int = DEFAULT_LIMIT) -> str:
     spaces rather than being stripped, so that `a\\nb` reads as `a b` instead
     of silently becoming the single token `ab`.
     """
-    text = str(value)
-    # The two that actually forge a record are handled explicitly first. The
-    # comprehension below would catch them too, but a static analyser reading
-    # this for a log-injection sanitizer is looking for exactly this, and an
-    # unrecognised sanitizer is an alert that never clears.
-    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-    # Everything else non-printable — tabs, NUL, escape, the C1 range — is a
-    # display problem rather than a forgery, but has no business in a log line
-    # either. `isprintable()` is True for ordinary text including non-ASCII, so
+    # Non-printables — newlines, tabs, NUL, escape, the C1 range — become
+    # spaces. `isprintable()` is True for ordinary text including non-ASCII, so
     # this does not mangle a reason written in another language.
-    cleaned = "".join(ch if ch.isprintable() else " " for ch in text)
+    cleaned = "".join(ch if ch.isprintable() else " " for ch in str(value))
+    # The comprehension above has already removed these, so functionally this
+    # is a no-op. It is here, and last, because CodeQL recognises a
+    # log-injection sanitizer by an explicit newline replacement on the value
+    # that reaches the sink — a rebuild-by-comprehension it does not follow.
+    # An unrecognised sanitizer means a finding that never clears, and a
+    # permanently red alert trains everyone to ignore the next one.
+    cleaned = cleaned.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
     if len(cleaned) > limit:
         return cleaned[:limit] + TRUNCATION_MARKER
     return cleaned
