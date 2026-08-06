@@ -12,6 +12,7 @@ from pydantic import BaseModel
 import alert_silences
 import auth
 import db
+import log_safety
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +235,7 @@ async def receive_webhook(
                 seconds = db.resolve_investigation(existing["id"])
                 logger.info(
                     "alert %s resolved after %.0fs; closing investigation %s",
-                    alert.name,
+                    log_safety.one_line(alert.name),
                     seconds or 0.0,
                     existing["id"],
                 )
@@ -246,7 +247,7 @@ async def receive_webhook(
                 # reason to investigate something that has stopped.
                 logger.info(
                     "alert %s resolved with no open investigation; ignoring",
-                    alert.name,
+                    log_safety.one_line(alert.name),
                 )
             continue
 
@@ -261,9 +262,9 @@ async def receive_webhook(
                 db.record_silence_match(silence["id"])
             logger.info(
                 "alert %s silenced by %s (%s)",
-                alert.name,
-                matching[0]["id"],
-                matching[0]["reason"],
+                log_safety.one_line(alert.name),
+                log_safety.one_line(matching[0]["id"]),
+                log_safety.one_line(matching[0]["reason"]),
             )
             silenced += 1
             continue
@@ -278,7 +279,7 @@ async def receive_webhook(
             count = db.record_recurrence(existing["id"])
             logger.info(
                 "alert %s recurred (x%s); reusing investigation %s",
-                alert.name,
+                log_safety.one_line(alert.name),
                 count,
                 existing["id"],
             )

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 import alert_silences
 import auth
 import db
+import log_safety
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +74,14 @@ def create_silence(request: Request, body: SilenceCreate) -> dict:
         created_by=created_by,
         ttl_seconds=body.ttl_seconds,
     )
+    # reason and created_by are user-supplied; ttl_seconds and the id are not,
+    # but the whole record is only single-line if every field is.
     logger.info(
         "silence %s created by %s for %ss: %s",
-        silence["id"],
-        created_by,
+        log_safety.one_line(silence["id"]),
+        log_safety.one_line(created_by),
         body.ttl_seconds,
-        body.reason,
+        log_safety.one_line(body.reason),
     )
     return silence
 
@@ -111,5 +114,9 @@ def revoke_silence(request: Request, silence_id: str) -> dict:
     # wanted it not in force, and it is not in force.
     revoked = db.revoke_silence(silence_id)
     if revoked:
-        logger.info("silence %s revoked by %s", silence_id, actor)
+        logger.info(
+            "silence %s revoked by %s",
+            log_safety.one_line(silence_id),
+            log_safety.one_line(actor),
+        )
     return {"id": silence_id, "revoked": revoked}
