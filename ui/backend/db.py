@@ -284,6 +284,18 @@ def init_db() -> None:
             "archived": "INTEGER NOT NULL DEFAULT 0",
             "anonymous_claim_token_hash": "TEXT",
         })
+        # Alert dedup. Alertmanager re-sends a firing alert on its repeat
+        # interval by design, so without these every delivery of one ongoing
+        # problem started a fresh investigation — a full LLM run each time.
+        _ensure_columns(con, "investigations", {
+            "fingerprint": "TEXT",
+            "occurrence_count": "INTEGER NOT NULL DEFAULT 1",
+            "last_seen_at": "TEXT",
+        })
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_investigations_fingerprint "
+            "ON investigations(fingerprint, created_at)"
+        )
         _ensure_columns(con, "feedback_events", {
             "prompt_text": "TEXT",
             "response_text": "TEXT",
@@ -1130,14 +1142,19 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
         with _conn() as con:
             con.execute(
                 """
-                INSERT INTO investigations (id, namespace, severity, source, status, created_at, document)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO investigations
+                    (id, namespace, severity, source, status, created_at, document,
+                     fingerprint, occurrence_count, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     namespace=excluded.namespace,
                     severity=excluded.severity,
                     source=excluded.source,
                     status=excluded.status,
-                    document=excluded.document
+                    document=excluded.document,
+                    fingerprint=excluded.fingerprint
+                    -- occurrence_count and last_seen_at are owned by
+                    -- record_recurrence(); a status update must not reset them.
                 """,
                 (
                     investigation.investigation_id,
@@ -1146,7 +1163,9 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
                     investigation.alert.source,
                     investigation.status.value,
                     investigation.created_at.isoformat(),
-                    doc
+                    doc,
+                    getattr(investigation.alert, "fingerprint", None),
+                    investigation.created_at.isoformat(),
                 )
             )
 
@@ -1157,6 +1176,88 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
                 from alerts.domain.investigation import Investigation
                 return Investigation.model_validate_json(row["document"])
         return None
+
+
+# ── Alert dedup ───────────────────────────────────────────────────────────────
+#
+# Alertmanager re-sends a firing alert every `repeat_interval` for as long as
+# the condition holds. That is not a storm or an edge case — it is the normal
+# path, and without dedup one ongoing problem produced an investigation per
+# delivery: a full LLM run, a row, and a notification, every time.
+#
+# `Alert.fingerprint` already existed and was computed on every alert; nothing
+# read it.
+
+# Statuses meaning "this investigation is still the live answer for that
+# alert". A repeat arriving while one of these is current is the same
+# incident; a repeat after a terminal status is a genuine re-occurrence and
+# deserves a fresh investigation.
+#
+# Derived from InvestigationStatus rather than written out, because guessing
+# them is a silent failure: a name that does not exist matches nothing, so
+# dedup would appear to work and never fire. `completed` and `failed` are the
+# only terminal states; everything else is in flight.
+def _open_statuses() -> tuple:
+    try:
+        from alerts.domain.enums import InvestigationStatus
+    except Exception:  # pragma: no cover — mcp path not set up
+        return ("received", "classified", "running")
+    terminal = {"completed", "failed"}
+    return tuple(s.value for s in InvestigationStatus if s.value not in terminal)
+
+
+OPEN_INVESTIGATION_STATUSES = _open_statuses()
+
+
+def find_open_investigation(fingerprint: str, within_hours: int = 24) -> Optional[dict]:
+    """The live investigation for this fingerprint, if there is one.
+
+    Bounded by age as well as status: an investigation stuck in `investigating`
+    because the process died mid-run would otherwise absorb every future
+    occurrence of that alert forever, and the alert would silently stop
+    producing anything at all.
+    """
+    if not fingerprint:
+        return None
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=within_hours)).isoformat()
+    placeholders = ",".join("?" * len(OPEN_INVESTIGATION_STATUSES))
+    with _conn() as con:
+        row = con.execute(
+            f"""
+            SELECT id, occurrence_count, status, created_at
+            FROM investigations
+            WHERE fingerprint = ?
+              AND status IN ({placeholders})
+              AND created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (fingerprint, *OPEN_INVESTIGATION_STATUSES, cutoff),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_recurrence(investigation_id: str) -> int:
+    """Count another delivery of an alert already being investigated.
+
+    Returns the new occurrence count. Incremented in SQL rather than
+    read-modify-write so two concurrent deliveries cannot both read 3 and both
+    write 4 — Alertmanager sends batches, and this runs per alert in one.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        con.execute(
+            "UPDATE investigations "
+            "SET occurrence_count = occurrence_count + 1, last_seen_at = ? "
+            "WHERE id = ?",
+            (now, investigation_id),
+        )
+        row = con.execute(
+            "SELECT occurrence_count FROM investigations WHERE id = ?",
+            (investigation_id,),
+        ).fetchone()
+    return int(row["occurrence_count"]) if row else 1
 
 
 # ── Agent run helpers (harness Phase 1) ───────────────────────────────────────

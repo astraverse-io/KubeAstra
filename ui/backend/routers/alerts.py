@@ -166,6 +166,9 @@ async def orchestrate_investigation(alert: Any, investigation_id: str, repo: db.
 class AlertWebhookResponse(BaseModel):
     investigation_ids: list[str]
     status: str
+    # How many of the ids above are existing investigations rather than new
+    # ones. Lets an operator see dedup working without reading the logs.
+    deduplicated: int = 0
 
 @router.post("/webhook", response_model=AlertWebhookResponse)
 async def receive_webhook(
@@ -194,7 +197,30 @@ async def receive_webhook(
     repo = db.SqliteInvestigationRepository()
     investigation_ids = []
     
+    deduped = 0
+
     for alert in alerts_list:
+        # Alertmanager re-sends a firing alert every repeat_interval for as
+        # long as the condition holds. Without this, one ongoing problem
+        # started a fresh investigation — and a fresh LLM run — on every
+        # delivery. The fingerprint was already computed on every alert and
+        # read by nothing.
+        existing = db.find_open_investigation(getattr(alert, "fingerprint", ""))
+        if existing:
+            count = db.record_recurrence(existing["id"])
+            logger.info(
+                "alert %s recurred (x%s); reusing investigation %s",
+                alert.name,
+                count,
+                existing["id"],
+            )
+            # The caller gets the live investigation's id, not silence: an
+            # Alertmanager receiver that sees no id has no way to tell dedup
+            # from ingestion having failed.
+            investigation_ids.append(existing["id"])
+            deduped += 1
+            continue
+
         investigation_id = str(uuid.uuid4())
         
         from alerts.domain.investigation import Investigation
@@ -218,7 +244,8 @@ async def receive_webhook(
     
     return AlertWebhookResponse(
         investigation_ids=investigation_ids,
-        status="accepted"
+        status="accepted",
+        deduplicated=deduped,
     )
 
 class ManualInvestigationRequest(BaseModel):
