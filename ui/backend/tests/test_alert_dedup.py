@@ -76,7 +76,14 @@ def test_open_statuses_come_from_the_enum_not_a_guess():
     all_values = {s.value for s in InvestigationStatus}
 
     assert set(db.OPEN_INVESTIGATION_STATUSES) <= all_values
-    assert set(db.OPEN_INVESTIGATION_STATUSES) == all_values - {"completed", "failed"}
+    assert (
+        set(db.OPEN_INVESTIGATION_STATUSES)
+        == all_values - db.TERMINAL_INVESTIGATION_STATUSES
+    )
+    # Named explicitly as well: the set subtraction above stays true if someone
+    # adds a status to both sides, and a new terminal state that is not really
+    # terminal would quietly stop dedup for it.
+    assert db.TERMINAL_INVESTIGATION_STATUSES == {"completed", "failed", "resolved"}
 
 
 @pytest.mark.parametrize("status", ["received", "classified", "running"])

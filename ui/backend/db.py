@@ -288,6 +288,8 @@ def init_db() -> None:
         # interval by design, so without these every delivery of one ongoing
         # problem started a fresh investigation — a full LLM run each time.
         _ensure_columns(con, "investigations", {
+            "resolved_at": "TEXT",
+            "mttr_seconds": "REAL",
             "fingerprint": "TEXT",
             "occurrence_count": "INTEGER NOT NULL DEFAULT 1",
             "last_seen_at": "TEXT",
@@ -1195,15 +1197,21 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
 #
 # Derived from InvestigationStatus rather than written out, because guessing
 # them is a silent failure: a name that does not exist matches nothing, so
-# dedup would appear to work and never fire. `completed` and `failed` are the
-# only terminal states; everything else is in flight.
+# dedup would appear to work and never fire. Everything not terminal is in
+# flight.
+TERMINAL_INVESTIGATION_STATUSES = frozenset({"completed", "failed", "resolved"})
+
+
 def _open_statuses() -> tuple:
     try:
         from alerts.domain.enums import InvestigationStatus
     except Exception:  # pragma: no cover — mcp path not set up
         return ("received", "classified", "running")
-    terminal = {"completed", "failed"}
-    return tuple(s.value for s in InvestigationStatus if s.value not in terminal)
+    return tuple(
+        s.value
+        for s in InvestigationStatus
+        if s.value not in TERMINAL_INVESTIGATION_STATUSES
+    )
 
 
 OPEN_INVESTIGATION_STATUSES = _open_statuses()
@@ -1258,6 +1266,49 @@ def record_recurrence(investigation_id: str) -> int:
             (investigation_id,),
         ).fetchone()
     return int(row["occurrence_count"]) if row else 1
+
+
+def resolve_investigation(investigation_id: str) -> Optional[float]:
+    """Close an investigation because its alert stopped firing.
+
+    Returns seconds from first delivery to resolution, or None if there was no
+    such open investigation. That number is the only honest measure of time to
+    recovery available here: it is the interval over which the alert was
+    actually firing, not how long the LLM took to answer.
+
+    Guarded on the current status so a late duplicate `resolved` delivery —
+    Alertmanager sends those — cannot rewrite an earlier resolution's clock and
+    make the recovery look longer than it was.
+    """
+    now = datetime.now(timezone.utc)
+    placeholders = ",".join("?" * len(OPEN_INVESTIGATION_STATUSES))
+    with _conn() as con:
+        row = con.execute(
+            f"SELECT created_at FROM investigations "
+            f"WHERE id = ? AND status IN ({placeholders})",
+            (investigation_id, *OPEN_INVESTIGATION_STATUSES),
+        ).fetchone()
+        if row is None:
+            return None
+
+        try:
+            created = datetime.fromisoformat(row["created_at"])
+        except (TypeError, ValueError):
+            return None
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+
+        # Clamped at zero: a row written by a host with a skewed clock would
+        # otherwise report a negative time to recovery.
+        seconds = max(0.0, (now - created).total_seconds())
+        con.execute(
+            "UPDATE investigations "
+            "SET status = 'resolved', resolved_at = ?, mttr_seconds = ?, "
+            "    last_seen_at = ? "
+            "WHERE id = ?",
+            (now.isoformat(), seconds, now.isoformat(), investigation_id),
+        )
+    return seconds
 
 
 # ── Agent run helpers (harness Phase 1) ───────────────────────────────────────

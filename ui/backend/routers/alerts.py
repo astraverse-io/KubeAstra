@@ -169,6 +169,9 @@ class AlertWebhookResponse(BaseModel):
     # How many of the ids above are existing investigations rather than new
     # ones. Lets an operator see dedup working without reading the logs.
     deduplicated: int = 0
+    # How many were `resolved` deliveries that closed an open investigation
+    # instead of starting one.
+    resolved: int = 0
 
 @router.post("/webhook", response_model=AlertWebhookResponse)
 async def receive_webhook(
@@ -199,13 +202,44 @@ async def receive_webhook(
     
     deduped = 0
 
+    resolved = 0
+
     for alert in alerts_list:
+        fingerprint = getattr(alert, "fingerprint", "")
+
+        # A `resolved` delivery says the problem went away. Before this it fell
+        # through and started a *new* investigation into a condition that had
+        # already stopped — an LLM run, a row and a notification, all for an
+        # alert that was over. `status` is deliberately not part of the
+        # fingerprint, so the resolved delivery matches the firing one.
+        if str(getattr(alert, "status", "firing")).lower() == "resolved":
+            existing = db.find_open_investigation(fingerprint)
+            if existing:
+                seconds = db.resolve_investigation(existing["id"])
+                logger.info(
+                    "alert %s resolved after %.0fs; closing investigation %s",
+                    alert.name,
+                    seconds or 0.0,
+                    existing["id"],
+                )
+                investigation_ids.append(existing["id"])
+                resolved += 1
+            else:
+                # Nothing open to close: the firing delivery predates this
+                # feature, was already closed, or never arrived. Still not a
+                # reason to investigate something that has stopped.
+                logger.info(
+                    "alert %s resolved with no open investigation; ignoring",
+                    alert.name,
+                )
+            continue
+
         # Alertmanager re-sends a firing alert every repeat_interval for as
         # long as the condition holds. Without this, one ongoing problem
         # started a fresh investigation — and a fresh LLM run — on every
         # delivery. The fingerprint was already computed on every alert and
         # read by nothing.
-        existing = db.find_open_investigation(getattr(alert, "fingerprint", ""))
+        existing = db.find_open_investigation(fingerprint)
         if existing:
             count = db.record_recurrence(existing["id"])
             logger.info(
@@ -246,6 +280,7 @@ async def receive_webhook(
         investigation_ids=investigation_ids,
         status="accepted",
         deduplicated=deduped,
+        resolved=resolved,
     )
 
 class ManualInvestigationRequest(BaseModel):

@@ -15,6 +15,10 @@ class InvestigationStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    # The alert stopped firing. Terminal, and distinct from COMPLETED: that
+    # means the investigation finished, this means the underlying problem went
+    # away — which is the only status that can tell you a time to recovery.
+    RESOLVED = "resolved"
 
 
 class EvidenceType(StrEnum):
