@@ -95,6 +95,56 @@ def test_every_include_resolves_inside_the_image(image_path: str, repo_file: Pat
         )
 
 
+# ── what must never reach a published image ───────────────────────────────
+
+# Build contexts, as release.yml and ci.yml pass them. The backend builds from
+# the repository root, so its context contains every developer artefact in the
+# checkout.
+BUILD_CONTEXTS = {
+    "backend": REPO_ROOT,
+    "frontend": REPO_ROOT / "ui" / "frontend",
+}
+
+# Real files that exist in a working checkout and are gitignored — which is
+# exactly why CI never noticed them. `COPY ui/backend/ /app/` put all three
+# into an image built locally: ten live API keys and 18MB of chat history.
+SECRETS_THAT_ARE_REALLY_THERE = ("**/.env", "**/*.db")
+
+
+@pytest.mark.parametrize("name,context", sorted(BUILD_CONTEXTS.items()))
+def test_every_build_context_has_a_dockerignore(name: str, context: Path):
+    """Without one, `docker build` sends the whole directory and the Dockerfile's
+    directory-level COPYs bake in whatever the builder happens to have."""
+    assert (context / ".dockerignore").exists(), (
+        f"the {name} image builds from {context}, which has no .dockerignore — "
+        f"a local build will copy in developer state"
+    )
+
+
+@pytest.mark.parametrize("pattern", SECRETS_THAT_ARE_REALLY_THERE)
+def test_the_root_context_excludes_secrets_and_local_databases(pattern: str):
+    lines = {
+        line.strip()
+        for line in (REPO_ROOT / ".dockerignore").read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+
+    assert pattern in lines, (
+        f"'{pattern}' is not excluded from the backend build context. The "
+        f"deployment guide tells readers to build this image themselves, so a "
+        f"missing exclusion leaks the builder's own credentials into a layer "
+        f"they then push to a registry."
+    )
+
+
+def test_the_example_env_is_still_allowed_through():
+    """It is committed, carries no secrets, and the docs point at it — a blanket
+    `.env*` exclusion that swallows it would be a silent docs break."""
+    lines = (REPO_ROOT / ".dockerignore").read_text().splitlines()
+
+    assert any(line.strip() == "!**/.env.example" for line in lines)
+
+
 def test_the_known_include_is_the_one_being_guarded():
     """Pins the case this was written for, so that dropping the `-r` from
     mcp/requirements.txt turns this file into a no-op loudly rather than
