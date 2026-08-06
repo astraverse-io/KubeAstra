@@ -1,0 +1,23 @@
+# The Dockerfile runs `npm ci` and then `COPY . .`. Without this file that
+# second COPY overwrites the freshly installed, correctly-targeted
+# node_modules with whatever the build host has — on a developer laptop that
+# means macOS/arm64 binaries landing in a linux/amd64 image, and `npm run
+# build` failing on a missing SWC binary.
+#
+# CI never noticed because a fresh runner checkout has no node_modules. Anyone
+# building the image locally, which the deployment guide tells people to do,
+# hit it immediately.
+node_modules
+.next
+out
+
+# Never bake local secrets or developer state into a published image.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+npm-debug.log*
+coverage
+.DS_Store

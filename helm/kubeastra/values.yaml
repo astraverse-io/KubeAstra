@@ -47,8 +47,15 @@ networking:
 # ── Backend (FastAPI + mcp) ───────────────────────────────────────
 backend:
   image:
-    repository: ghcr.io/kubeastra/kubeastra-backend
-    tag: "latest"
+    # `astraverse-io` is the owner that release.yml actually publishes under.
+    # These defaults said `kubeastra`, which is not a namespace anyone here
+    # controls, so a default `helm install` failed to pull.
+    repository: ghcr.io/astraverse-io/kubeastra-backend
+    # `latest` is only pushed on a v* git tag, and none has been released since
+    # image publishing began — so it does not exist yet. `main` is pushed on
+    # every merge and is what a default install can actually pull. Pin
+    # `sha-<short>` instead if you want a fixed image.
+    tag: "main"
     pullPolicy: IfNotPresent
 
   # Keep this at 1 while using SQLite with backend.persistence.enabled=true
@@ -280,8 +287,9 @@ backend:
 # ── Frontend (Next.js) ────────────────────────────────────────────────────────
 frontend:
   image:
-    repository: ghcr.io/kubeastra/kubeastra-frontend
-    tag: "latest"
+    # See the note on backend.image above for the owner and tag choice.
+    repository: ghcr.io/astraverse-io/kubeastra-frontend
+    tag: "main"
     pullPolicy: IfNotPresent
 
   replicaCount: 1
