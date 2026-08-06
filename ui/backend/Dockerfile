@@ -20,10 +20,18 @@ WORKDIR /app
 # MCP dependencies first (larger, changes less often).
 # Install CPU-only torch FIRST so sentence-transformers doesn't pull the CUDA build
 # (which is 5GB+ and causes nodes to run out of ephemeral storage on pull).
-COPY mcp/requirements.txt /tmp/mcp-requirements.txt
+#
+# Copy the mcp requirements as a directory, not flattened into /tmp. Since the
+# desktop dependency split, mcp/requirements.txt begins with
+# `-r requirements-core.txt`, and pip resolves that relative to the
+# requirements file's own location — so a flat /tmp/mcp-requirements.txt made
+# it look for /tmp/requirements-core.txt and every image build failed from
+# 2026-07-29 until this was fixed. CI installs from the repo tree, where the
+# include resolves, which is why the suite stayed green throughout.
+COPY mcp/requirements.txt mcp/requirements-core.txt /tmp/mcp/
 RUN pip install --no-cache-dir \
       torch>=2.0.0 --extra-index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir -r /tmp/mcp-requirements.txt
+    pip install --no-cache-dir -r /tmp/mcp/requirements.txt
 
 # Backend dependencies
 COPY ui/backend/requirements.txt /tmp/backend-requirements.txt
