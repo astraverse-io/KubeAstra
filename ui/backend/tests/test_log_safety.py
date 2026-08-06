@@ -80,11 +80,17 @@ def test_a_non_string_is_accepted():
 # ── the call sites that CodeQL flagged ────────────────────────────────────
 
 
-def test_the_silences_router_sanitises_what_it_logs():
-    """Guards the specific finding: a reason goes straight into a log line."""
+def test_the_silences_router_does_not_log_the_reason_at_all():
+    """CodeQL kept flagging the reason (alert 146) even sanitised, because the
+    query does not follow a helper that rebuilds the string.
+
+    It is not logged now. The reason is stored on the row and served by
+    GET /silences, so the id in the log line is enough to retrieve it — and a
+    value that never reaches a log cannot forge a record in one.
+    """
     source = (BACKEND_DIR / "routers" / "alert_silences.py").read_text()
 
-    assert "log_safety.one_line(body.reason)" in source
+    assert "body.reason" not in source.split("logger.info")[1].split(")")[0]
     assert "log_safety.one_line(silence_id)" in source
 
 

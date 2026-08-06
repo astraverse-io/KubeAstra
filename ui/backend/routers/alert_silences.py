@@ -74,14 +74,18 @@ def create_silence(request: Request, body: SilenceCreate) -> dict:
         created_by=created_by,
         ttl_seconds=body.ttl_seconds,
     )
-    # reason and created_by are user-supplied; ttl_seconds and the id are not,
-    # but the whole record is only single-line if every field is.
+    # The reason is deliberately not logged. It is caller-supplied free text,
+    # and CodeQL keeps flagging it as log injection (alert 146) even with the
+    # sanitizer applied — the query does not follow a helper that rebuilds the
+    # string. Rather than argue with the analyser or dismiss a live finding, do
+    # not put it here at all: the reason is already stored durably on the row
+    # and served by GET /silences, so the id below is enough to retrieve it.
+    # Nothing is lost except a copy.
     logger.info(
-        "silence %s created by %s for %ss: %s",
+        "silence %s created by %s for %ss",
         log_safety.one_line(silence["id"]),
         log_safety.one_line(created_by),
         body.ttl_seconds,
-        log_safety.one_line(body.reason),
     )
     return silence
 
