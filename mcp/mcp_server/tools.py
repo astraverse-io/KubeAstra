@@ -1,9 +1,16 @@
 """MCP tool registrations for the unified KubeAstra MCP server.
 
-Registers 37 tools split across three categories:
-  • 27 live kubectl tools  — real-time cluster investigation & recovery
-  •  6 AI analysis tools  — LLM-powered error analysis, fix playbooks, runbooks
-  •  3 plan tools          — multi-step remediation planning (Feature C)
+Exposes every tool in `tool_registry.TOOLS` that carries the `mcp` surface.
+
+Most are declared by hand below, because a description written for an LLM
+reading a tool list — when to reach for it, what each flag narrows — is worth
+more than the registry's one-liner. The rest are generated from the registry,
+so a tool added there is never silently absent from the IDE surface. That is
+not hypothetical: this file listed 48 while the registry held 51, and the gap
+went unnoticed long enough to reach two websites.
+
+No count is written here on purpose. `test_mcp_surface_matches_registry.py`
+compares the two lists, which is the only claim that cannot go stale.
 
 Live tools (kubectl-based):
   find_workload, get_pods, get_namespaces, get_nodes, investigate_node, list_namespace_resources,
@@ -77,8 +84,8 @@ from mcp_server.schemas import (
 logger = logging.getLogger(__name__)
 
 
-def get_tools_definitions() -> list[Tool]:
-    """Return the complete list of tool definitions. Extracted for reuse in runtime and server initialization."""
+def _hand_written_tools() -> list[Tool]:
+    """Tool definitions written by hand, with prose aimed at a reading LLM."""
     return [
             # ── Live Kubectl Tools ──────────────────────────────────────────────
             Tool(
@@ -509,7 +516,51 @@ def get_tools_definitions() -> list[Tool]:
                 ),
                 inputSchema=GenerateRunbookInput.model_json_schema()
             ),
+
+            # ── Registry-backed tools ───────────────────────────────────────────
+            # Declared from `tool_registry.TOOLS` rather than by hand. Everything
+            # above is a hand-written copy of a registry entry, and the two lists
+            # drifted: the registry carried 51 tools on the `mcp` surface while
+            # this function returned 48, so three tools were reachable from chat
+            # and invisible to every IDE. README, ARCHITECTURE_DIAGRAM and both
+            # websites all claimed 51.
+            #
+            # New registry tools on the `mcp` surface appear here automatically.
+            # `test_mcp_surface_matches_registry` fails if this stops holding.
         ]
+
+
+def get_tools_definitions() -> list[Tool]:
+    """Every tool the MCP server exposes: the hand-written ones, plus the rest.
+
+    The hand-written half carries prose written for an LLM reading a tool list
+    — when to reach for it, what the flags narrow — which the registry's
+    one-line descriptions do not. Worth keeping. What is not worth keeping is
+    it being the *only* half, which is how three tools ended up reachable from
+    chat and invisible to every IDE.
+    """
+    hand_written = _hand_written_tools()
+    covered = {tool.name for tool in hand_written}
+    return hand_written + _registry_backed_tools(covered)
+
+
+def _registry_backed_tools(covered: set[str]) -> list[Tool]:
+    """Definitions generated from the registry for anything not hand-written.
+
+    `covered` comes from the hand-written list itself rather than a second
+    list of names, so the two cannot disagree about what is already declared.
+    """
+    import tool_registry
+
+    return [
+        Tool(
+            name=name,
+            description=definition.description,
+            inputSchema=definition.schema.model_json_schema(),
+        )
+        for name, definition in sorted(tool_registry.TOOLS.items())
+        if "mcp" in definition.surfaces and name not in covered
+    ]
 
 
 def register_tools(server: Server) -> None:
@@ -844,7 +895,11 @@ def register_tools(server: Server) -> None:
                 ))]
 
             else:
-                return [TextContent(type="text", text=f"Unknown tool: {name}")]
+                # Anything declared by `_registry_backed_tools` lands here.
+                # Listing a tool the dispatcher cannot run would be worse than
+                # not listing it — the IDE shows it, the model calls it, and
+                # the answer is "Unknown tool".
+                return [TextContent(type="text", text=_fmt(_dispatch_via_registry(name, arguments)))]
 
         except ValidationError as e:
             logger.error(f"Validation error in {name}: {e}")
@@ -857,6 +912,24 @@ def register_tools(server: Server) -> None:
         except Exception as e:
             logger.exception(f"Unexpected error in {name}")
             return [TextContent(type="text", text=f"Unexpected error: {str(e)}")]
+
+
+def _dispatch_via_registry(name: str, arguments: Any) -> Dict[str, Any]:
+    """Run a tool that has no hand-written branch above.
+
+    `surface="mcp"` is what the registry checks, and `allow_write` stays False:
+    every tool reaching this path is read-only today, and a write tool added to
+    the registry later should have to say so deliberately rather than inherit
+    permission from the branch that happened to catch it.
+    """
+    import tool_registry
+
+    definition = tool_registry.TOOLS.get(name)
+    if definition is None or "mcp" not in definition.surfaces:
+        return {"error": f"Unknown tool: {name}"}
+
+    ctx = tool_registry.DispatchContext(surface="mcp", allow_write=False)
+    return tool_registry.dispatch(name, dict(arguments or {}), ctx)
 
 
 def _fmt(result: Dict[str, Any]) -> str:

@@ -65,6 +65,17 @@ http://127.0.0.1:8001/mcp/
 
 `start-http.sh` automatically reads the Bearer token from `.cursor/mcp.json` so Cursor and the server agree on auth without manual export.
 
+## CLI flags
+
+Both MCP server entry points support `--version` and print the shared MCP package version:
+
+```bash
+python -m mcp_server.server --version
+python -m http_mcp.http_server --version
+```
+
+Each command prints `kubeastra-mcp <version>` and exits 0.
+
 ---
 
 ## Project Structure
