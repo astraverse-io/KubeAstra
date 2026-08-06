@@ -4245,3 +4245,181 @@ def analyze_namespace(namespace: str) -> Dict[str, Any]:
         result["ai"] = {"ai_enabled": False, "message": "AI service not available"}
 
     return result
+
+
+# ── Change context ────────────────────────────────────────────────────────
+# "What changed just before this broke?" is the question that turns "the pod
+# is crashlooping" into "the pod is crashlooping because the rollout 8 minutes
+# ago changed the image". Kubernetes already records it; nothing here needs a
+# CI integration or a GitOps controller.
+#
+# ReplicaSets are the source of truth for Deployment rollouts: every change to
+# a Deployment's pod template creates a new one, and its creationTimestamp is
+# when that rollout began. Comparing the newest against the previous revision
+# gives the actual diff — which is the part an operator needs and `kubectl
+# rollout history` does not print without a second call per revision.
+
+_CHANGE_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
+
+
+def get_recent_changes(
+    namespace: str,
+    within_minutes: int = 60,
+    workload_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """What changed in a namespace recently, and what the change was.
+
+    Args:
+        namespace: namespace to inspect
+        within_minutes: how far back to look
+        workload_name: optional filter to one workload's rollouts
+
+    Returns:
+        Dict with `changes` (newest first), `window_minutes`, and `checked_at`.
+        An empty `changes` list is a real answer — "nothing deployed recently"
+        rules out the most common cause of a sudden failure.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    namespace = validate_namespace(namespace)
+    if workload_name:
+        workload_name = validate_resource_name(workload_name, "workload")
+    # Bounded so a caller cannot turn this into a full-history scan.
+    within_minutes = max(1, min(int(within_minutes), 60 * 24 * 7))
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=within_minutes)
+
+    try:
+        payload = get_runner().run_json(
+            ["get", "replicasets", "-n", namespace, "-o", "json"]
+        )
+    except KubectlError as exc:
+        return {
+            "namespace": namespace,
+            "window_minutes": within_minutes,
+            "error": str(exc),
+            "changes": [],
+        }
+
+    by_owner: Dict[str, List[dict]] = {}
+    for item in payload.get("items") or []:
+        owner = _rollout_owner(item)
+        if owner is None:
+            continue
+        if workload_name and owner[1] != workload_name:
+            continue
+        by_owner.setdefault(f"{owner[0]}/{owner[1]}", []).append(item)
+
+    changes = []
+    for owner_key, replicasets in by_owner.items():
+        change = _describe_rollout(owner_key, replicasets, cutoff)
+        if change is not None:
+            changes.append(change)
+
+    changes.sort(key=lambda c: c["started_at"], reverse=True)
+
+    return {
+        "namespace": namespace,
+        "window_minutes": within_minutes,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "changes": changes,
+    }
+
+
+def _rollout_owner(replicaset: dict) -> Optional[tuple]:
+    """The (kind, name) a ReplicaSet belongs to, or None if it is orphaned."""
+    for ref in (replicaset.get("metadata") or {}).get("ownerReferences") or []:
+        if ref.get("kind") in _CHANGE_KINDS:
+            return ref["kind"], ref.get("name", "")
+    return None
+
+
+def _describe_rollout(owner_key: str, replicasets: List[dict], cutoff) -> Optional[dict]:
+    """The most recent rollout for one workload, if it falls inside the window.
+
+    Returns None when the newest ReplicaSet predates the cutoff — that
+    workload has not changed recently, which is exactly what the caller wants
+    excluded.
+    """
+    dated = [
+        (_created_at(rs), rs)
+        for rs in replicasets
+        if _created_at(rs) is not None
+    ]
+    if not dated:
+        return None
+    dated.sort(key=lambda pair: pair[0], reverse=True)
+
+    started_at, newest = dated[0]
+    if started_at < cutoff:
+        return None
+
+    previous = dated[1][1] if len(dated) > 1 else None
+    kind, _, name = owner_key.partition("/")
+
+    return {
+        "workload": name,
+        "kind": kind,
+        "started_at": started_at.isoformat(),
+        "revision": _revision(newest),
+        # `kubernetes.io/change-cause` is only set when someone recorded it
+        # (`kubectl ... --record`, or a CI system that writes it). Absent is
+        # the common case and is not an error.
+        "change_cause": _annotation(newest, "kubernetes.io/change-cause"),
+        "image_changes": _image_diff(previous, newest),
+        "replicas_desired": (newest.get("spec") or {}).get("replicas"),
+        "replicas_ready": (newest.get("status") or {}).get("readyReplicas") or 0,
+    }
+
+
+def _created_at(replicaset: dict):
+    from datetime import datetime, timezone
+
+    stamp = (replicaset.get("metadata") or {}).get("creationTimestamp")
+    if not stamp:
+        return None
+    try:
+        # Kubernetes emits RFC3339 with a literal Z, which fromisoformat
+        # rejects before 3.11.
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(
+            timezone.utc
+        )
+    except ValueError:
+        return None
+
+
+def _revision(replicaset: dict) -> Optional[str]:
+    return _annotation(replicaset, "deployment.kubernetes.io/revision")
+
+
+def _annotation(replicaset: dict, key: str) -> Optional[str]:
+    return ((replicaset.get("metadata") or {}).get("annotations") or {}).get(key)
+
+
+def _images(replicaset: Optional[dict]) -> Dict[str, str]:
+    if not replicaset:
+        return {}
+    containers = (
+        ((replicaset.get("spec") or {}).get("template") or {}).get("spec") or {}
+    ).get("containers") or []
+    return {c.get("name", ""): c.get("image", "") for c in containers}
+
+
+def _image_diff(previous: Optional[dict], newest: dict) -> List[dict]:
+    """Per-container image changes between two revisions.
+
+    An empty list with a previous revision present means the rollout changed
+    something else — env, resources, probes. Saying "the image did not change"
+    is useful: it redirects the investigation rather than ending it.
+    """
+    before = _images(previous)
+    after = _images(newest)
+
+    diff = []
+    for container, image in after.items():
+        was = before.get(container)
+        if was is not None and was != image:
+            diff.append({"container": container, "from": was, "to": image})
+        elif was is None and before:
+            diff.append({"container": container, "from": None, "to": image})
+    return diff

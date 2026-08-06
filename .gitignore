@@ -1,6 +1,12 @@
 # ── Archive (internal docs, not part of OSS repo) ─────────────────────────────
 archive/
 internal_docs
+
+# Planning docs copied in from elsewhere. `docs/` is otherwise tracked and
+# public, so anything landing here is one `git add -A` from being published —
+# and the current contents carry another organisation's internal hostnames and
+# a clone URL for its private repo. Reference material stays local.
+docs/observability_docs/
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
