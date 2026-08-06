@@ -2,6 +2,8 @@
 
 import React, { useState } from "react";
 
+import MissionControlTopologyMap from "./MissionControlTopologyMap";
+
 export type MissionControlSession = { id: string; title: string; timestamp: number };
 
 type MissionControlLeftRailProps = {
@@ -16,16 +18,35 @@ type SectionProps = {
   title: string;
   count?: string;
   defaultOpen?: boolean;
+  /** Lets a section whose content polls stop while it is collapsed. */
+  onOpenChange?: (open: boolean) => void;
   children: React.ReactNode;
 };
 
-function Section({ title, count, defaultOpen = true, children }: SectionProps) {
+function Section({
+  title,
+  count,
+  defaultOpen = true,
+  onOpenChange,
+  children,
+}: SectionProps) {
   const [open, setOpen] = useState(defaultOpen);
+
+  const toggle = () => {
+    // Both computed from `open` rather than from inside a `setOpen` updater.
+    // An updater function must be pure — calling the parent's setter in one
+    // updates a different component mid-render, which React reports as
+    // "Cannot update a component while rendering a different component".
+    // It is a console error rather than a crash, so tests stayed green.
+    const next = !open;
+    setOpen(next);
+    onOpenChange?.(next);
+  };
   return (
     <div style={{ borderBottom: "1px solid var(--line, var(--rule))" }}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         aria-expanded={open}
         style={{
           width: "100%",
@@ -84,6 +105,11 @@ export function MissionControlLeftRail({
   onNewSession,
   onDeleteSession,
 }: MissionControlLeftRailProps) {
+  // Collapsed by default: the map is a second kubectl call per poll, and the
+  // header counters already say whether anything is wrong. This panel answers
+  // the follow-up question — *which* workloads — so it is opened on purpose.
+  const [topologyOpen, setTopologyOpen] = useState(false);
+
 
   return (
     <aside
@@ -218,6 +244,17 @@ export function MissionControlLeftRail({
               );
             })}
           </div>
+        </Section>
+
+        <Section
+          title="Topology"
+          defaultOpen={false}
+          onOpenChange={setTopologyOpen}
+        >
+          <MissionControlTopologyMap
+            sessionId={currentSessionId}
+            enabled={topologyOpen}
+          />
         </Section>
 
         {/* The Cluster section that used to sit here is gone. It restated the
