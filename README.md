@@ -342,6 +342,10 @@ Full command reference in [`cli/README.md`](cli/README.md).
 
 ### Option 6: Deploy to Kubernetes via Helm
 
+The chart pulls public images from `ghcr.io/astraverse-io/kubeastra-{backend,frontend}`,
+so there is nothing to build. It defaults to the `main` tag; pin `sha-<short>` for a
+fixed version.
+
 Baseline install — chat UI + backend, no advanced features:
 
 ```bash
