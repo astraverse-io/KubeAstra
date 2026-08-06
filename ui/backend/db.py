@@ -298,6 +298,26 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_investigations_fingerprint "
             "ON investigations(fingerprint, created_at)"
         )
+        # Silences. A known-broken condition — a bad rollout being rolled back,
+        # a namespace under maintenance — otherwise produces an LLM-backed
+        # investigation per alert per repeat interval, for a cause the operator
+        # already knows.
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS alert_silences (
+                id            TEXT PRIMARY KEY,
+                matchers      TEXT NOT NULL,
+                reason        TEXT NOT NULL,
+                created_by    TEXT NOT NULL,
+                created_at    TEXT NOT NULL,
+                expires_at    TEXT NOT NULL,
+                revoked_at    TEXT,
+                matched_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_alert_silences_expiry
+                ON alert_silences(expires_at);
+            """
+        )
         _ensure_columns(con, "feedback_events", {
             "prompt_text": "TEXT",
             "response_text": "TEXT",
@@ -1815,3 +1835,122 @@ def aggregate_run_costs(
         "rows": result_rows,
         "totals": totals
     }
+
+
+# ── Alert silences ────────────────────────────────────────────────────────
+#
+# A silence stops an alert from starting an investigation. It does not stop
+# Alertmanager delivering it, and deliberately so: an operator often wants the
+# raw signal to keep reaching on-call while the assistant stops spending tokens
+# on a cause they already understand. It also covers every source we ingest,
+# not just Alertmanager.
+#
+# Matches are counted rather than discarded, because a silence nobody can see
+# working is one nobody trusts — and a silence matching far more than expected
+# is the first sign its matchers are too broad.
+
+
+def create_silence(
+    silence_id: str,
+    matchers: list[dict],
+    reason: str,
+    created_by: str,
+    ttl_seconds: int,
+) -> dict:
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(seconds=ttl_seconds)
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO alert_silences "
+            "(id, matchers, reason, created_by, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                silence_id,
+                json.dumps(matchers),
+                reason,
+                created_by,
+                now.isoformat(),
+                expires.isoformat(),
+            ),
+        )
+    return {
+        "id": silence_id,
+        "matchers": matchers,
+        "reason": reason,
+        "created_by": created_by,
+        "created_at": now.isoformat(),
+        "expires_at": expires.isoformat(),
+        "revoked_at": None,
+        "matched_count": 0,
+    }
+
+
+def _row_to_silence(row) -> dict:
+    silence = dict(row)
+    try:
+        silence["matchers"] = json.loads(silence["matchers"])
+    except (TypeError, ValueError):
+        # A row we cannot parse must not match anything. Returning it with no
+        # matchers would make it match *everything* under AND semantics.
+        silence["matchers"] = None
+    return silence
+
+
+def list_active_silences() -> list[dict]:
+    """Silences in force right now: not revoked and not expired.
+
+    Expiry is evaluated in the query rather than by a sweeper, so a silence
+    stops applying the moment its TTL passes even if nothing has run since.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM alert_silences "
+            "WHERE revoked_at IS NULL AND expires_at > ? "
+            "ORDER BY created_at DESC",
+            (now,),
+        ).fetchall()
+    return [_row_to_silence(r) for r in rows]
+
+
+def list_all_silences() -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM alert_silences ORDER BY created_at DESC"
+        ).fetchall()
+    return [_row_to_silence(r) for r in rows]
+
+
+def get_silence(silence_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM alert_silences WHERE id = ?", (silence_id,)
+        ).fetchone()
+    return _row_to_silence(row) if row else None
+
+
+def revoke_silence(silence_id: str) -> bool:
+    """End a silence early. Returns False if it was already over.
+
+    Kept as a revocation stamp rather than a delete: "who silenced this, and
+    for how long" is the first question after an alert nobody saw.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE alert_silences SET revoked_at = ? "
+            "WHERE id = ? AND revoked_at IS NULL AND expires_at > ?",
+            (now, silence_id, now),
+        )
+        return cur.rowcount > 0
+
+
+def record_silence_match(silence_id: str) -> None:
+    """Incremented in SQL, not read-modify-write: Alertmanager posts batches
+    and this runs once per alert in one."""
+    with _conn() as con:
+        con.execute(
+            "UPDATE alert_silences SET matched_count = matched_count + 1 "
+            "WHERE id = ?",
+            (silence_id,),
+        )

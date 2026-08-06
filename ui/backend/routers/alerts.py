@@ -9,8 +9,9 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
-import db
+import alert_silences
 import auth
+import db
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,9 @@ class AlertWebhookResponse(BaseModel):
     # How many were `resolved` deliveries that closed an open investigation
     # instead of starting one.
     resolved: int = 0
+    # How many matched an active silence and were recorded without starting
+    # anything.
+    silenced: int = 0
 
 @router.post("/webhook", response_model=AlertWebhookResponse)
 async def receive_webhook(
@@ -203,6 +207,18 @@ async def receive_webhook(
     deduped = 0
 
     resolved = 0
+    silenced = 0
+
+    # Read once per request, not per alert: Alertmanager posts batches, and the
+    # silence set cannot meaningfully change inside one.
+    try:
+        active_silences = db.list_active_silences()
+    except Exception as e:  # pragma: no cover — defensive
+        # A silence lookup that fails must not stop alert ingestion. Failing
+        # open means investigating something that should have been quiet, which
+        # is noisy; failing closed would mean dropping alerts entirely.
+        logger.error("silence lookup failed, ingesting unsilenced: %s", e)
+        active_silences = []
 
     for alert in alerts_list:
         fingerprint = getattr(alert, "fingerprint", "")
@@ -232,6 +248,24 @@ async def receive_webhook(
                     "alert %s resolved with no open investigation; ignoring",
                     alert.name,
                 )
+            continue
+
+        # Silences are checked after resolved handling and before dedup. A
+        # resolved delivery must still be able to close an investigation opened
+        # before the silence existed — otherwise silencing an alert mid-incident
+        # would strand that investigation open forever, and it would go on
+        # absorbing every later occurrence.
+        matching = alert_silences.find_matching(active_silences, dict(alert.labels))
+        if matching:
+            for silence in matching:
+                db.record_silence_match(silence["id"])
+            logger.info(
+                "alert %s silenced by %s (%s)",
+                alert.name,
+                matching[0]["id"],
+                matching[0]["reason"],
+            )
+            silenced += 1
             continue
 
         # Alertmanager re-sends a firing alert every repeat_interval for as
@@ -281,6 +315,7 @@ async def receive_webhook(
         status="accepted",
         deduplicated=deduped,
         resolved=resolved,
+        silenced=silenced,
     )
 
 class ManualInvestigationRequest(BaseModel):
