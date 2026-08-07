@@ -55,6 +55,18 @@ def _tauri_version() -> str:
     return json.loads(text)["version"]
 
 
+def _cargo_version() -> str:
+    """The Rust crate version.
+
+    Tauri bundles using tauri.conf.json, so this one does not name the DMG —
+    which is exactly why it drifted: nothing visible breaks. It still shows up
+    in build output and crash reports, where a version that disagrees with the
+    app sends whoever is reading it to the wrong commit.
+    """
+    text = (REPO_ROOT / "desktop" / "src-tauri" / "Cargo.toml").read_text()
+    return re.search(r'^version = "([^"]+)"', text, re.M).group(1)
+
+
 def _chart_app_version() -> str:
     text = (REPO_ROOT / "helm" / "kubeastra" / "Chart.yaml").read_text()
     return re.search(r'^appVersion:\s*"?([^"\s]+)"?', text, re.M).group(1)
@@ -67,6 +79,7 @@ SOURCES = {
     "helm/kubeastra/Chart.yaml (version)": _chart_version,
     "helm/kubeastra/Chart.yaml (appVersion)": _chart_app_version,
     "desktop/src-tauri/tauri.conf.json": _tauri_version,
+    "desktop/src-tauri/Cargo.toml": _cargo_version,
 }
 
 
