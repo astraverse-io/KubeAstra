@@ -11,6 +11,8 @@ from pydantic import BaseModel
 
 import alert_correlation
 import alert_silences
+import cluster_execution
+import cluster_routing
 import auth
 import db
 import log_safety
@@ -111,7 +113,12 @@ def _verify_webhook_token(authorization: str | None) -> None:
     if not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid or missing webhook token")
 
-async def orchestrate_investigation(alert: Any, investigation_id: str, repo: db.SqliteInvestigationRepository):
+async def orchestrate_investigation(
+    alert: Any,
+    investigation_id: str,
+    repo: db.SqliteInvestigationRepository,
+    cluster: dict | None = None,
+):
     try:
         # Make the MCP package importable BEFORE importing from `alerts` below
         # (anchor to MCP_PATH; dev fallback). main.py normally does this at
@@ -154,7 +161,28 @@ async def orchestrate_investigation(alert: Any, investigation_id: str, repo: db.
             notifications=NotificationDispatcher([LoggingNotificationChannel()]),
         )
 
-        await orchestrator.investigate(alert, investigation_id)
+        # Everything the orchestrator runs — including tools reached through
+        # run_in_threadpool, since a thread copies the context — goes to the
+        # routed cluster. `cluster is None` keeps the default runner, which is
+        # single-cluster mode and every manual run.
+        with cluster_execution.routed_execution(cluster):
+            await orchestrator.investigate(alert, investigation_id)
+    except cluster_execution.ClusterUnreachable as e:
+        # Deliberately not a fallback to the default runner. Running here would
+        # produce a confident, fully-evidenced answer about the wrong machine —
+        # the exact failure routing exists to prevent.
+        logger.error(
+            "cluster unreachable for %s: %s",
+            log_safety.one_line(investigation_id),
+            log_safety.one_line(str(e)),
+        )
+        investigation = await repo.get(investigation_id)
+        if investigation:
+            from alerts.domain.enums import InvestigationStatus
+            investigation.status = InvestigationStatus.FAILED
+            investigation.append_audit("cluster_unreachable", {"error": str(e)})
+            await repo.save(investigation)
+        return
     except Exception as e:
         logger.error(f"Background orchestrator failed for {investigation_id}: {e}")
         # update status to failed
@@ -181,6 +209,10 @@ class AlertWebhookResponse(BaseModel):
     # How many new investigations were attached to an incident, existing or
     # newly opened.
     correlated: int = 0
+    # How many named a cluster this deployment has no route to. The
+    # investigation exists so the alert is visible, but nothing was
+    # investigated — see its status and notes for why.
+    unroutable: int = 0
 
 @router.post("/webhook", response_model=AlertWebhookResponse)
 async def receive_webhook(
@@ -214,8 +246,18 @@ async def receive_webhook(
     resolved = 0
     silenced = 0
     correlated = 0
+    unroutable = 0
 
     settings = _webhook_settings()
+    # Read once per request: the registry cannot meaningfully change inside one
+    # Alertmanager batch, and this is on the hot path.
+    try:
+        registry_empty = db.registry_is_empty()
+    except Exception as e:  # pragma: no cover — defensive
+        # Fail to single-cluster rather than refusing every alert: an
+        # unreadable registry must not stop alerting outright.
+        logger.error("cluster registry unreadable, assuming single cluster: %s", e)
+        registry_empty = True
 
     # Read once per request, not per alert: Alertmanager posts batches, and the
     # silence set cannot meaningfully change inside one.
@@ -319,6 +361,25 @@ async def receive_webhook(
         await repo.save(investigation)
         investigation_ids.append(investigation_id)
 
+        # Route before investigating. An alert investigated against the wrong
+        # cluster produces a confident, fully-evidenced answer about a
+        # different machine — worse than no answer, because nothing about it
+        # looks wrong.
+        route = cluster_routing.resolve(
+            dict(alert.labels),
+            registry_is_empty=registry_empty,
+            lookup=db.get_cluster,
+        )
+        if not route.investigate:
+            db.mark_investigation_needs_config(investigation_id, route.reason)
+            logger.warning(
+                "alert %s not investigated: %s",
+                log_safety.one_line(alert.name),
+                log_safety.one_line(route.reason),
+            )
+            unroutable += 1
+            continue
+
         # Correlation is an enhancement to ingestion, never a gate on it: an
         # alert that cannot be grouped still gets investigated on its own.
         try:
@@ -342,7 +403,9 @@ async def receive_webhook(
         # We need to run the orchestrator in the background task
         # But we need to define orchestrate_investigation function first.
         # Wait, I'll define it above and add it here.
-        background_tasks.add_task(orchestrate_investigation, alert, investigation_id, repo)
+        background_tasks.add_task(
+            orchestrate_investigation, alert, investigation_id, repo, route.cluster
+        )
     
     return AlertWebhookResponse(
         investigation_ids=investigation_ids,
@@ -351,6 +414,7 @@ async def receive_webhook(
         resolved=resolved,
         silenced=silenced,
         correlated=correlated,
+        unroutable=unroutable,
     )
 
 class ManualInvestigationRequest(BaseModel):
@@ -523,8 +587,30 @@ async def trigger_manual_investigation(
     investigation.append_audit("manual_trigger", {"user_id": user_id, "target": req_body.target})
     
     await repo.save(investigation)
-    background_tasks.add_task(orchestrate_investigation, alert, investigation_id, repo)
-    
+
+    # A manual run targets the backend's own context, exactly as before
+    # multi-cluster existed — it is started by a person against the cluster
+    # they are already looking at. Routed through resolve() anyway so a manual
+    # request that *does* name a cluster reaches it, and so the manual rule
+    # lives in one place rather than being implied by this call site.
+    try:
+        registry_empty = db.registry_is_empty()
+    except Exception:  # pragma: no cover — defensive
+        registry_empty = True
+    route = cluster_routing.resolve(
+        dict(alert.labels),
+        registry_is_empty=registry_empty,
+        lookup=db.get_cluster,
+        is_manual=True,
+    )
+    if not route.investigate:
+        db.mark_investigation_needs_config(investigation_id, route.reason)
+        raise HTTPException(status_code=400, detail=route.reason)
+
+    background_tasks.add_task(
+        orchestrate_investigation, alert, investigation_id, repo, route.cluster
+    )
+
     return ManualInvestigationResponse(investigation_id=investigation_id)
 
 class InvestigationFeedback(BaseModel):

@@ -37,7 +37,7 @@ import db
 import metrics
 import auth as auth_utils
 import tracing
-from routers import ai_tools, kubectl, recovery, health, chat, sessions, cluster, feedback, models, alerts, alert_silences, agent_runs, admin, agent, metrics as metrics_router
+from routers import ai_tools, kubectl, recovery, health, chat, sessions, cluster, feedback, models, alerts, alert_silences, clusters, agent_runs, admin, agent, metrics as metrics_router
 from routers import cluster_live
 from routers import auth as auth_router
 
@@ -286,6 +286,7 @@ app.include_router(feedback.router, prefix="/api", tags=["Feedback"])
 app.include_router(models.router, prefix="/api", tags=["Models"])
 app.include_router(alerts.router, tags=["Alerts"])
 app.include_router(alert_silences.router, tags=["Alerts"])
+app.include_router(clusters.router, tags=["Clusters"])
 app.include_router(metrics_router.router, tags=["Metrics"])
 app.include_router(agent_runs.router, prefix="/api", tags=["AgentRuns"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
