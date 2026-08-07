@@ -12,6 +12,7 @@ release bump has to touch all of them, which is the actual requirement.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -42,6 +43,18 @@ def _chart_version() -> str:
     return re.search(r'^version:\s*"?([^"\s]+)"?', text, re.M).group(1)
 
 
+def _tauri_version() -> str:
+    """The desktop app's own version.
+
+    This one is not cosmetic: Tauri's updater compares it against the release
+    feed to decide whether an update exists. It said 1.0.0 while everything
+    else said 0.2.0, so a shipped app would have considered itself newer than
+    every release and never updated itself.
+    """
+    text = (REPO_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text()
+    return json.loads(text)["version"]
+
+
 def _chart_app_version() -> str:
     text = (REPO_ROOT / "helm" / "kubeastra" / "Chart.yaml").read_text()
     return re.search(r'^appVersion:\s*"?([^"\s]+)"?', text, re.M).group(1)
@@ -53,6 +66,7 @@ SOURCES = {
     "cli/pyproject.toml": _cli_pyproject_version,
     "helm/kubeastra/Chart.yaml (version)": _chart_version,
     "helm/kubeastra/Chart.yaml (appVersion)": _chart_app_version,
+    "desktop/src-tauri/tauri.conf.json": _tauri_version,
 }
 
 
