@@ -1,9 +1,21 @@
 {{- if .Values.rbac.create }}
-# ClusterRole grants read access to the Kubernetes resources that mcp
-# queries via kubectl (get_pods, get_events, get_deployment, etc.).
-# Write operations (delete_pod, rollout_restart, scale, patch) are only needed
-# if ENABLE_RECOVERY_OPERATIONS=true — they are included here but blocked by
-# the application setting unless explicitly enabled.
+# ClusterRole granting the access mcp needs through kubectl.
+#
+# Read verbs are always granted. Write verbs are granted only when
+# `backend.config.enableRecoveryOperations` is "true".
+#
+# They used to be granted unconditionally, with a comment explaining that the
+# application setting blocked them anyway. That is a description of the
+# application, not of the cluster: the ServiceAccount could delete any pod and
+# exec into any container, in every namespace, whether or not the feature was
+# on. An application-level flag is not an access control — it is the thing an
+# attacker who reaches the application does not have to satisfy.
+#
+# Exec is separated from the rest for the same reason. Nothing in remediation
+# needs `pods/exec`; only the interactive `exec_pod_command` tool does, and
+# `create` on pods/exec is arbitrary command execution in any container in the
+# cluster. It now has its own switch, so enabling a rollout restart does not
+# also hand over a shell.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -37,12 +49,18 @@ rules:
       - ingresses
     verbs: ["get", "list", "watch"]
 
-  # ── Write operations (needed if ENABLE_RECOVERY_OPERATIONS=true) ─────────────
+{{- if eq (.Values.backend.config.enableRecoveryOperations | toString) "true" }}
+  # ── Write operations ─────────────────────────────────────────────────────────
+  # Granted only because enableRecoveryOperations is "true".
+  #
+  # This is the narrowest set that supports rollout restart and scaling, which
+  # is everything alert-driven remediation can propose. Deleting a pod is
+  # included because the interactive tool offers it, but note that it discards
+  # the pod whose state is often the only evidence of what went wrong.
   - apiGroups: [""]
     resources:
       - pods
-      - pods/exec
-    verbs: ["delete", "create"]
+    verbs: ["delete"]
 
   - apiGroups: ["apps"]
     resources:
@@ -51,6 +69,18 @@ rules:
       - statefulsets
       - statefulsets/scale
     verbs: ["patch", "update"]
+{{- if .Values.rbac.allowPodExec }}
+
+  # ── Exec ─────────────────────────────────────────────────────────────────────
+  # `create` on pods/exec is arbitrary command execution in any container in
+  # any namespace. Nothing in remediation needs it; only the interactive
+  # exec_pod_command tool does. Off unless asked for by name.
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+    verbs: ["create"]
+{{- end }}
+{{- end }}
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
