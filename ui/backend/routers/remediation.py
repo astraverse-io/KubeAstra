@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 import alert_remediation
 import auth
+import remediation_executor
 import db
 import log_safety
 
@@ -143,3 +144,29 @@ def decide(request: Request, proposal_id: str, body: Decision) -> dict:
         log_safety.one_line(decided_by),
     )
     return decided
+
+
+@router.post("/proposals/{proposal_id}/execute")
+def execute(request: Request, proposal_id: str) -> dict:
+    """Carry out an approved proposal.
+
+    Admin-gated, and separate from approval on purpose: approving is a
+    judgement, running it is an act, and requiring both makes "approve and run"
+    two decisions rather than one click that does both.
+
+    The work is in remediation_executor, which re-checks policy, namespace,
+    arguments and the rate cap before touching anything — nothing is trusted
+    from the approval, which only records that a human agreed at some point.
+    """
+    user = auth.require_current_user(request)
+    if user and not auth.is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        return remediation_executor.execute_proposal(proposal_id)
+    except alert_remediation.RemediationNotPermitted as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except remediation_executor.RemediationFailed as exc:
+        # 502: the request was allowed and the cluster refused or failed. An
+        # operator needs to tell that apart from "policy said no".
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

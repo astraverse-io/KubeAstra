@@ -195,6 +195,18 @@ class Settings(BaseSettings):
     # exists in that shape.
     alert_remediation_approval_ttl_seconds: int = 900
 
+    # Namespaces remediation may touch. Empty permits none, like every other
+    # layer. This matters more than it looks when the node credential is
+    # cluster-admin: it is the difference between restarting the wrong
+    # application and restarting kube-system.
+    alert_remediation_allowed_namespaces: str = ""
+
+    # Ceiling on executed remediations per hour, across everything. A flapping
+    # alert plus a standing approval is how one deployment gets restarted two
+    # hundred times; this is the backstop that does not depend on anybody
+    # noticing.
+    alert_remediation_max_per_hour: int = 5
+
     # ── RAG ingestion (Phase 1.2) ─────────────────────────────────────────────
     # Path to the YAML config consumed by scripts/reindex.py. Only the
     # CronJob honors this; the MCP/backend never reads it directly.

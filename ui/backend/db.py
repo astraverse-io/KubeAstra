@@ -2545,3 +2545,31 @@ def mark_remediation_executed(proposal_id: str) -> bool:
             "WHERE id = ? AND status = 'approved' AND expires_at > ?",
             (proposal_id, now),
         ).rowcount > 0
+
+
+def count_recent_remediations(within_minutes: int = 60) -> int:
+    """Executed remediations in the window, across everything.
+
+    Deliberately global rather than per-deployment: the failure being bounded
+    is "the system is acting far more than anyone intended", and a per-target
+    cap misses a storm spread across fifty targets.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=within_minutes)).isoformat()
+    with _conn() as con:
+        row = con.execute(
+            "SELECT COUNT(*) AS c FROM remediation_proposals "
+            "WHERE status = 'executed' AND decided_at >= ?",
+            (cutoff,),
+        ).fetchone()
+    return int(row["c"]) if row else 0
+
+
+def record_remediation_result(proposal_id: str, note: str) -> None:
+    """Attach the outcome to the proposal, so the row is the whole story:
+    what was proposed, who approved it, and what happened."""
+    with _conn() as con:
+        con.execute(
+            "UPDATE remediation_proposals SET decision_note = "
+            "COALESCE(decision_note || ' | ', '') || ? WHERE id = ?",
+            (note, proposal_id),
+        )

@@ -316,22 +316,31 @@ def test_listing_by_investigation(clean_db):
 
 
 def test_this_module_cannot_execute_anything():
-    """Deliberate marker. This layer decides and records; execution stays in
-    services/plans.py behind its confirmation-token machinery.
+    """Deliberate boundary marker. This layer decides and records; execution
+    lives in remediation_executor.py.
 
-    If something here ever grows the ability to run a command, the separation
-    that makes the policy meaningful is gone — a policy you can bypass by
-    calling a different function in the same module is not a policy.
+    Checked by parsing the module rather than grepping its text: a substring
+    search matched the word "kubectl" in a comment explaining *why* a value is
+    validated, and a guard that misfires on prose is a guard somebody weakens
+    or deletes. What is actually forbidden is importing a way to act.
     """
+    import ast
     import inspect
 
-    source = inspect.getsource(rem)
+    tree = ast.parse(inspect.getsource(rem))
 
-    for forbidden in ("subprocess", "kubectl", "execute_step", "dispatch("):
-        assert forbidden not in source, (
-            f"alert_remediation.py references {forbidden!r} — this layer must "
-            f"not be able to act, only to decide"
-        )
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+
+    forbidden = {"subprocess", "os", "paramiko", "k8s", "services", "db"}
+    assert not (imported & forbidden), (
+        f"alert_remediation.py imports {sorted(imported & forbidden)} — this "
+        f"layer must be able to decide, not to act"
+    )
 
 
 # ── the API ───────────────────────────────────────────────────────────────

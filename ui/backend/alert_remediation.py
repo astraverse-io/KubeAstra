@@ -136,3 +136,106 @@ def check(action: str, policy: Policy) -> None:
             f"policy permits {sorted(policy.allowed)}"
         )
         raise RemediationNotPermitted(f"{action!r} not permitted: {detail}")
+
+
+# ── Argument and namespace checks ─────────────────────────────────────────
+#
+# These cannot be shell-injected — the SSH runner quotes every argument before
+# it builds a command string, which was verified rather than assumed. What they
+# guard is the layer above that: a value that is perfectly safe as a shell
+# token and still means something nobody intended once kubectl reads it.
+#
+# That matters much more when the node credential is broad. A wrong namespace
+# is a wrong restart; with a cluster-admin credential it can be a restart of
+# something holding the cluster up.
+
+import re
+
+# RFC 1123 label, which is what Kubernetes accepts for these names. Anything
+# else — a wildcard, a flag, an empty string — is refused rather than passed
+# through for kubectl to interpret.
+_DNS_1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+MAX_NAME_LENGTH = 253
+# A "scale to fix it" that scales to four thousand is not a fix. The cap is
+# deliberately low: remediation restores service, it does not plan capacity.
+MAX_REPLICAS = 50
+
+_REQUIRED_ARGS = {
+    "rollout_restart": ("namespace", "deployment_name"),
+    "scale_deployment": ("namespace", "deployment_name", "replicas"),
+}
+
+
+def validate_arguments(action: str, arguments) -> dict:
+    """Normalise and check a proposal's arguments, or raise."""
+    if not isinstance(arguments, dict):
+        # None is what the store returns for a row whose JSON did not parse.
+        raise RemediationNotPermitted(
+            "proposal arguments are missing or unreadable, so nothing can be "
+            "executed from it"
+        )
+
+    required = _REQUIRED_ARGS.get(action)
+    if required is None:
+        raise RemediationNotPermitted(f"{action!r} has no argument contract")
+
+    missing = [key for key in required if key not in arguments]
+    if missing:
+        raise RemediationNotPermitted(
+            f"{action!r} is missing {', '.join(missing)}"
+        )
+
+    checked: dict = {}
+    for key in ("namespace", "deployment_name"):
+        if key not in required:
+            continue
+        value = str(arguments[key]).strip()
+        if not value or len(value) > MAX_NAME_LENGTH or not _DNS_1123.match(value):
+            raise RemediationNotPermitted(
+                f"{key} {arguments[key]!r} is not a valid Kubernetes name"
+            )
+        checked[key] = value
+
+    if "replicas" in required:
+        raw = arguments["replicas"]
+        # bool is an int in Python, and `replicas: true` scaling to 1 is not a
+        # decision anybody made.
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise RemediationNotPermitted(f"replicas {raw!r} is not an integer")
+        if not 0 <= raw <= MAX_REPLICAS:
+            raise RemediationNotPermitted(
+                f"replicas {raw} is outside 0..{MAX_REPLICAS}"
+            )
+        checked["replicas"] = raw
+
+    return checked
+
+
+def parse_namespaces(raw) -> frozenset[str]:
+    if not raw:
+        return frozenset()
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(",")]
+    else:
+        parts = [str(p).strip() for p in raw]
+    return frozenset(p for p in parts if p)
+
+
+def check_namespace(namespace: str, allowed) -> None:
+    """Raise unless remediation is permitted in this namespace.
+
+    Empty means none, matching every other layer. There is deliberately no
+    wildcard: with a broad node credential, "all namespaces" is a setting
+    somebody would enable to get unblocked and never revisit.
+    """
+    permitted = parse_namespaces(allowed)
+    if not permitted:
+        raise RemediationNotPermitted(
+            "alert_remediation_allowed_namespaces is empty, so remediation is "
+            "not permitted in any namespace"
+        )
+    if namespace not in permitted:
+        raise RemediationNotPermitted(
+            f"namespace {namespace!r} is not in the remediation allowlist"
+        )
