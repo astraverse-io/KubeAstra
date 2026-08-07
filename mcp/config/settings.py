@@ -176,6 +176,37 @@ class Settings(BaseSettings):
     # never contains key material.
     cluster_ssh_secret_dir: str = "/etc/kubeastra/cluster-credentials"
 
+    # ── Alert-driven remediation ──────────────────────────────────────────────
+    # Whether an alert investigation may *propose* a fix for a human to approve.
+    # It never executes one on its own; see alert_remediation.py.
+    #
+    # Off, and every layer below defaults to empty, so switching this on alone
+    # still permits nothing. That is deliberate: a single flag that turns on
+    # writes against a production cluster is a flag somebody flips by accident.
+    alert_auto_remediation_enabled: bool = False
+
+    # Comma-separated actions this deployment permits at all, e.g.
+    # "rollout_restart,scale_deployment". The ceiling for every cluster and
+    # playbook — nothing can widen it, only narrow it.
+    alert_auto_remediation_allowed_actions: str = ""
+
+    # How long an approved remediation stays approved. Cluster state drifts;
+    # an approval from an hour ago was given about a cluster that no longer
+    # exists in that shape.
+    alert_remediation_approval_ttl_seconds: int = 900
+
+    # Namespaces remediation may touch. Empty permits none, like every other
+    # layer. This matters more than it looks when the node credential is
+    # cluster-admin: it is the difference between restarting the wrong
+    # application and restarting kube-system.
+    alert_remediation_allowed_namespaces: str = ""
+
+    # Ceiling on executed remediations per hour, across everything. A flapping
+    # alert plus a standing approval is how one deployment gets restarted two
+    # hundred times; this is the backstop that does not depend on anybody
+    # noticing.
+    alert_remediation_max_per_hour: int = 5
+
     # ── RAG ingestion (Phase 1.2) ─────────────────────────────────────────────
     # Path to the YAML config consumed by scripts/reindex.py. Only the
     # CronJob honors this; the MCP/backend never reads it directly.
