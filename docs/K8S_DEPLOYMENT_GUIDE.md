@@ -9,7 +9,7 @@ Helm chart at `helm/kubeastra/`.
 helm install kubeastra ./helm/kubeastra --namespace kubeastra --create-namespace
 ```
 
-The chart defaults to `ghcr.io/astraverse-io/kubeastra-{backend,frontend}:main`,
+The chart defaults to `ghcr.io/astraverse-io/kubeastra-{backend,frontend}:latest`,
 which anyone can pull without authenticating. Skip to
 [Step 4](#step-4--prepare-the-kubeconfig-secret) unless you need your own images.
 
@@ -27,8 +27,8 @@ Container registry
   ├── kubeastra-backend:main    ← FastAPI :8000 + HTTP MCP :8001 + mcp
   └── kubeastra-frontend:main   ← Next.js standalone
 
-  Published tags are `main` (every merge) and `sha-<short>` (a fixed commit).
-  `latest` exists only once a v* release is tagged.
+  Published tags: `latest` and `<version>` on each release, plus `main`
+  (every merge) and `sha-<short>` (a fixed commit).
 
 Kubernetes namespace: kubeastra
   ├── Deployment/backend                       (FastAPI :8000 + HTTP MCP :8001)
