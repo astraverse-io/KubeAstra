@@ -163,6 +163,56 @@ class Settings(BaseSettings):
     # actual one, and reaching the webhook is a deliberate act.
     alertmanager_webhook_enabled: bool = False
 
+    # How close in time two alerts about the same workload have to be to count
+    # as one incident. The window slides on last activity rather than on when
+    # the incident opened, so a workload that keeps firing stays one incident
+    # instead of fragmenting into a new one every window period.
+    alert_correlation_window_minutes: int = 10
+
+    # An incident normally closes when every investigation attached to it is
+    # terminal. This is the backstop for when that never happens — an
+    # Alertmanager configured with `send_resolved: false` never tells us the
+    # condition ended, so without a lifetime cap the incident would keep
+    # absorbing new alerts forever and they would stop being investigated.
+    alert_incident_max_lifetime_hours: int = 24
+
+    # Directory holding per-cluster SSH private keys, one file per
+    # `credential_ref` in the cluster registry. Mounted from a Secret in
+    # server mode. The registry stores only the file name, so the database
+    # never contains key material.
+    cluster_ssh_secret_dir: str = "/etc/kubeastra/cluster-credentials"
+
+    # ── Alert-driven remediation ──────────────────────────────────────────────
+    # Whether an alert investigation may *propose* a fix for a human to approve.
+    # It never executes one on its own; see alert_remediation.py.
+    #
+    # Off, and every layer below defaults to empty, so switching this on alone
+    # still permits nothing. That is deliberate: a single flag that turns on
+    # writes against a production cluster is a flag somebody flips by accident.
+    alert_auto_remediation_enabled: bool = False
+
+    # Comma-separated actions this deployment permits at all, e.g.
+    # "rollout_restart,scale_deployment". The ceiling for every cluster and
+    # playbook — nothing can widen it, only narrow it.
+    alert_auto_remediation_allowed_actions: str = ""
+
+    # How long an approved remediation stays approved. Cluster state drifts;
+    # an approval from an hour ago was given about a cluster that no longer
+    # exists in that shape.
+    alert_remediation_approval_ttl_seconds: int = 900
+
+    # Namespaces remediation may touch. Empty permits none, like every other
+    # layer. This matters more than it looks when the node credential is
+    # cluster-admin: it is the difference between restarting the wrong
+    # application and restarting kube-system.
+    alert_remediation_allowed_namespaces: str = ""
+
+    # Ceiling on executed remediations per hour, across everything. A flapping
+    # alert plus a standing approval is how one deployment gets restarted two
+    # hundred times; this is the backstop that does not depend on anybody
+    # noticing.
+    alert_remediation_max_per_hour: int = 5
+
     # ── RAG ingestion (Phase 1.2) ─────────────────────────────────────────────
     # Path to the YAML config consumed by scripts/reindex.py. Only the
     # CronJob honors this; the MCP/backend never reads it directly.

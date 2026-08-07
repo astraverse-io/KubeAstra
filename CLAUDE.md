@@ -1,6 +1,6 @@
 # KubeAstra — repository guide
 
-AI-powered Kubernetes investigation assistant. An MCP tool server (51 tools)
+AI-powered Kubernetes investigation assistant. An MCP tool server (52 tools)
 plus a FastAPI + Next.js UI. Runs two ways from one codebase, switched by
 `KUBEASTRA_MODE`:
 

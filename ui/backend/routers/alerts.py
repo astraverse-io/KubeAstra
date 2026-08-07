@@ -10,9 +10,15 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
+import alert_correlation
+import alert_silences
+import cluster_execution
+import cluster_routing
 import cluster_session
 import db
 import auth
+import db
+import log_safety
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +147,12 @@ def _verify_webhook_token(authorization: str | None) -> None:
     if not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid or missing webhook token")
 
-async def orchestrate_investigation(alert: Any, investigation_id: str, repo: db.SqliteInvestigationRepository):
+async def orchestrate_investigation(
+    alert: Any,
+    investigation_id: str,
+    repo: db.SqliteInvestigationRepository,
+    cluster: dict | None = None,
+):
     try:
         # Make the MCP package importable BEFORE importing from `alerts` below
         # (anchor to MCP_PATH; dev fallback). main.py normally does this at
@@ -184,18 +195,43 @@ async def orchestrate_investigation(alert: Any, investigation_id: str, repo: db.
             notifications=NotificationDispatcher([LoggingNotificationChannel()]),
         )
 
+        # Two mechanisms, one for each mode, and each a no-op in the other.
+        #
+        # `_bound_to_chosen_cluster` is desktop: it targets the cluster the
+        # operator picked in the UI, because on a laptop the ambient
+        # current-context is routinely an employer's cluster nobody pointed
+        # this app at. In server mode resolve_default() returns None and it
+        # does nothing.
+        #
+        # `routed_execution` is server: it targets the cluster the alert's
+        # label names. With no registry it does nothing, which is desktop and
+        # every existing single-cluster deployment.
+        #
+        # Routing is innermost deliberately. If both were ever live, the
+        # per-alert route must win — a stale "chosen cluster" row overriding it
+        # would be exactly the wrong-cluster answer both of these exist to
+        # prevent.
         with _bound_to_chosen_cluster():
-            await orchestrator.investigate(alert, investigation_id)
+            with cluster_execution.routed_execution(cluster):
+                await orchestrator.investigate(alert, investigation_id)
     except (cluster_session.NoDefaultCluster,
-            cluster_session.ClusterConnectionUnavailable) as e:
-        # Refuse rather than fall back. Running this against whatever the
-        # machine's kubeconfig points at is the failure mode being closed.
-        logger.warning("investigation %s not run: %s", investigation_id, e)
+            cluster_session.ClusterConnectionUnavailable,
+            cluster_execution.ClusterUnreachable) as e:
+        # One clause because the answer is the same on both sides: refuse
+        # rather than fall back. Running against whatever the machine's
+        # kubeconfig happens to point at, or against the default target when
+        # the alert named another cluster, produces a confident and
+        # fully-evidenced answer about the wrong machine.
+        logger.error(
+            "investigation %s not run — no usable cluster: %s",
+            log_safety.one_line(investigation_id),
+            log_safety.one_line(str(e)),
+        )
         investigation = await repo.get(investigation_id)
         if investigation:
             from alerts.domain.enums import InvestigationStatus
             investigation.status = InvestigationStatus.FAILED
-            investigation.append_audit("no_cluster_selected", {"error": str(e)})
+            investigation.append_audit("cluster_unavailable", {"error": str(e)})
             await repo.save(investigation)
         return
     except Exception as e:
@@ -212,6 +248,22 @@ async def orchestrate_investigation(alert: Any, investigation_id: str, repo: db.
 class AlertWebhookResponse(BaseModel):
     investigation_ids: list[str]
     status: str
+    # How many of the ids above are existing investigations rather than new
+    # ones. Lets an operator see dedup working without reading the logs.
+    deduplicated: int = 0
+    # How many were `resolved` deliveries that closed an open investigation
+    # instead of starting one.
+    resolved: int = 0
+    # How many matched an active silence and were recorded without starting
+    # anything.
+    silenced: int = 0
+    # How many new investigations were attached to an incident, existing or
+    # newly opened.
+    correlated: int = 0
+    # How many named a cluster this deployment has no route to. The
+    # investigation exists so the alert is visible, but nothing was
+    # investigated — see its status and notes for why.
+    unroutable: int = 0
 
 @router.post("/webhook", response_model=AlertWebhookResponse)
 async def receive_webhook(
@@ -240,7 +292,111 @@ async def receive_webhook(
     repo = db.SqliteInvestigationRepository()
     investigation_ids = []
     
+    deduped = 0
+
+    resolved = 0
+    silenced = 0
+    correlated = 0
+    unroutable = 0
+
+    settings = _webhook_settings()
+    # Read once per request: the registry cannot meaningfully change inside one
+    # Alertmanager batch, and this is on the hot path.
+    try:
+        registry_empty = db.registry_is_empty()
+    except Exception as e:  # pragma: no cover — defensive
+        # Fail to single-cluster rather than refusing every alert: an
+        # unreadable registry must not stop alerting outright.
+        logger.error("cluster registry unreadable, assuming single cluster: %s", e)
+        registry_empty = True
+
+    # Read once per request, not per alert: Alertmanager posts batches, and the
+    # silence set cannot meaningfully change inside one.
+    try:
+        active_silences = db.list_active_silences()
+    except Exception as e:  # pragma: no cover — defensive
+        # A silence lookup that fails must not stop alert ingestion. Failing
+        # open means investigating something that should have been quiet, which
+        # is noisy; failing closed would mean dropping alerts entirely.
+        logger.error("silence lookup failed, ingesting unsilenced: %s", e)
+        active_silences = []
+
     for alert in alerts_list:
+        fingerprint = getattr(alert, "fingerprint", "")
+
+        # A `resolved` delivery says the problem went away. Before this it fell
+        # through and started a *new* investigation into a condition that had
+        # already stopped — an LLM run, a row and a notification, all for an
+        # alert that was over. `status` is deliberately not part of the
+        # fingerprint, so the resolved delivery matches the firing one.
+        if str(getattr(alert, "status", "firing")).lower() == "resolved":
+            existing = db.find_open_investigation(fingerprint)
+            if existing:
+                seconds = db.resolve_investigation(existing["id"])
+                logger.info(
+                    "alert %s resolved after %.0fs; closing investigation %s",
+                    log_safety.one_line(alert.name),
+                    seconds or 0.0,
+                    existing["id"],
+                )
+                investigation_ids.append(existing["id"])
+                resolved += 1
+                # The alert clearing may have settled the last open
+                # investigation on its incident.
+                try:
+                    if existing.get("incident_id"):
+                        db.close_incident_if_settled(existing["incident_id"])
+                except Exception as e:  # pragma: no cover — defensive
+                    logger.error("incident close failed: %s", e)
+            else:
+                # Nothing open to close: the firing delivery predates this
+                # feature, was already closed, or never arrived. Still not a
+                # reason to investigate something that has stopped.
+                logger.info(
+                    "alert %s resolved with no open investigation; ignoring",
+                    log_safety.one_line(alert.name),
+                )
+            continue
+
+        # Silences are checked after resolved handling and before dedup. A
+        # resolved delivery must still be able to close an investigation opened
+        # before the silence existed — otherwise silencing an alert mid-incident
+        # would strand that investigation open forever, and it would go on
+        # absorbing every later occurrence.
+        matching = alert_silences.find_matching(active_silences, dict(alert.labels))
+        if matching:
+            for silence in matching:
+                db.record_silence_match(silence["id"])
+            logger.info(
+                "alert %s silenced by %s (%s)",
+                log_safety.one_line(alert.name),
+                log_safety.one_line(matching[0]["id"]),
+                log_safety.one_line(matching[0]["reason"]),
+            )
+            silenced += 1
+            continue
+
+        # Alertmanager re-sends a firing alert every repeat_interval for as
+        # long as the condition holds. Without this, one ongoing problem
+        # started a fresh investigation — and a fresh LLM run — on every
+        # delivery. The fingerprint was already computed on every alert and
+        # read by nothing.
+        existing = db.find_open_investigation(fingerprint)
+        if existing:
+            count = db.record_recurrence(existing["id"])
+            logger.info(
+                "alert %s recurred (x%s); reusing investigation %s",
+                log_safety.one_line(alert.name),
+                count,
+                existing["id"],
+            )
+            # The caller gets the live investigation's id, not silence: an
+            # Alertmanager receiver that sees no id has no way to tell dedup
+            # from ingestion having failed.
+            investigation_ids.append(existing["id"])
+            deduped += 1
+            continue
+
         investigation_id = str(uuid.uuid4())
         
         from alerts.domain.investigation import Investigation
@@ -255,16 +411,61 @@ async def receive_webhook(
         
         await repo.save(investigation)
         investigation_ids.append(investigation_id)
+
+        # Route before investigating. An alert investigated against the wrong
+        # cluster produces a confident, fully-evidenced answer about a
+        # different machine — worse than no answer, because nothing about it
+        # looks wrong.
+        route = cluster_routing.resolve(
+            dict(alert.labels),
+            registry_is_empty=registry_empty,
+            lookup=db.get_cluster,
+        )
+        if not route.investigate:
+            db.mark_investigation_needs_config(investigation_id, route.reason)
+            logger.warning(
+                "alert %s not investigated: %s",
+                log_safety.one_line(alert.name),
+                log_safety.one_line(route.reason),
+            )
+            unroutable += 1
+            continue
+
+        # Correlation is an enhancement to ingestion, never a gate on it: an
+        # alert that cannot be grouped still gets investigated on its own.
+        try:
+            namespace, workload = alert_correlation.correlation_key(dict(alert.labels))
+            incident_id = db.find_or_open_incident(
+                namespace,
+                workload,
+                window_minutes=settings.alert_correlation_window_minutes,
+                max_lifetime_hours=settings.alert_incident_max_lifetime_hours,
+            )
+            if incident_id:
+                # Set after save(): the orchestrator rewrites this row from an
+                # object built before correlation ran, so writing it earlier
+                # would be clobbered back to NULL.
+                db.attach_to_incident(investigation_id, incident_id)
+                correlated += 1
+        except Exception as e:  # pragma: no cover — defensive
+            logger.error("correlation failed for %s: %s", investigation_id, e)
         
         # Phase 2: Start the orchestrator here
         # We need to run the orchestrator in the background task
         # But we need to define orchestrate_investigation function first.
         # Wait, I'll define it above and add it here.
-        background_tasks.add_task(orchestrate_investigation, alert, investigation_id, repo)
+        background_tasks.add_task(
+            orchestrate_investigation, alert, investigation_id, repo, route.cluster
+        )
     
     return AlertWebhookResponse(
         investigation_ids=investigation_ids,
-        status="accepted"
+        status="accepted",
+        deduplicated=deduped,
+        resolved=resolved,
+        silenced=silenced,
+        correlated=correlated,
+        unroutable=unroutable,
     )
 
 class ManualInvestigationRequest(BaseModel):
@@ -449,9 +650,110 @@ async def trigger_manual_investigation(
     investigation.append_audit("manual_trigger", {"user_id": user_id, "target": req_body.target})
     
     await repo.save(investigation)
-    background_tasks.add_task(orchestrate_investigation, alert, investigation_id, repo)
-    
+
+    # A manual run targets the backend's own context, exactly as before
+    # multi-cluster existed — it is started by a person against the cluster
+    # they are already looking at. Routed through resolve() anyway so a manual
+    # request that *does* name a cluster reaches it, and so the manual rule
+    # lives in one place rather than being implied by this call site.
+    try:
+        registry_empty = db.registry_is_empty()
+    except Exception:  # pragma: no cover — defensive
+        registry_empty = True
+    route = cluster_routing.resolve(
+        dict(alert.labels),
+        registry_is_empty=registry_empty,
+        lookup=db.get_cluster,
+        is_manual=True,
+    )
+    if not route.investigate:
+        db.mark_investigation_needs_config(investigation_id, route.reason)
+        raise HTTPException(status_code=400, detail=route.reason)
+
+    background_tasks.add_task(
+        orchestrate_investigation, alert, investigation_id, repo, route.cluster
+    )
+
     return ManualInvestigationResponse(investigation_id=investigation_id)
+
+class InvestigationFeedback(BaseModel):
+    rating: str
+    # Optional on purpose. A bare 👎 is nearly useless for fixing a playbook,
+    # but requiring an explanation loses the signal from everyone who does not
+    # have time to write one — and a rate computed from ratings people actually
+    # left beats a better-annotated one they did not.
+    notes: str = ""
+
+
+@router.get("/feedback/summary")
+async def feedback_summary(within_days: int = 30) -> dict:
+    """Which playbooks are producing answers people reject.
+
+    Declared before the feedback POST and any dynamic segment so `feedback` is
+    not read as an investigation id.
+    """
+    summary = await run_in_threadpool(
+        db.investigation_feedback_summary, within_days=within_days
+    )
+    return {"playbooks": summary, "window_days": within_days}
+
+
+@router.post("/{investigation_id}/feedback")
+async def submit_feedback(
+    request: Request, investigation_id: str, body: InvestigationFeedback
+) -> dict:
+    """Rate an investigation's root-cause answer.
+
+    Behind interactive user auth: a verdict is attributable, and "who said this
+    was wrong" is the first question when a playbook is about to be rewritten
+    on the strength of it.
+    """
+    user = auth.require_current_user(request)
+    rated_by = str(user.get("email") or user.get("id") or "local")
+
+    try:
+        recorded = await run_in_threadpool(
+            db.record_investigation_feedback,
+            investigation_id,
+            body.rating,
+            body.notes,
+            rated_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not recorded:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+
+    logger.info(
+        "investigation %s rated %s by %s",
+        log_safety.one_line(investigation_id),
+        log_safety.one_line(body.rating),
+        log_safety.one_line(rated_by),
+    )
+    return {"id": investigation_id, "rating": body.rating}
+
+
+@router.get("/incidents")
+async def list_incidents(limit: int = 50, include_closed: bool = False) -> dict:
+    """Alerts grouped by the problem they are about.
+
+    Declared before the `/{...}` reading routes below so `incidents` is not
+    swallowed as a path parameter.
+    """
+    incidents = await run_in_threadpool(
+        db.list_incidents, limit=limit, include_closed=include_closed
+    )
+    return {"incidents": incidents, "count": len(incidents)}
+
+
+@router.get("/incidents/{incident_id}")
+async def get_incident(incident_id: str) -> dict:
+    incident = await run_in_threadpool(db.get_incident, incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return incident
+
 
 @router.get("")
 async def list_alerts(limit: int = 50):

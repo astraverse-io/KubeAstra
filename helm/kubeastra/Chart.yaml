@@ -5,8 +5,14 @@ description: >
   mcp) and Next.js frontend. Provides a team chat UI backed by
   Gemini AI + live kubectl investigation tools.
 type: application
-version: 1.0.0
-appVersion: "1.0.0"
+# Kept in step with mcp/version.py and cli/src/kubeastra/__init__.py, which are
+# what the released tag and the PyPI package say. This chart claimed 1.0.0
+# beside a 0.1.0 CLI and a v0.1.0 release — three different answers to "what
+# version is this?" on a public repo. A guard test now fails if they diverge.
+#
+# Bump all three together, in the same commit as the release tag.
+version: 0.2.0
+appVersion: "0.2.0"
 keywords:
   - kubernetes
   - devops

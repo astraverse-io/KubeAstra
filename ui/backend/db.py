@@ -284,6 +284,111 @@ def init_db() -> None:
             "archived": "INTEGER NOT NULL DEFAULT 0",
             "anonymous_claim_token_hash": "TEXT",
         })
+        # Alert dedup. Alertmanager re-sends a firing alert on its repeat
+        # interval by design, so without these every delivery of one ongoing
+        # problem started a fresh investigation — a full LLM run each time.
+        _ensure_columns(con, "investigations", {
+            # Was this answer any good? Chat has had thumbs for a while and
+            # promotes good answers into the runbook collection; alert-driven
+            # investigations produced RCAs nobody could rate, so a playbook
+            # that consistently produced a wrong answer looked the same as one
+            # that always worked.
+            # Why an investigation is in the status it is in — currently only
+            # written for `needs_config`, where "nothing was investigated" is
+            # useless without "because no cluster is registered as prod-eu".
+            # Kept separate from feedback_notes: a routing reason is not a
+            # human's verdict, and sharing the column would have mixed the two
+            # in any query that read either.
+            "status_reason": "TEXT",
+            "feedback_rating": "TEXT",
+            "feedback_notes": "TEXT",
+            "feedback_at": "TEXT",
+            "feedback_by": "TEXT",
+            "incident_id": "TEXT",
+            "resolved_at": "TEXT",
+            "mttr_seconds": "REAL",
+            "fingerprint": "TEXT",
+            "occurrence_count": "INTEGER NOT NULL DEFAULT 1",
+            "last_seen_at": "TEXT",
+        })
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_investigations_fingerprint "
+            "ON investigations(fingerprint, created_at)"
+        )
+        # Silences. A known-broken condition — a bad rollout being rolled back,
+        # a namespace under maintenance — otherwise produces an LLM-backed
+        # investigation per alert per repeat interval, for a cause the operator
+        # already knows.
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS alert_silences (
+                id            TEXT PRIMARY KEY,
+                matchers      TEXT NOT NULL,
+                reason        TEXT NOT NULL,
+                created_by    TEXT NOT NULL,
+                created_at    TEXT NOT NULL,
+                expires_at    TEXT NOT NULL,
+                revoked_at    TEXT,
+                matched_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_alert_silences_expiry
+                ON alert_silences(expires_at);
+
+            -- Incidents. Three alerts about one crashlooping pod are one
+            -- problem; investigating each separately costs three LLM runs and
+            -- produces three answers, none of which mention the others.
+            CREATE TABLE IF NOT EXISTS incidents (
+                id             TEXT PRIMARY KEY,
+                namespace      TEXT NOT NULL,
+                workload       TEXT NOT NULL,
+                opened_at      TEXT NOT NULL,
+                last_active_at TEXT NOT NULL,
+                closed_at      TEXT,
+                alert_count    INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_incidents_open
+                ON incidents(namespace, workload, closed_at, last_active_at);
+
+            -- Which cluster an alert is about, and how to reach it. No secret
+            -- material lives here: `credential_ref` names a mounted secret,
+            -- so a database dump does not hand over cluster access.
+            -- Proposed fixes awaiting a human. A row here has changed
+            -- nothing: it is a suggestion, and only `approved_at` plus a
+            -- deliberate execute call can make it act.
+            CREATE TABLE IF NOT EXISTS remediation_proposals (
+                id                TEXT PRIMARY KEY,
+                investigation_id  TEXT NOT NULL,
+                cluster_id        TEXT,
+                action            TEXT NOT NULL,
+                arguments         TEXT NOT NULL,
+                rationale         TEXT,
+                status            TEXT NOT NULL DEFAULT 'pending',
+                proposed_at       TEXT NOT NULL,
+                expires_at        TEXT NOT NULL,
+                decided_at        TEXT,
+                decided_by        TEXT,
+                decision_note     TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_remediation_pending
+                ON remediation_proposals(status, expires_at);
+
+            CREATE TABLE IF NOT EXISTS cluster_registry (
+                id              TEXT PRIMARY KEY,
+                display_name    TEXT,
+                ssh_host        TEXT NOT NULL,
+                ssh_port        INTEGER NOT NULL DEFAULT 22,
+                ssh_user        TEXT NOT NULL,
+                credential_ref  TEXT NOT NULL,
+                kubectl_context TEXT,
+                status          TEXT NOT NULL DEFAULT 'active',
+                registered_at   TEXT NOT NULL
+            );
+            """
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_investigations_incident "
+            "ON investigations(incident_id)"
+        )
         _ensure_columns(con, "feedback_events", {
             "prompt_text": "TEXT",
             "response_text": "TEXT",
@@ -1146,14 +1251,19 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
         with _conn() as con:
             con.execute(
                 """
-                INSERT INTO investigations (id, namespace, severity, source, status, created_at, document)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO investigations
+                    (id, namespace, severity, source, status, created_at, document,
+                     fingerprint, occurrence_count, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     namespace=excluded.namespace,
                     severity=excluded.severity,
                     source=excluded.source,
                     status=excluded.status,
-                    document=excluded.document
+                    document=excluded.document,
+                    fingerprint=excluded.fingerprint
+                    -- occurrence_count and last_seen_at are owned by
+                    -- record_recurrence(); a status update must not reset them.
                 """,
                 (
                     investigation.investigation_id,
@@ -1162,7 +1272,9 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
                     investigation.alert.source,
                     investigation.status.value,
                     investigation.created_at.isoformat(),
-                    doc
+                    doc,
+                    getattr(investigation.alert, "fingerprint", None),
+                    investigation.created_at.isoformat(),
                 )
             )
 
@@ -1173,6 +1285,146 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
                 from alerts.domain.investigation import Investigation
                 return Investigation.model_validate_json(row["document"])
         return None
+
+
+# ── Alert dedup ───────────────────────────────────────────────────────────────
+#
+# Alertmanager re-sends a firing alert every `repeat_interval` for as long as
+# the condition holds. That is not a storm or an edge case — it is the normal
+# path, and without dedup one ongoing problem produced an investigation per
+# delivery: a full LLM run, a row, and a notification, every time.
+#
+# `Alert.fingerprint` already existed and was computed on every alert; nothing
+# read it.
+
+# Statuses meaning "this investigation is still the live answer for that
+# alert". A repeat arriving while one of these is current is the same
+# incident; a repeat after a terminal status is a genuine re-occurrence and
+# deserves a fresh investigation.
+#
+# Derived from InvestigationStatus rather than written out, because guessing
+# them is a silent failure: a name that does not exist matches nothing, so
+# dedup would appear to work and never fire. Everything not terminal is in
+# flight.
+# Every InvestigationStatus must appear in exactly one of these two sets. They
+# are written out rather than derived from each other because deriving one from
+# the other is self-consistent for any enum: a new status added to the enum
+# would quietly fall into "open" and be treated as in-flight forever. Spelling
+# both out means a new status fails the partition test until somebody decides
+# which it is.
+TERMINAL_INVESTIGATION_STATUSES = frozenset(
+    {"completed", "failed", "resolved", "needs_config"}
+)
+ACTIVE_INVESTIGATION_STATUSES = frozenset({"received", "classified", "running"})
+
+
+def _open_statuses() -> tuple:
+    try:
+        from alerts.domain.enums import InvestigationStatus
+    except Exception:  # pragma: no cover — mcp path not set up
+        return ("received", "classified", "running")
+    return tuple(
+        s.value
+        for s in InvestigationStatus
+        if s.value not in TERMINAL_INVESTIGATION_STATUSES
+    )
+
+
+OPEN_INVESTIGATION_STATUSES = _open_statuses()
+
+
+def find_open_investigation(fingerprint: str, within_hours: int = 24) -> Optional[dict]:
+    """The live investigation for this fingerprint, if there is one.
+
+    Bounded by age as well as status: an investigation stuck in `investigating`
+    because the process died mid-run would otherwise absorb every future
+    occurrence of that alert forever, and the alert would silently stop
+    producing anything at all.
+    """
+    if not fingerprint:
+        return None
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=within_hours)).isoformat()
+    placeholders = ",".join("?" * len(OPEN_INVESTIGATION_STATUSES))
+    with _conn() as con:
+        row = con.execute(
+            f"""
+            SELECT id, occurrence_count, status, created_at, incident_id
+            FROM investigations
+            WHERE fingerprint = ?
+              AND status IN ({placeholders})
+              AND created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (fingerprint, *OPEN_INVESTIGATION_STATUSES, cutoff),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_recurrence(investigation_id: str) -> int:
+    """Count another delivery of an alert already being investigated.
+
+    Returns the new occurrence count. Incremented in SQL rather than
+    read-modify-write so two concurrent deliveries cannot both read 3 and both
+    write 4 — Alertmanager sends batches, and this runs per alert in one.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        con.execute(
+            "UPDATE investigations "
+            "SET occurrence_count = occurrence_count + 1, last_seen_at = ? "
+            "WHERE id = ?",
+            (now, investigation_id),
+        )
+        row = con.execute(
+            "SELECT occurrence_count FROM investigations WHERE id = ?",
+            (investigation_id,),
+        ).fetchone()
+    return int(row["occurrence_count"]) if row else 1
+
+
+def resolve_investigation(investigation_id: str) -> Optional[float]:
+    """Close an investigation because its alert stopped firing.
+
+    Returns seconds from first delivery to resolution, or None if there was no
+    such open investigation. That number is the only honest measure of time to
+    recovery available here: it is the interval over which the alert was
+    actually firing, not how long the LLM took to answer.
+
+    Guarded on the current status so a late duplicate `resolved` delivery —
+    Alertmanager sends those — cannot rewrite an earlier resolution's clock and
+    make the recovery look longer than it was.
+    """
+    now = datetime.now(timezone.utc)
+    placeholders = ",".join("?" * len(OPEN_INVESTIGATION_STATUSES))
+    with _conn() as con:
+        row = con.execute(
+            f"SELECT created_at FROM investigations "
+            f"WHERE id = ? AND status IN ({placeholders})",
+            (investigation_id, *OPEN_INVESTIGATION_STATUSES),
+        ).fetchone()
+        if row is None:
+            return None
+
+        try:
+            created = datetime.fromisoformat(row["created_at"])
+        except (TypeError, ValueError):
+            return None
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+
+        # Clamped at zero: a row written by a host with a skewed clock would
+        # otherwise report a negative time to recovery.
+        seconds = max(0.0, (now - created).total_seconds())
+        con.execute(
+            "UPDATE investigations "
+            "SET status = 'resolved', resolved_at = ?, mttr_seconds = ?, "
+            "    last_seen_at = ? "
+            "WHERE id = ?",
+            (now.isoformat(), seconds, now.isoformat(), investigation_id),
+        )
+    return seconds
 
 
 # ── Agent run helpers (harness Phase 1) ───────────────────────────────────────
@@ -1679,3 +1931,661 @@ def aggregate_run_costs(
         "rows": result_rows,
         "totals": totals
     }
+
+
+# ── Alert silences ────────────────────────────────────────────────────────
+#
+# A silence stops an alert from starting an investigation. It does not stop
+# Alertmanager delivering it, and deliberately so: an operator often wants the
+# raw signal to keep reaching on-call while the assistant stops spending tokens
+# on a cause they already understand. It also covers every source we ingest,
+# not just Alertmanager.
+#
+# Matches are counted rather than discarded, because a silence nobody can see
+# working is one nobody trusts — and a silence matching far more than expected
+# is the first sign its matchers are too broad.
+
+
+def create_silence(
+    silence_id: str,
+    matchers: list[dict],
+    reason: str,
+    created_by: str,
+    ttl_seconds: int,
+) -> dict:
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(seconds=ttl_seconds)
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO alert_silences "
+            "(id, matchers, reason, created_by, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                silence_id,
+                json.dumps(matchers),
+                reason,
+                created_by,
+                now.isoformat(),
+                expires.isoformat(),
+            ),
+        )
+    return {
+        "id": silence_id,
+        "matchers": matchers,
+        "reason": reason,
+        "created_by": created_by,
+        "created_at": now.isoformat(),
+        "expires_at": expires.isoformat(),
+        "revoked_at": None,
+        "matched_count": 0,
+    }
+
+
+def _row_to_silence(row) -> dict:
+    silence = dict(row)
+    try:
+        silence["matchers"] = json.loads(silence["matchers"])
+    except (TypeError, ValueError):
+        # A row we cannot parse must not match anything. Returning it with no
+        # matchers would make it match *everything* under AND semantics.
+        silence["matchers"] = None
+    return silence
+
+
+def list_active_silences() -> list[dict]:
+    """Silences in force right now: not revoked and not expired.
+
+    Expiry is evaluated in the query rather than by a sweeper, so a silence
+    stops applying the moment its TTL passes even if nothing has run since.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM alert_silences "
+            "WHERE revoked_at IS NULL AND expires_at > ? "
+            "ORDER BY created_at DESC",
+            (now,),
+        ).fetchall()
+    return [_row_to_silence(r) for r in rows]
+
+
+def list_all_silences() -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM alert_silences ORDER BY created_at DESC"
+        ).fetchall()
+    return [_row_to_silence(r) for r in rows]
+
+
+def get_silence(silence_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM alert_silences WHERE id = ?", (silence_id,)
+        ).fetchone()
+    return _row_to_silence(row) if row else None
+
+
+def revoke_silence(silence_id: str) -> bool:
+    """End a silence early. Returns False if it was already over.
+
+    Kept as a revocation stamp rather than a delete: "who silenced this, and
+    for how long" is the first question after an alert nobody saw.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE alert_silences SET revoked_at = ? "
+            "WHERE id = ? AND revoked_at IS NULL AND expires_at > ?",
+            (now, silence_id, now),
+        )
+        return cur.rowcount > 0
+
+
+def record_silence_match(silence_id: str) -> None:
+    """Incremented in SQL, not read-modify-write: Alertmanager posts batches
+    and this runs once per alert in one."""
+    with _conn() as con:
+        con.execute(
+            "UPDATE alert_silences SET matched_count = matched_count + 1 "
+            "WHERE id = ?",
+            (silence_id,),
+        )
+
+
+# ── Incidents ─────────────────────────────────────────────────────────────
+#
+# Adjacent-in-time alerts about the same workload almost always share a root
+# cause: a crashlooping pod fires CrashLoopBackOff, then OOMKilled, then a
+# probe failure. Attaching them to one incident is what lets the UI show one
+# problem instead of three, and what makes "how many incidents this week" a
+# number that means something.
+#
+# Correlation is fail-soft everywhere. It is an enhancement to ingestion, and
+# no failure of it should stop an alert being investigated.
+
+
+def find_or_open_incident(
+    namespace: str,
+    workload: str,
+    window_minutes: int,
+    max_lifetime_hours: int,
+) -> Optional[str]:
+    """The open incident for this workload, opening one if there is none.
+
+    Returns None when the alert cannot be correlated, so the caller leaves
+    `incident_id` unset rather than inventing a grouping.
+
+    The window slides on last activity rather than on when the incident opened.
+    A workload that keeps firing for an hour is one incident; anchoring to the
+    open time would start a fresh one every window period and reintroduce
+    exactly the fragmentation this removes.
+
+    `max_lifetime_hours` is the backstop for an incident that never closes.
+    Alertmanager can be configured with `send_resolved: false`, in which case
+    nothing ever tells us the condition ended — and without a cap that incident
+    would keep absorbing alerts forever.
+    """
+    if not namespace or not workload:
+        return None
+
+    now = datetime.now(timezone.utc)
+    active_since = (now - timedelta(minutes=window_minutes)).isoformat()
+    opened_since = (now - timedelta(hours=max_lifetime_hours)).isoformat()
+
+    with _conn() as con:
+        row = con.execute(
+            """
+            SELECT id FROM incidents
+            WHERE namespace = ? AND workload = ?
+              AND closed_at IS NULL
+              AND last_active_at >= ?
+              AND opened_at >= ?
+            ORDER BY last_active_at DESC
+            LIMIT 1
+            """,
+            (namespace, workload, active_since, opened_since),
+        ).fetchone()
+
+        if row:
+            con.execute(
+                "UPDATE incidents "
+                "SET last_active_at = ?, alert_count = alert_count + 1 "
+                "WHERE id = ?",
+                (now.isoformat(), row["id"]),
+            )
+            return row["id"]
+
+        incident_id = str(uuid.uuid4())
+        con.execute(
+            "INSERT INTO incidents "
+            "(id, namespace, workload, opened_at, last_active_at, alert_count) "
+            "VALUES (?, ?, ?, ?, ?, 1)",
+            (incident_id, namespace, workload, now.isoformat(), now.isoformat()),
+        )
+        return incident_id
+
+
+def attach_to_incident(investigation_id: str, incident_id: str) -> None:
+    """Set once at ingest.
+
+    Kept out of the orchestrator's document save for the same reason as
+    occurrence_count: that save rewrites the row from an object built before
+    correlation ran, and would clobber it back to NULL.
+    """
+    with _conn() as con:
+        con.execute(
+            "UPDATE investigations SET incident_id = ? WHERE id = ?",
+            (incident_id, investigation_id),
+        )
+
+
+def close_incident_if_settled(incident_id: str) -> bool:
+    """Close the incident once every investigation attached to it is terminal.
+
+    Returns True if this call closed it. An incident with no investigations is
+    left open — it was just created, and closing it would immediately reopen a
+    new one for the next alert of the same problem.
+    """
+    placeholders = ",".join("?" * len(OPEN_INVESTIGATION_STATUSES))
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        row = con.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status IN ({placeholders}) THEN 1 ELSE 0 END) AS open
+            FROM investigations WHERE incident_id = ?
+            """,
+            (*OPEN_INVESTIGATION_STATUSES, incident_id),
+        ).fetchone()
+
+        if not row or not row["total"] or row["open"]:
+            return False
+
+        cur = con.execute(
+            "UPDATE incidents SET closed_at = ? "
+            "WHERE id = ? AND closed_at IS NULL",
+            (now, incident_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_incident(incident_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM incidents WHERE id = ?", (incident_id,)
+        ).fetchone()
+        if not row:
+            return None
+        incident = dict(row)
+        incident["investigations"] = [
+            dict(r)
+            for r in con.execute(
+                "SELECT id, status, severity, source, created_at "
+                "FROM investigations WHERE incident_id = ? ORDER BY created_at",
+                (incident_id,),
+            ).fetchall()
+        ]
+    return incident
+
+
+def list_incidents(limit: int = 50, include_closed: bool = False) -> list[dict]:
+    clause = "" if include_closed else "WHERE closed_at IS NULL"
+    with _conn() as con:
+        rows = con.execute(
+            f"SELECT * FROM incidents {clause} "
+            f"ORDER BY last_active_at DESC LIMIT ?",
+            (max(1, min(limit, 500)),),
+        ).fetchall()
+        incidents = []
+        for row in rows:
+            incident = dict(row)
+            incident["investigation_ids"] = [
+                r["id"]
+                for r in con.execute(
+                    "SELECT id FROM investigations WHERE incident_id = ? "
+                    "ORDER BY created_at",
+                    (incident["id"],),
+                ).fetchall()
+            ]
+            incidents.append(incident)
+    return incidents
+
+
+# ── Feedback on investigations ────────────────────────────────────────────
+#
+# An alert investigation produces a root-cause answer chosen by a playbook.
+# Until now nothing recorded whether that answer was right, so a playbook that
+# was consistently wrong was indistinguishable from one that always worked —
+# and the only way to find out was for somebody to remember.
+#
+# A rating alone is a number. What makes a bad answer fixable is the note
+# beside it, which is why `feedback_notes` is stored verbatim and surfaced in
+# the summary rather than being reduced to a count.
+
+FEEDBACK_RATINGS = ("up", "down")
+
+
+def record_investigation_feedback(
+    investigation_id: str,
+    rating: str,
+    notes: str = "",
+    rated_by: str = "",
+) -> bool:
+    """Attach a verdict to an investigation. Returns False if there is no such
+    investigation.
+
+    A rating can be changed — someone marks an answer wrong, then finds it was
+    right after all — so this overwrites rather than appending. The timestamp
+    moves with it, so the summary reflects the current view rather than the
+    first impression.
+    """
+    if rating not in FEEDBACK_RATINGS:
+        raise ValueError(
+            f"rating must be one of {FEEDBACK_RATINGS}, got {rating!r}"
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE investigations "
+            "SET feedback_rating = ?, feedback_notes = ?, feedback_at = ?, "
+            "    feedback_by = ? "
+            "WHERE id = ?",
+            (rating, notes or None, now, rated_by or None, investigation_id),
+        )
+        return cur.rowcount > 0
+
+
+def _playbook_of(document: Optional[str]) -> str:
+    """Which playbook produced this answer.
+
+    Read from the stored document rather than a column because that is where
+    the orchestrator already records it. An investigation that failed before
+    classification has none, and is grouped under "" — worth seeing separately,
+    since a pile of unclassified failures is its own problem.
+    """
+    if not document:
+        return ""
+    try:
+        return str(json.loads(document).get("selected_playbook") or "")
+    except (TypeError, ValueError):
+        return ""
+
+
+def investigation_feedback_summary(within_days: int = 30) -> list[dict]:
+    """Per-playbook verdict counts, worst first.
+
+    Ordered by down-rate so the playbook most in need of editing is the first
+    thing read. Ties break on volume: a playbook wrong twice out of two matters
+    less than one wrong thirty times out of forty.
+
+    Sample notes travel with the counts. A rate tells you *that* a playbook is
+    failing; only the text tells you how.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=within_days)).isoformat()
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT document, feedback_rating, feedback_notes "
+            "FROM investigations "
+            "WHERE feedback_rating IS NOT NULL AND feedback_at >= ?",
+            (cutoff,),
+        ).fetchall()
+
+    by_playbook: dict[str, dict] = {}
+    for row in rows:
+        playbook = _playbook_of(row["document"])
+        entry = by_playbook.setdefault(
+            playbook, {"playbook": playbook, "up": 0, "down": 0, "sample_notes": []}
+        )
+        entry[row["feedback_rating"]] += 1
+        if row["feedback_rating"] == "down" and row["feedback_notes"]:
+            if len(entry["sample_notes"]) < 5:
+                entry["sample_notes"].append(row["feedback_notes"])
+
+    summary = []
+    for entry in by_playbook.values():
+        total = entry["up"] + entry["down"]
+        entry["total"] = total
+        entry["down_rate"] = round(entry["down"] / total, 3) if total else 0.0
+        summary.append(entry)
+
+    summary.sort(key=lambda e: (-e["down_rate"], -e["total"]))
+    return summary
+
+
+# ── Cluster registry ──────────────────────────────────────────────────────
+#
+# One assistant, several clusters, each with its own Prometheus pointing here.
+# Without a registry every alert was investigated against whatever the backend
+# happened to be aimed at — so an alert from staging produced a confident,
+# fully-evidenced answer about production. Wrong answers about the wrong
+# cluster are worse than no answer, because nothing about them looks wrong.
+#
+# An empty registry means single-cluster mode and changes nothing: existing
+# deployments keep using the default target and cluster labels are ignored.
+#
+# No credential material is stored. `credential_ref` names a secret mounted
+# into the pod, so this table can be dumped without handing over any cluster.
+
+
+CLUSTER_STATUSES = ("active", "disabled")
+
+
+def register_cluster(
+    cluster_id: str,
+    ssh_host: str,
+    ssh_user: str,
+    credential_ref: str,
+    display_name: str = "",
+    ssh_port: int = 22,
+    kubectl_context: str = "",
+    status: str = "active",
+) -> dict:
+    """Add or replace a cluster. The id is the value alerts carry in their
+    `cluster` label, which is what makes routing possible at all."""
+    if status not in CLUSTER_STATUSES:
+        raise ValueError(f"status must be one of {CLUSTER_STATUSES}, got {status!r}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO cluster_registry "
+            "(id, display_name, ssh_host, ssh_port, ssh_user, credential_ref, "
+            " kubectl_context, status, registered_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "  display_name=excluded.display_name, ssh_host=excluded.ssh_host, "
+            "  ssh_port=excluded.ssh_port, ssh_user=excluded.ssh_user, "
+            "  credential_ref=excluded.credential_ref, "
+            "  kubectl_context=excluded.kubectl_context, status=excluded.status",
+            (
+                cluster_id,
+                display_name or cluster_id,
+                ssh_host,
+                ssh_port,
+                ssh_user,
+                credential_ref,
+                kubectl_context or None,
+                status,
+                now,
+            ),
+        )
+    return get_cluster(cluster_id)
+
+
+def get_cluster(cluster_id: str) -> Optional[dict]:
+    if not cluster_id:
+        return None
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM cluster_registry WHERE id = ?", (cluster_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_clusters(include_disabled: bool = True) -> list[dict]:
+    clause = "" if include_disabled else "WHERE status = 'active'"
+    with _conn() as con:
+        rows = con.execute(
+            f"SELECT * FROM cluster_registry {clause} ORDER BY id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def registry_is_empty() -> bool:
+    """True when no cluster has ever been registered.
+
+    This is the switch between single-cluster and multi-cluster behaviour, and
+    it is deliberately "has any row" rather than "has any active row":
+    disabling every cluster should not silently send all alerts back to the
+    default target, which is the one outcome nobody would intend by disabling
+    things.
+    """
+    with _conn() as con:
+        return con.execute("SELECT 1 FROM cluster_registry LIMIT 1").fetchone() is None
+
+
+def remove_cluster(cluster_id: str) -> bool:
+    with _conn() as con:
+        return con.execute(
+            "DELETE FROM cluster_registry WHERE id = ?", (cluster_id,)
+        ).rowcount > 0
+
+
+def mark_investigation_needs_config(investigation_id: str, reason: str) -> None:
+    """Record that an alert arrived for a cluster we cannot reach.
+
+    The investigation still exists so the operator sees the alert — the point
+    is that nothing was investigated, not that nothing happened.
+    """
+    with _conn() as con:
+        con.execute(
+            "UPDATE investigations SET status = 'needs_config', "
+            "status_reason = ? WHERE id = ?",
+            (reason, investigation_id),
+        )
+
+
+# ── Remediation proposals ─────────────────────────────────────────────────
+#
+# A proposal is a suggestion, not an action. Creating one changes nothing in
+# any cluster; only an explicit approval followed by an explicit execute can.
+# The two are separate rows-worth of intent on purpose, so that no single call
+# — and no single bug — takes something from "the model suggested this" to "the
+# cluster was changed".
+#
+# Approvals expire. An approval given an hour ago was given about a cluster
+# that no longer looks the way it did, and acting on it would be acting on a
+# judgement nobody would make now.
+
+PROPOSAL_STATUSES = ("pending", "approved", "rejected", "executed", "expired")
+
+
+def create_remediation_proposal(
+    proposal_id: str,
+    investigation_id: str,
+    action: str,
+    arguments: dict,
+    rationale: str,
+    ttl_seconds: int,
+    cluster_id: str = "",
+) -> dict:
+    now = datetime.now(timezone.utc)
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO remediation_proposals "
+            "(id, investigation_id, cluster_id, action, arguments, rationale, "
+            " status, proposed_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (
+                proposal_id,
+                investigation_id,
+                cluster_id or None,
+                action,
+                json.dumps(arguments),
+                rationale,
+                now.isoformat(),
+                (now + timedelta(seconds=ttl_seconds)).isoformat(),
+            ),
+        )
+    return get_remediation_proposal(proposal_id)
+
+
+def _row_to_proposal(row) -> dict:
+    proposal = dict(row)
+    try:
+        proposal["arguments"] = json.loads(proposal["arguments"])
+    except (TypeError, ValueError):
+        # Unparsable arguments must not be executable. Surfacing None rather
+        # than {} keeps an empty-args action from being run by accident.
+        proposal["arguments"] = None
+    now = datetime.now(timezone.utc).isoformat()
+    if proposal["status"] in ("pending", "approved") and proposal["expires_at"] <= now:
+        # Evaluated on read rather than by a sweeper, so an expiry is in force
+        # the moment it passes even if nothing has run since.
+        proposal["status"] = "expired"
+    return proposal
+
+
+def get_remediation_proposal(proposal_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM remediation_proposals WHERE id = ?", (proposal_id,)
+        ).fetchone()
+    return _row_to_proposal(row) if row else None
+
+
+def list_remediation_proposals(
+    investigation_id: str = "", pending_only: bool = False
+) -> list[dict]:
+    clauses, params = [], []
+    if investigation_id:
+        clauses.append("investigation_id = ?")
+        params.append(investigation_id)
+    if pending_only:
+        clauses.append("status = 'pending'")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _conn() as con:
+        rows = con.execute(
+            f"SELECT * FROM remediation_proposals {where} ORDER BY proposed_at DESC",
+            params,
+        ).fetchall()
+    proposals = [_row_to_proposal(r) for r in rows]
+    if pending_only:
+        # A row can go stale between the query and the read, so filter again on
+        # the computed status rather than trusting the stored one.
+        proposals = [p for p in proposals if p["status"] == "pending"]
+    return proposals
+
+
+def decide_remediation_proposal(
+    proposal_id: str, approve: bool, decided_by: str, note: str = ""
+) -> Optional[dict]:
+    """Approve or reject. Returns None if it was not decidable.
+
+    Guarded on `pending` and on not having expired, so a proposal cannot be
+    approved twice, approved after rejection, or revived after expiry — each of
+    which would turn a stale judgement into a live authorisation.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE remediation_proposals "
+            "SET status = ?, decided_at = ?, decided_by = ?, decision_note = ? "
+            "WHERE id = ? AND status = 'pending' AND expires_at > ?",
+            (
+                "approved" if approve else "rejected",
+                now,
+                decided_by,
+                note or None,
+                proposal_id,
+                now,
+            ),
+        )
+        if cur.rowcount == 0:
+            return None
+    return get_remediation_proposal(proposal_id)
+
+
+def mark_remediation_executed(proposal_id: str) -> bool:
+    """Consume an approval. Returns False unless it was approved and unexpired.
+
+    One-shot: an executed proposal cannot be executed again, so a retried
+    request cannot restart a deployment twice.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        return con.execute(
+            "UPDATE remediation_proposals SET status = 'executed' "
+            "WHERE id = ? AND status = 'approved' AND expires_at > ?",
+            (proposal_id, now),
+        ).rowcount > 0
+
+
+def count_recent_remediations(within_minutes: int = 60) -> int:
+    """Executed remediations in the window, across everything.
+
+    Deliberately global rather than per-deployment: the failure being bounded
+    is "the system is acting far more than anyone intended", and a per-target
+    cap misses a storm spread across fifty targets.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=within_minutes)).isoformat()
+    with _conn() as con:
+        row = con.execute(
+            "SELECT COUNT(*) AS c FROM remediation_proposals "
+            "WHERE status = 'executed' AND decided_at >= ?",
+            (cutoff,),
+        ).fetchone()
+    return int(row["c"]) if row else 0
+
+
+def record_remediation_result(proposal_id: str, note: str) -> None:
+    """Attach the outcome to the proposal, so the row is the whole story:
+    what was proposed, who approved it, and what happened."""
+    with _conn() as con:
+        con.execute(
+            "UPDATE remediation_proposals SET decision_note = "
+            "COALESCE(decision_note || ' | ', '') || ? WHERE id = ?",
+            (note, proposal_id),
+        )

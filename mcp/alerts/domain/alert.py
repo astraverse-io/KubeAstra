@@ -37,19 +37,33 @@ class Alert(BaseModel):
         starts_at: datetime | None = None,
         ends_at: datetime | None = None,
         generator_url: str | None = None,
+        fingerprint: str | None = None,
     ) -> Alert:
         labels = labels or {}
         annotations = annotations or {}
         raw_payload = raw_payload or {}
-        fingerprint_source = {
-            "source": source,
-            "name": name,
-            "labels": labels,
-            "annotations": annotations,
-            "starts_at": starts_at.isoformat() if starts_at else None,
-        }
-        fingerprint = hashlib.sha256(
-            json.dumps(fingerprint_source, sort_keys=True, default=str).encode("utf-8")
+        # Annotations are deliberately NOT part of this.
+        #
+        # They are descriptive text, and in practice they are templated:
+        # `"CPU is {{ $value }}%"` renders as "CPU is 93%", then "CPU is 94%"
+        # on the next delivery. Hashing them gave the same ongoing alert a new
+        # fingerprint every time it was re-sent, so dedup and resolved-matching
+        # both looked wired up and quietly never fired on any Alertmanager with
+        # a templated description — which is the default setup.
+        #
+        # What identifies an alert is what it is about: source, name, labels,
+        # and when this firing episode began.
+        fingerprint = fingerprint or hashlib.sha256(
+            json.dumps(
+                {
+                    "source": source,
+                    "name": name,
+                    "labels": labels,
+                    "starts_at": starts_at.isoformat() if starts_at else None,
+                },
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
         ).hexdigest()
         return cls(
             source=source,

@@ -47,7 +47,13 @@ networking:
 # ── Backend (FastAPI + mcp) ───────────────────────────────────────
 backend:
   image:
-    repository: ghcr.io/kubeastra/kubeastra-backend
+    # `astraverse-io` is the owner that release.yml actually publishes under.
+    # These defaults said `kubeastra`, which is not a namespace anyone here
+    # controls, so a default `helm install` failed to pull.
+    repository: ghcr.io/astraverse-io/kubeastra-backend
+    # `latest` tracks the most recent v* release — v0.2.0 as of writing, and
+    # the first release to exist in the registry at all. Pin `0.2.0` for a
+    # fixed version, or `main` to track every merge.
     tag: "latest"
     pullPolicy: IfNotPresent
 
@@ -280,7 +286,8 @@ backend:
 # ── Frontend (Next.js) ────────────────────────────────────────────────────────
 frontend:
   image:
-    repository: ghcr.io/kubeastra/kubeastra-frontend
+    # See the note on backend.image above for the owner and tag choice.
+    repository: ghcr.io/astraverse-io/kubeastra-frontend
     tag: "latest"
     pullPolicy: IfNotPresent
 
@@ -593,6 +600,15 @@ serviceAccount:
 # switch from kubeconfig-based to in-cluster kubectl access.
 rbac:
   create: true
+
+  # `create` on pods/exec is arbitrary command execution in any container in
+  # any namespace — the broadest permission this chart can grant. Nothing in
+  # alert-driven remediation needs it; only the interactive `exec_pod_command`
+  # tool does.
+  #
+  # It also requires backend.config.enableRecoveryOperations to be "true", so
+  # this alone grants nothing.
+  allowPodExec: false
 
 # ── Ingress ───────────────────────────────────────────────────────────────────
 ingress:

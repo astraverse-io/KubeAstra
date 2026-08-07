@@ -1,0 +1,71 @@
+# The backend image is built from the repository root and does
+# `COPY ui/backend/ /app/` and `COPY mcp/ /app/mcp/`. Both directories hold
+# developer state that must never reach a published image:
+#
+#   ui/backend/.env, mcp/.env      real provider API keys
+#   ui/backend/*.db                local SQLite — actual chat history
+#
+# CI never hit this because a fresh checkout has none of these files (they are
+# all gitignored). But the deployment guide tells readers to build this same
+# image themselves, and without this file that build bakes the builder's own
+# API keys and conversation history into a layer — which is then pushed to
+# whatever registry they publish to.
+#
+# `.env.example` is deliberately kept: it is committed, carries no secrets, and
+# the container docs refer to it.
+
+# ── Secrets and local state ───────────────────────────────────────────────────
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+*.db
+**/*.db
+*.sqlite
+*.sqlite3
+**/*.sqlite3
+*.key
+*.pem
+*.p12
+kubeconfig
+**/kubeconfig
+
+# ── Planning material that is not ours to ship ────────────────────────────────
+# internal_docs is a symlink to a private repository; docs/observability_docs
+# carries another organisation's internal hostnames. Neither is COPYed into an
+# image, but neither should be sent as build context either.
+internal_docs
+docs/observability_docs
+
+# ── Build and dependency output ───────────────────────────────────────────────
+# node_modules is 551MB and, if it reached a build, would overwrite the
+# correctly-targeted install done inside the image.
+node_modules
+**/node_modules
+.next
+**/.next
+out
+**/out
+venv
+**/venv
+.venv
+**/.venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+**/.pytest_cache
+desktop/target
+desktop/src-tauri/target
+
+# ── Repository metadata ───────────────────────────────────────────────────────
+.git
+.gitignore
+.github
+.claude
+.cursor
+*.log
+.DS_Store
+**/.DS_Store

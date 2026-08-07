@@ -1,17 +1,34 @@
 # KubeAstra Assistant — Kubernetes Deployment Guide
 
-This guide covers everything needed to build Docker images, push them to your local Artifactory registry, and deploy the full AI DevOps Assistant stack onto a Kubernetes cluster using the Helm chart at `helm/kubeastra/`.
+This guide deploys the full KubeAstra stack onto a Kubernetes cluster using the
+Helm chart at `helm/kubeastra/`.
 
-> **Workspace root:** All paths in this guide are relative to `AI_DevOps_Assistant/kubeastra-ai-assistant/` unless stated otherwise.
+**Most people do not need to build anything.** Published images are public:
+
+```bash
+helm install kubeastra ./helm/kubeastra --namespace kubeastra --create-namespace
+```
+
+The chart defaults to `ghcr.io/astraverse-io/kubeastra-{backend,frontend}:latest`,
+which anyone can pull without authenticating. Skip to
+[Step 4](#step-4--prepare-the-kubeconfig-secret) unless you need your own images.
+
+Build your own only if your cluster cannot reach ghcr.io, you must mirror into
+an internal registry, or you are deploying local changes — Steps 1–3 cover that.
+
+> **Paths** in this guide are relative to the repository root.
 
 ---
 
 ## Architecture deployed
 
 ```
-Artifactory (your registry)
-  ├── kubeastra-backend:main-<SHA>   ← FastAPI :8000 + HTTP MCP :8001 + mcp
-  └── kubeastra-frontend:main-<SHA>  ← Next.js standalone
+Container registry
+  ├── kubeastra-backend:main    ← FastAPI :8000 + HTTP MCP :8001 + mcp
+  └── kubeastra-frontend:main   ← Next.js standalone
+
+  Published tags: `latest` and `<version>` on each release, plus `main`
+  (every merge) and `sha-<short>` (a fixed commit).
 
 Kubernetes namespace: kubeastra
   ├── Deployment/backend                       (FastAPI :8000 + HTTP MCP :8001)
@@ -27,7 +44,7 @@ Kubernetes namespace: kubeastra
   ├── CronJob/rag-ingestion                    (periodic reindex from configured sources)
   ├── ConfigMap/app-config                     (RAG flags, triage flags, capture knobs)
   ├── ConfigMap/kb-config                      (KB_CONFIG_YAML — ingestion source list)
-  ├── Secret/app-secrets                       (GEMINI_API_KEY + kubeconfig)
+  ├── Secret/app-secrets                       (provider API key(s) + kubeconfig)
   ├── Secret/deployment-repo-token             (PAT for the deployment repo, Phase 1.5)
   ├── ServiceAccount + ClusterRole + Binding   (pod identity, kubectl perms)
   └── Ingress                                  (optional — disabled by default)
@@ -38,7 +55,7 @@ Kubernetes namespace: kubeastra
 | Feature | How it works in K8s |
 |---|---|
 | Chat UI | Next.js frontend proxies `/api/*` → FastAPI backend. SSE streaming via `/api/chat/stream` |
-| Gemini AI | `GEMINI_API_KEY` from Secret; dynamic model discovery via google-genai SDK |
+| LLM provider | Gemini, Anthropic or OpenAI — the chart templates `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` from the Secret; set whichever you use. Ollama is supported by the app for local models |
 | Local kubectl | kubeconfig Secret mounted at `/app/kubeconfig/config` |
 | SSH remote cluster | Users provide SSH creds in the UI at runtime — no extra K8s config |
 | RAG (Phase 1.x) | Qdrant StatefulSet ships with the chart; collections bootstrapped at pod startup; ingestion runs on Helm hooks + a CronJob |
@@ -59,29 +76,42 @@ Kubernetes namespace: kubeastra
 | Docker | 20.x+ | `docker --version` |
 | kubectl | 1.26+ | `kubectl version --client` |
 | Helm | 3.12+ | `helm version` |
-| Access to Artifactory | — | `docker login your-artifactory.example.com` |
 | Access to target K8s cluster | — | `kubectl cluster-info` |
+| A container registry | only if building your own images | `docker login <your-registry>` |
+
+Docker itself is only needed for Steps 1–3. Deploying the published images
+needs just kubectl and Helm.
 
 ---
 
 ## Step 1 — Build the backend Docker image
 
-The backend image bundles both `ui/backend` and `mcp` into a single image. The build context **must be `kubeastra-ai-assistant/`** so Docker can COPY both subdirectories.
+> Only needed if you are not using the published images. See the top of this
+> guide.
+
+The backend image bundles both `ui/backend` and `mcp` into a single image. The
+build context **must be the repository root** so Docker can COPY both
+subdirectories.
 
 ```bash
-# Navigate to the repo root (kubeastra-ai-assistant/)
-cd /path/to/AI_DevOps_Assistant/kubeastra-ai-assistant
+cd /path/to/KubeAstra
 
-# Build the backend image — convention is to tag with main-<short-SHA>
-# Replace 'your-artifactory.example.com' with your actual Artifactory hostname
+# `sha-<short>` matches the tag scheme the project publishes.
+REGISTRY=your-registry.example.com
 SHA=$(git rev-parse --short HEAD)
 docker build \
   -f ui/backend/Dockerfile \
-  -t your-artifactory.example.com/kubeastra-backend:main-${SHA} \
+  -t ${REGISTRY}/kubeastra-backend:sha-${SHA} \
   .
 ```
 
-> **Note:** Jenkins (or whatever CI you use) is expected to do this automatically on every push to `main`. The manual command above is for one-off rebuilds.
+> **Note:** `.github/workflows/release.yml` does this on every merge to `main`,
+> so the command above is for one-off or local-change builds.
+>
+> **Build from a clean tree.** `COPY ui/backend/ /app/` copies a whole
+> directory. `.dockerignore` excludes `.env` and `*.db`, but anything else
+> uncommitted in your checkout lands in the image — build from a fresh clone or
+> `git archive` if you want the image to match the commit.
 
 **What this image contains:**
 - Python 3.11-slim base
@@ -93,11 +123,11 @@ docker build \
 - `KUBECONFIG=/app/kubeconfig/config` (mounted as a Secret at runtime)
 - `HF_HOME=/tmp/hf-cache` so the sentence-transformer model survives across requests on a read-only rootfs
 - SQLite database written to `/app/data/chat_history.db` at runtime
-- Import-time smoke tests run as part of the build (see `tests/test_module_imports.py`) — a missing import in `react.py` / `triage.py` / `chat.py` fails the image build, not production
+- An import + annotation-resolution check baked into the Dockerfile as a build step — a missing import in `react.py` / `triage.py` fails the image build rather than production. `ui/backend/tests/test_module_imports.py` is the fuller local equivalent
 
 **Verify the build:**
 ```bash
-docker run --rm your-artifactory.example.com/kubeastra-backend:main-${SHA} python -c "import fastapi, paramiko, qdrant_client, sentence_transformers; print('OK')"
+docker run --rm ${REGISTRY}/kubeastra-backend:sha-${SHA} python -c "import fastapi, paramiko, qdrant_client, sentence_transformers; print('OK')"
 ```
 
 ---
@@ -112,13 +142,11 @@ The frontend includes a **server-side proxy** at `app/api/[...path]/route.ts`.
 - you do **not** need to rebuild the frontend image just to change the backend URL
 
 ```bash
-# Navigate to the frontend directory
-cd /path/to/AI_DevOps_Assistant/kubeastra-ai-assistant/ui/frontend
+cd /path/to/KubeAstra/ui/frontend
 
-# Build the frontend image — same SHA convention as the backend
-SHA=$(git rev-parse --short HEAD)
+# Same tag scheme as the backend.
 docker build \
-  -t your-artifactory.example.com/kubeastra-frontend:main-${SHA} \
+  -t ${REGISTRY}/kubeastra-frontend:sha-${SHA} \
   .
 ```
 
@@ -132,29 +160,28 @@ from its environment.
 
 **Verify the build:**
 ```bash
-docker run --rm -p 3000:3000 your-artifactory.example.com/kubeastra-frontend:main-${SHA}
+docker run --rm -p 3000:3000 ${REGISTRY}/kubeastra-frontend:sha-${SHA}
 # Open http://localhost:3000 — you should see the chat UI
 ```
 
 ---
 
-## Step 3 — Push images to Artifactory
+## Step 3 — Push images to your registry
 
 ```bash
-# Login to Artifactory (if not already logged in)
-docker login your-artifactory.example.com
+docker login ${REGISTRY}
 
-# Push backend + frontend images (whatever SHA tag you built)
-docker push your-artifactory.example.com/kubeastra-backend:main-${SHA}
-docker push your-artifactory.example.com/kubeastra-frontend:main-${SHA}
+docker push ${REGISTRY}/kubeastra-backend:sha-${SHA}
+docker push ${REGISTRY}/kubeastra-frontend:sha-${SHA}
 ```
 
-If your cluster needs an image pull secret to access Artifactory:
+The published ghcr images are public and need no pull secret. If your own
+registry is private:
 
 ```bash
-kubectl create secret docker-registry artifactory-pull-secret \
+kubectl create secret docker-registry registry-pull-secret \
   --namespace kubeastra \
-  --docker-server=your-artifactory.example.com \
+  --docker-server=${REGISTRY} \
   --docker-username=YOUR_USERNAME \
   --docker-password=YOUR_PASSWORD \
   --docker-email=YOUR_EMAIL
@@ -163,7 +190,7 @@ kubectl create secret docker-registry artifactory-pull-secret \
 Then add to `values.yaml`:
 ```yaml
 imagePullSecrets:
-  - name: artifactory-pull-secret
+  - name: registry-pull-secret
 ```
 
 ---
@@ -232,16 +259,16 @@ cat /tmp/kubeastra-kubeconfig.yaml | base64 | tr -d '\n'
 
 ```bash
 # Navigate to the Helm chart directory
-cd /path/to/AI_DevOps_Assistant/kubeastra-ai-assistant/helm/kubeastra
+cd /path/to/KubeAstra/helm/kubeastra
 
 # Dry-run first to check everything renders correctly
 helm install kubeastra . \
   --namespace kubeastra \
   --create-namespace \
   --dry-run \
-  --set backend.image.repository=your-artifactory.example.com/kubeastra-backend \
+  --set backend.image.repository=${REGISTRY}/kubeastra-backend \
   --set backend.image.tag=1.0.0 \
-  --set frontend.image.repository=your-artifactory.example.com/kubeastra-frontend \
+  --set frontend.image.repository=${REGISTRY}/kubeastra-frontend \
   --set frontend.image.tag=1.0.0 \
   --set secrets.geminiApiKey="YOUR_GEMINI_API_KEY" \
   --set secrets.kubeconfig="PASTE_BASE64_KUBECONFIG_HERE"
@@ -253,9 +280,9 @@ If the dry-run output looks correct, install for real:
 helm install kubeastra . \
   --namespace kubeastra \
   --create-namespace \
-  --set backend.image.repository=your-artifactory.example.com/kubeastra-backend \
+  --set backend.image.repository=${REGISTRY}/kubeastra-backend \
   --set backend.image.tag=main-${SHA} \
-  --set frontend.image.repository=your-artifactory.example.com/kubeastra-frontend \
+  --set frontend.image.repository=${REGISTRY}/kubeastra-frontend \
   --set frontend.image.tag=main-${SHA} \
   --set secrets.geminiApiKey="YOUR_GEMINI_API_KEY" \
   --set secrets.kubeconfig="PASTE_BASE64_KUBECONFIG_HERE"
@@ -268,12 +295,12 @@ Create `my-values.yaml` (do not commit this file):
 ```yaml
 backend:
   image:
-    repository: your-artifactory.example.com/kubeastra-backend
+    repository: ${REGISTRY}/kubeastra-backend
     tag: "main-abcdef0"      # set to the SHA you actually built
 
 frontend:
   image:
-    repository: your-artifactory.example.com/kubeastra-frontend
+    repository: ${REGISTRY}/kubeastra-frontend
     tag: "main-abcdef0"
 
 secrets:
@@ -460,10 +487,10 @@ helm upgrade kubeastra . \
 ## Step 8 — Upgrading after a code change
 
 ```bash
-# Run from kubeastra-ai-assistant/
+# Run from the repository root
 # 1. Rebuild and push images with a new tag
-docker build -f ui/backend/Dockerfile -t your-artifactory.example.com/kubeastra-backend:1.0.1 .
-docker push your-artifactory.example.com/kubeastra-backend:1.0.1
+docker build -f ui/backend/Dockerfile -t ${REGISTRY}/kubeastra-backend:1.0.1 .
+docker push ${REGISTRY}/kubeastra-backend:1.0.1
 
 # 2. Upgrade the Helm release with the new image tag
 cd helm/kubeastra
@@ -480,7 +507,7 @@ helm upgrade kubeastra . \
 For local development, use the provided `start.sh` script (no Docker or Helm needed):
 
 ```bash
-cd kubeastra-ai-assistant/ui
+cd ui
 ./start.sh
 ```
 
@@ -516,7 +543,7 @@ If `persistence.enabled` is false (default), the backend still works — users l
 ## Complete file structure
 
 ```
-kubeastra-ai-assistant/
+KubeAstra/
 ├── docs/
 │   ├── ARCHITECTURE_DIAGRAM.md          ← Repo-level mermaid diagrams + component table
 │   ├── K8S_DEPLOYMENT_GUIDE.md          ← This file
@@ -532,7 +559,7 @@ kubeastra-ai-assistant/
 │   │   ├── triage.py                    ← Phase 3.0 proactive cluster greeting
 │   │   ├── memory.py                    ← Phase 2.2 per-user conversation memory
 │   │   ├── db.py                        ← SQLite schema + CRUD
-│   │   ├── tests/test_module_imports.py ← Import smoke tests (run at docker build)
+│   │   ├── tests/test_module_imports.py ← Import smoke tests (local; the image runs an inline equivalent)
 │   │   └── routers/
 │   │       ├── chat.py                  ← /api/chat (sync) + /api/chat/stream (SSE)
 │   │       ├── sessions.py              ← History, SSH target, post-mortem generator
@@ -581,7 +608,7 @@ kubeastra-ai-assistant/
             ├── rag-ingestion-cronjob.yaml ← Periodic reindex
             ├── deployment-repo-token-secret.yaml ← PAT for Phase 1.5
             ├── configmap.yaml           ← Non-secret env (incl. KB_CONFIG_YAML)
-            ├── secret.yaml              ← GEMINI_API_KEY + kubeconfig
+            ├── secret.yaml              ← provider API key(s) + kubeconfig
             ├── serviceaccount.yaml
             ├── rbac.yaml
             ├── pvc.yaml                 ← Optional chat_history.db PVC
@@ -626,15 +653,15 @@ kubectl get nodes         # Test connectivity
 kubectl get pods -A       # Test namespace access
 ```
 
-### Gemini AI features not working (kubectl tools still work)
+### LLM features not working (kubectl tools still work)
 
 ```bash
 # Check the secret is set
 kubectl exec -n kubeastra \
   deployment/kubeastra-kubeastra-backend \
-  -- env | grep GEMINI
+  -- env | grep -E 'GEMINI|ANTHROPIC|OPENAI'
 
-# If empty, update the secret
+# If empty, update the secret — substitute the key for the provider you use
 kubectl patch secret kubeastra-kubeastra-secrets \
   -n kubeastra \
   --type='json' \

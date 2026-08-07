@@ -798,3 +798,28 @@ class KbSearchInput(BaseModel):
 class PromQueryInput(BaseModel):
     """Input schema for prom_query tool (Prometheus instant query)."""
     query: str = Field(..., description="PromQL expression to evaluate.")
+
+
+class GetRecentChangesInput(BaseModel):
+    """Input schema for get_recent_changes (rollouts in a time window)."""
+
+    namespace: str = Field(
+        default="default",
+        description="Namespace to inspect for recent rollouts.",
+    )
+    within_minutes: int = Field(
+        default=60,
+        ge=1,
+        le=10080,
+        description=(
+            "How far back to look, in minutes. Default 60. Widen this when an "
+            "alert fires long after the change that caused it."
+        ),
+    )
+    workload_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. Restrict to one Deployment/StatefulSet/DaemonSet by "
+            "name. Omit to see everything that changed in the namespace."
+        ),
+    )

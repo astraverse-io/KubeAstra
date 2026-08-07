@@ -150,7 +150,7 @@ kubectl get pods -n kube-system | grep -E 'cilium|calico|gke-cilium'
 # GKE/EKS native CNIs enforce NetworkPolicy. Older kops/kubeadm may not.
 
 # 5. Image registry reachable from the cluster
-# Default chart uses: ghcr.io/kubeastra/kubeastra-{backend,frontend}
+# Default chart uses: ghcr.io/astraverse-io/kubeastra-{backend,frontend}
 # If your nodes can't pull from that, override backend.image.repository and
 # frontend.image.repository in values to a registry they CAN reach.
 ```
@@ -201,14 +201,14 @@ namespace: kubeastra
 
 backend:
   image:
-    repository: ghcr.io/kubeastra/kubeastra-backend
-    tag: "main-b174261"           # or your CI-built tag
+    repository: ghcr.io/astraverse-io/kubeastra-backend
+    tag: "main"           # or your CI-built tag
   replicaCount: 1
 
 frontend:
   image:
-    repository: ghcr.io/kubeastra/kubeastra-frontend
-    tag: "main-b174261"
+    repository: ghcr.io/astraverse-io/kubeastra-frontend
+    tag: "main"
   replicaCount: 1
   service:
     type: LoadBalancer            # exposes the chat UI; use ClusterIP if you'll port-forward
@@ -945,8 +945,8 @@ namespace: kubeastra
 # ── Backend ───────────────────────────────────────────────────────────────────
 backend:
   image:
-    repository: ghcr.io/kubeastra/kubeastra-backend
-    tag: "main-b174261"
+    repository: ghcr.io/astraverse-io/kubeastra-backend
+    tag: "main"
   replicaCount: 1
   config:
     allowedNamespaces: "*"
@@ -971,8 +971,8 @@ backend:
 # ── Frontend ──────────────────────────────────────────────────────────────────
 frontend:
   image:
-    repository: ghcr.io/kubeastra/kubeastra-frontend
-    tag: "main-b174261"
+    repository: ghcr.io/astraverse-io/kubeastra-frontend
+    tag: "main"
   service:
     type: LoadBalancer
 
@@ -1077,14 +1077,14 @@ kubectl create secret generic deployment-repo-token \
 cat > /tmp/my-values.yaml <<'EOF'
 namespace: kubeastra
 backend:
-  image: { repository: ghcr.io/kubeastra/kubeastra-backend, tag: "main-b174261" }
+  image: { repository: ghcr.io/astraverse-io/kubeastra-backend, tag: "main" }
   config:
     ragRouterEnabled: "true"
     ragRouterCollections: "runbook,devops_doc,deployment_repo"
     sessionCaptureEnabled: "true"
     sessionCaptureRedactSecrets: "true"
 frontend:
-  image: { repository: ghcr.io/kubeastra/kubeastra-frontend, tag: "main-b174261" }
+  image: { repository: ghcr.io/astraverse-io/kubeastra-frontend, tag: "main" }
 qdrant:
   enabled: true
   storage: { size: 5Gi }
@@ -1153,7 +1153,7 @@ Most likely causes:
 kubectl describe pod -n kubeastra <pod> | grep -A5 Events
 ```
 
-- Default chart points at `ghcr.io/kubeastra/...`. If your nodes can't reach that registry, set `backend.image.repository` / `frontend.image.repository` to a registry they CAN reach.
+- Default chart points at `ghcr.io/astraverse-io/...`. If your nodes can't reach that registry, set `backend.image.repository` / `frontend.image.repository` to a registry they CAN reach.
 - For private registries, also configure `imagePullSecrets:` in values (see chart for the format).
 
 ### "INGEST_SUMMARY says new: 0 — nothing got indexed"
