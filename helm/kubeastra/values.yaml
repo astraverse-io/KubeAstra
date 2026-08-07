@@ -51,11 +51,10 @@ backend:
     # These defaults said `kubeastra`, which is not a namespace anyone here
     # controls, so a default `helm install` failed to pull.
     repository: ghcr.io/astraverse-io/kubeastra-backend
-    # `latest` is only pushed on a v* git tag, and none has been released since
-    # image publishing began — so it does not exist yet. `main` is pushed on
-    # every merge and is what a default install can actually pull. Pin
-    # `sha-<short>` instead if you want a fixed image.
-    tag: "main"
+    # `latest` tracks the most recent v* release — v0.2.0 as of writing, and
+    # the first release to exist in the registry at all. Pin `0.2.0` for a
+    # fixed version, or `main` to track every merge.
+    tag: "latest"
     pullPolicy: IfNotPresent
 
   # Keep this at 1 while using SQLite with backend.persistence.enabled=true
@@ -289,7 +288,7 @@ frontend:
   image:
     # See the note on backend.image above for the owner and tag choice.
     repository: ghcr.io/astraverse-io/kubeastra-frontend
-    tag: "main"
+    tag: "latest"
     pullPolicy: IfNotPresent
 
   replicaCount: 1
