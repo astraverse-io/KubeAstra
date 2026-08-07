@@ -56,6 +56,12 @@ def _normalize_alertmanager(payload: dict[str, Any]) -> list[Alert]:
                 ends_at=_parse_datetime(item.get("endsAt")),
                 generator_url=item.get("generatorURL"),
                 raw_payload=item,
+                # Alertmanager computes its own fingerprint from the label set
+                # and sends it on every delivery of the same alert — including
+                # the resolved one. Prefer it: it is the upstream's own notion
+                # of "this is the same alert", so dedup agrees with the system
+                # that decided to re-send in the first place.
+                fingerprint=item.get("fingerprint") or None,
             )
         )
     return alerts

@@ -284,6 +284,40 @@ def init_db() -> None:
             "archived": "INTEGER NOT NULL DEFAULT 0",
             "anonymous_claim_token_hash": "TEXT",
         })
+        # Alert dedup. Alertmanager re-sends a firing alert on its repeat
+        # interval by design, so without these every delivery of one ongoing
+        # problem started a fresh investigation — a full LLM run each time.
+        _ensure_columns(con, "investigations", {
+            "resolved_at": "TEXT",
+            "mttr_seconds": "REAL",
+            "fingerprint": "TEXT",
+            "occurrence_count": "INTEGER NOT NULL DEFAULT 1",
+            "last_seen_at": "TEXT",
+        })
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_investigations_fingerprint "
+            "ON investigations(fingerprint, created_at)"
+        )
+        # Silences. A known-broken condition — a bad rollout being rolled back,
+        # a namespace under maintenance — otherwise produces an LLM-backed
+        # investigation per alert per repeat interval, for a cause the operator
+        # already knows.
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS alert_silences (
+                id            TEXT PRIMARY KEY,
+                matchers      TEXT NOT NULL,
+                reason        TEXT NOT NULL,
+                created_by    TEXT NOT NULL,
+                created_at    TEXT NOT NULL,
+                expires_at    TEXT NOT NULL,
+                revoked_at    TEXT,
+                matched_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_alert_silences_expiry
+                ON alert_silences(expires_at);
+            """
+        )
         _ensure_columns(con, "feedback_events", {
             "prompt_text": "TEXT",
             "response_text": "TEXT",
@@ -1130,14 +1164,19 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
         with _conn() as con:
             con.execute(
                 """
-                INSERT INTO investigations (id, namespace, severity, source, status, created_at, document)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO investigations
+                    (id, namespace, severity, source, status, created_at, document,
+                     fingerprint, occurrence_count, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     namespace=excluded.namespace,
                     severity=excluded.severity,
                     source=excluded.source,
                     status=excluded.status,
-                    document=excluded.document
+                    document=excluded.document,
+                    fingerprint=excluded.fingerprint
+                    -- occurrence_count and last_seen_at are owned by
+                    -- record_recurrence(); a status update must not reset them.
                 """,
                 (
                     investigation.investigation_id,
@@ -1146,7 +1185,9 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
                     investigation.alert.source,
                     investigation.status.value,
                     investigation.created_at.isoformat(),
-                    doc
+                    doc,
+                    getattr(investigation.alert, "fingerprint", None),
+                    investigation.created_at.isoformat(),
                 )
             )
 
@@ -1157,6 +1198,137 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
                 from alerts.domain.investigation import Investigation
                 return Investigation.model_validate_json(row["document"])
         return None
+
+
+# ── Alert dedup ───────────────────────────────────────────────────────────────
+#
+# Alertmanager re-sends a firing alert every `repeat_interval` for as long as
+# the condition holds. That is not a storm or an edge case — it is the normal
+# path, and without dedup one ongoing problem produced an investigation per
+# delivery: a full LLM run, a row, and a notification, every time.
+#
+# `Alert.fingerprint` already existed and was computed on every alert; nothing
+# read it.
+
+# Statuses meaning "this investigation is still the live answer for that
+# alert". A repeat arriving while one of these is current is the same
+# incident; a repeat after a terminal status is a genuine re-occurrence and
+# deserves a fresh investigation.
+#
+# Derived from InvestigationStatus rather than written out, because guessing
+# them is a silent failure: a name that does not exist matches nothing, so
+# dedup would appear to work and never fire. Everything not terminal is in
+# flight.
+TERMINAL_INVESTIGATION_STATUSES = frozenset({"completed", "failed", "resolved"})
+
+
+def _open_statuses() -> tuple:
+    try:
+        from alerts.domain.enums import InvestigationStatus
+    except Exception:  # pragma: no cover — mcp path not set up
+        return ("received", "classified", "running")
+    return tuple(
+        s.value
+        for s in InvestigationStatus
+        if s.value not in TERMINAL_INVESTIGATION_STATUSES
+    )
+
+
+OPEN_INVESTIGATION_STATUSES = _open_statuses()
+
+
+def find_open_investigation(fingerprint: str, within_hours: int = 24) -> Optional[dict]:
+    """The live investigation for this fingerprint, if there is one.
+
+    Bounded by age as well as status: an investigation stuck in `investigating`
+    because the process died mid-run would otherwise absorb every future
+    occurrence of that alert forever, and the alert would silently stop
+    producing anything at all.
+    """
+    if not fingerprint:
+        return None
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=within_hours)).isoformat()
+    placeholders = ",".join("?" * len(OPEN_INVESTIGATION_STATUSES))
+    with _conn() as con:
+        row = con.execute(
+            f"""
+            SELECT id, occurrence_count, status, created_at
+            FROM investigations
+            WHERE fingerprint = ?
+              AND status IN ({placeholders})
+              AND created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (fingerprint, *OPEN_INVESTIGATION_STATUSES, cutoff),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_recurrence(investigation_id: str) -> int:
+    """Count another delivery of an alert already being investigated.
+
+    Returns the new occurrence count. Incremented in SQL rather than
+    read-modify-write so two concurrent deliveries cannot both read 3 and both
+    write 4 — Alertmanager sends batches, and this runs per alert in one.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        con.execute(
+            "UPDATE investigations "
+            "SET occurrence_count = occurrence_count + 1, last_seen_at = ? "
+            "WHERE id = ?",
+            (now, investigation_id),
+        )
+        row = con.execute(
+            "SELECT occurrence_count FROM investigations WHERE id = ?",
+            (investigation_id,),
+        ).fetchone()
+    return int(row["occurrence_count"]) if row else 1
+
+
+def resolve_investigation(investigation_id: str) -> Optional[float]:
+    """Close an investigation because its alert stopped firing.
+
+    Returns seconds from first delivery to resolution, or None if there was no
+    such open investigation. That number is the only honest measure of time to
+    recovery available here: it is the interval over which the alert was
+    actually firing, not how long the LLM took to answer.
+
+    Guarded on the current status so a late duplicate `resolved` delivery —
+    Alertmanager sends those — cannot rewrite an earlier resolution's clock and
+    make the recovery look longer than it was.
+    """
+    now = datetime.now(timezone.utc)
+    placeholders = ",".join("?" * len(OPEN_INVESTIGATION_STATUSES))
+    with _conn() as con:
+        row = con.execute(
+            f"SELECT created_at FROM investigations "
+            f"WHERE id = ? AND status IN ({placeholders})",
+            (investigation_id, *OPEN_INVESTIGATION_STATUSES),
+        ).fetchone()
+        if row is None:
+            return None
+
+        try:
+            created = datetime.fromisoformat(row["created_at"])
+        except (TypeError, ValueError):
+            return None
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+
+        # Clamped at zero: a row written by a host with a skewed clock would
+        # otherwise report a negative time to recovery.
+        seconds = max(0.0, (now - created).total_seconds())
+        con.execute(
+            "UPDATE investigations "
+            "SET status = 'resolved', resolved_at = ?, mttr_seconds = ?, "
+            "    last_seen_at = ? "
+            "WHERE id = ?",
+            (now.isoformat(), seconds, now.isoformat(), investigation_id),
+        )
+    return seconds
 
 
 # ── Agent run helpers (harness Phase 1) ───────────────────────────────────────
@@ -1663,3 +1835,122 @@ def aggregate_run_costs(
         "rows": result_rows,
         "totals": totals
     }
+
+
+# ── Alert silences ────────────────────────────────────────────────────────
+#
+# A silence stops an alert from starting an investigation. It does not stop
+# Alertmanager delivering it, and deliberately so: an operator often wants the
+# raw signal to keep reaching on-call while the assistant stops spending tokens
+# on a cause they already understand. It also covers every source we ingest,
+# not just Alertmanager.
+#
+# Matches are counted rather than discarded, because a silence nobody can see
+# working is one nobody trusts — and a silence matching far more than expected
+# is the first sign its matchers are too broad.
+
+
+def create_silence(
+    silence_id: str,
+    matchers: list[dict],
+    reason: str,
+    created_by: str,
+    ttl_seconds: int,
+) -> dict:
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(seconds=ttl_seconds)
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO alert_silences "
+            "(id, matchers, reason, created_by, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                silence_id,
+                json.dumps(matchers),
+                reason,
+                created_by,
+                now.isoformat(),
+                expires.isoformat(),
+            ),
+        )
+    return {
+        "id": silence_id,
+        "matchers": matchers,
+        "reason": reason,
+        "created_by": created_by,
+        "created_at": now.isoformat(),
+        "expires_at": expires.isoformat(),
+        "revoked_at": None,
+        "matched_count": 0,
+    }
+
+
+def _row_to_silence(row) -> dict:
+    silence = dict(row)
+    try:
+        silence["matchers"] = json.loads(silence["matchers"])
+    except (TypeError, ValueError):
+        # A row we cannot parse must not match anything. Returning it with no
+        # matchers would make it match *everything* under AND semantics.
+        silence["matchers"] = None
+    return silence
+
+
+def list_active_silences() -> list[dict]:
+    """Silences in force right now: not revoked and not expired.
+
+    Expiry is evaluated in the query rather than by a sweeper, so a silence
+    stops applying the moment its TTL passes even if nothing has run since.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM alert_silences "
+            "WHERE revoked_at IS NULL AND expires_at > ? "
+            "ORDER BY created_at DESC",
+            (now,),
+        ).fetchall()
+    return [_row_to_silence(r) for r in rows]
+
+
+def list_all_silences() -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM alert_silences ORDER BY created_at DESC"
+        ).fetchall()
+    return [_row_to_silence(r) for r in rows]
+
+
+def get_silence(silence_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM alert_silences WHERE id = ?", (silence_id,)
+        ).fetchone()
+    return _row_to_silence(row) if row else None
+
+
+def revoke_silence(silence_id: str) -> bool:
+    """End a silence early. Returns False if it was already over.
+
+    Kept as a revocation stamp rather than a delete: "who silenced this, and
+    for how long" is the first question after an alert nobody saw.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE alert_silences SET revoked_at = ? "
+            "WHERE id = ? AND revoked_at IS NULL AND expires_at > ?",
+            (now, silence_id, now),
+        )
+        return cur.rowcount > 0
+
+
+def record_silence_match(silence_id: str) -> None:
+    """Incremented in SQL, not read-modify-write: Alertmanager posts batches
+    and this runs once per alert in one."""
+    with _conn() as con:
+        con.execute(
+            "UPDATE alert_silences SET matched_count = matched_count + 1 "
+            "WHERE id = ?",
+            (silence_id,),
+        )

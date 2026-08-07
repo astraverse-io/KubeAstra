@@ -9,8 +9,10 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
-import db
+import alert_silences
 import auth
+import db
+import log_safety
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +168,15 @@ async def orchestrate_investigation(alert: Any, investigation_id: str, repo: db.
 class AlertWebhookResponse(BaseModel):
     investigation_ids: list[str]
     status: str
+    # How many of the ids above are existing investigations rather than new
+    # ones. Lets an operator see dedup working without reading the logs.
+    deduplicated: int = 0
+    # How many were `resolved` deliveries that closed an open investigation
+    # instead of starting one.
+    resolved: int = 0
+    # How many matched an active silence and were recorded without starting
+    # anything.
+    silenced: int = 0
 
 @router.post("/webhook", response_model=AlertWebhookResponse)
 async def receive_webhook(
@@ -194,7 +205,91 @@ async def receive_webhook(
     repo = db.SqliteInvestigationRepository()
     investigation_ids = []
     
+    deduped = 0
+
+    resolved = 0
+    silenced = 0
+
+    # Read once per request, not per alert: Alertmanager posts batches, and the
+    # silence set cannot meaningfully change inside one.
+    try:
+        active_silences = db.list_active_silences()
+    except Exception as e:  # pragma: no cover — defensive
+        # A silence lookup that fails must not stop alert ingestion. Failing
+        # open means investigating something that should have been quiet, which
+        # is noisy; failing closed would mean dropping alerts entirely.
+        logger.error("silence lookup failed, ingesting unsilenced: %s", e)
+        active_silences = []
+
     for alert in alerts_list:
+        fingerprint = getattr(alert, "fingerprint", "")
+
+        # A `resolved` delivery says the problem went away. Before this it fell
+        # through and started a *new* investigation into a condition that had
+        # already stopped — an LLM run, a row and a notification, all for an
+        # alert that was over. `status` is deliberately not part of the
+        # fingerprint, so the resolved delivery matches the firing one.
+        if str(getattr(alert, "status", "firing")).lower() == "resolved":
+            existing = db.find_open_investigation(fingerprint)
+            if existing:
+                seconds = db.resolve_investigation(existing["id"])
+                logger.info(
+                    "alert %s resolved after %.0fs; closing investigation %s",
+                    log_safety.one_line(alert.name),
+                    seconds or 0.0,
+                    existing["id"],
+                )
+                investigation_ids.append(existing["id"])
+                resolved += 1
+            else:
+                # Nothing open to close: the firing delivery predates this
+                # feature, was already closed, or never arrived. Still not a
+                # reason to investigate something that has stopped.
+                logger.info(
+                    "alert %s resolved with no open investigation; ignoring",
+                    log_safety.one_line(alert.name),
+                )
+            continue
+
+        # Silences are checked after resolved handling and before dedup. A
+        # resolved delivery must still be able to close an investigation opened
+        # before the silence existed — otherwise silencing an alert mid-incident
+        # would strand that investigation open forever, and it would go on
+        # absorbing every later occurrence.
+        matching = alert_silences.find_matching(active_silences, dict(alert.labels))
+        if matching:
+            for silence in matching:
+                db.record_silence_match(silence["id"])
+            logger.info(
+                "alert %s silenced by %s (%s)",
+                log_safety.one_line(alert.name),
+                log_safety.one_line(matching[0]["id"]),
+                log_safety.one_line(matching[0]["reason"]),
+            )
+            silenced += 1
+            continue
+
+        # Alertmanager re-sends a firing alert every repeat_interval for as
+        # long as the condition holds. Without this, one ongoing problem
+        # started a fresh investigation — and a fresh LLM run — on every
+        # delivery. The fingerprint was already computed on every alert and
+        # read by nothing.
+        existing = db.find_open_investigation(fingerprint)
+        if existing:
+            count = db.record_recurrence(existing["id"])
+            logger.info(
+                "alert %s recurred (x%s); reusing investigation %s",
+                log_safety.one_line(alert.name),
+                count,
+                existing["id"],
+            )
+            # The caller gets the live investigation's id, not silence: an
+            # Alertmanager receiver that sees no id has no way to tell dedup
+            # from ingestion having failed.
+            investigation_ids.append(existing["id"])
+            deduped += 1
+            continue
+
         investigation_id = str(uuid.uuid4())
         
         from alerts.domain.investigation import Investigation
@@ -218,7 +313,10 @@ async def receive_webhook(
     
     return AlertWebhookResponse(
         investigation_ids=investigation_ids,
-        status="accepted"
+        status="accepted",
+        deduplicated=deduped,
+        resolved=resolved,
+        silenced=silenced,
     )
 
 class ManualInvestigationRequest(BaseModel):
