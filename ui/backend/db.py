@@ -352,6 +352,26 @@ def init_db() -> None:
             -- Which cluster an alert is about, and how to reach it. No secret
             -- material lives here: `credential_ref` names a mounted secret,
             -- so a database dump does not hand over cluster access.
+            -- Proposed fixes awaiting a human. A row here has changed
+            -- nothing: it is a suggestion, and only `approved_at` plus a
+            -- deliberate execute call can make it act.
+            CREATE TABLE IF NOT EXISTS remediation_proposals (
+                id                TEXT PRIMARY KEY,
+                investigation_id  TEXT NOT NULL,
+                cluster_id        TEXT,
+                action            TEXT NOT NULL,
+                arguments         TEXT NOT NULL,
+                rationale         TEXT,
+                status            TEXT NOT NULL DEFAULT 'pending',
+                proposed_at       TEXT NOT NULL,
+                expires_at        TEXT NOT NULL,
+                decided_at        TEXT,
+                decided_by        TEXT,
+                decision_note     TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_remediation_pending
+                ON remediation_proposals(status, expires_at);
+
             CREATE TABLE IF NOT EXISTS cluster_registry (
                 id              TEXT PRIMARY KEY,
                 display_name    TEXT,
@@ -2389,3 +2409,139 @@ def mark_investigation_needs_config(investigation_id: str, reason: str) -> None:
             "status_reason = ? WHERE id = ?",
             (reason, investigation_id),
         )
+
+
+# ── Remediation proposals ─────────────────────────────────────────────────
+#
+# A proposal is a suggestion, not an action. Creating one changes nothing in
+# any cluster; only an explicit approval followed by an explicit execute can.
+# The two are separate rows-worth of intent on purpose, so that no single call
+# — and no single bug — takes something from "the model suggested this" to "the
+# cluster was changed".
+#
+# Approvals expire. An approval given an hour ago was given about a cluster
+# that no longer looks the way it did, and acting on it would be acting on a
+# judgement nobody would make now.
+
+PROPOSAL_STATUSES = ("pending", "approved", "rejected", "executed", "expired")
+
+
+def create_remediation_proposal(
+    proposal_id: str,
+    investigation_id: str,
+    action: str,
+    arguments: dict,
+    rationale: str,
+    ttl_seconds: int,
+    cluster_id: str = "",
+) -> dict:
+    now = datetime.now(timezone.utc)
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO remediation_proposals "
+            "(id, investigation_id, cluster_id, action, arguments, rationale, "
+            " status, proposed_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (
+                proposal_id,
+                investigation_id,
+                cluster_id or None,
+                action,
+                json.dumps(arguments),
+                rationale,
+                now.isoformat(),
+                (now + timedelta(seconds=ttl_seconds)).isoformat(),
+            ),
+        )
+    return get_remediation_proposal(proposal_id)
+
+
+def _row_to_proposal(row) -> dict:
+    proposal = dict(row)
+    try:
+        proposal["arguments"] = json.loads(proposal["arguments"])
+    except (TypeError, ValueError):
+        # Unparsable arguments must not be executable. Surfacing None rather
+        # than {} keeps an empty-args action from being run by accident.
+        proposal["arguments"] = None
+    now = datetime.now(timezone.utc).isoformat()
+    if proposal["status"] in ("pending", "approved") and proposal["expires_at"] <= now:
+        # Evaluated on read rather than by a sweeper, so an expiry is in force
+        # the moment it passes even if nothing has run since.
+        proposal["status"] = "expired"
+    return proposal
+
+
+def get_remediation_proposal(proposal_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM remediation_proposals WHERE id = ?", (proposal_id,)
+        ).fetchone()
+    return _row_to_proposal(row) if row else None
+
+
+def list_remediation_proposals(
+    investigation_id: str = "", pending_only: bool = False
+) -> list[dict]:
+    clauses, params = [], []
+    if investigation_id:
+        clauses.append("investigation_id = ?")
+        params.append(investigation_id)
+    if pending_only:
+        clauses.append("status = 'pending'")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _conn() as con:
+        rows = con.execute(
+            f"SELECT * FROM remediation_proposals {where} ORDER BY proposed_at DESC",
+            params,
+        ).fetchall()
+    proposals = [_row_to_proposal(r) for r in rows]
+    if pending_only:
+        # A row can go stale between the query and the read, so filter again on
+        # the computed status rather than trusting the stored one.
+        proposals = [p for p in proposals if p["status"] == "pending"]
+    return proposals
+
+
+def decide_remediation_proposal(
+    proposal_id: str, approve: bool, decided_by: str, note: str = ""
+) -> Optional[dict]:
+    """Approve or reject. Returns None if it was not decidable.
+
+    Guarded on `pending` and on not having expired, so a proposal cannot be
+    approved twice, approved after rejection, or revived after expiry — each of
+    which would turn a stale judgement into a live authorisation.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE remediation_proposals "
+            "SET status = ?, decided_at = ?, decided_by = ?, decision_note = ? "
+            "WHERE id = ? AND status = 'pending' AND expires_at > ?",
+            (
+                "approved" if approve else "rejected",
+                now,
+                decided_by,
+                note or None,
+                proposal_id,
+                now,
+            ),
+        )
+        if cur.rowcount == 0:
+            return None
+    return get_remediation_proposal(proposal_id)
+
+
+def mark_remediation_executed(proposal_id: str) -> bool:
+    """Consume an approval. Returns False unless it was approved and unexpired.
+
+    One-shot: an executed proposal cannot be executed again, so a retried
+    request cannot restart a deployment twice.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        return con.execute(
+            "UPDATE remediation_proposals SET status = 'executed' "
+            "WHERE id = ? AND status = 'approved' AND expires_at > ?",
+            (proposal_id, now),
+        ).rowcount > 0
