@@ -288,6 +288,7 @@ def init_db() -> None:
         # interval by design, so without these every delivery of one ongoing
         # problem started a fresh investigation — a full LLM run each time.
         _ensure_columns(con, "investigations", {
+            "incident_id": "TEXT",
             "resolved_at": "TEXT",
             "mttr_seconds": "REAL",
             "fingerprint": "TEXT",
@@ -316,7 +317,26 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_alert_silences_expiry
                 ON alert_silences(expires_at);
+
+            -- Incidents. Three alerts about one crashlooping pod are one
+            -- problem; investigating each separately costs three LLM runs and
+            -- produces three answers, none of which mention the others.
+            CREATE TABLE IF NOT EXISTS incidents (
+                id             TEXT PRIMARY KEY,
+                namespace      TEXT NOT NULL,
+                workload       TEXT NOT NULL,
+                opened_at      TEXT NOT NULL,
+                last_active_at TEXT NOT NULL,
+                closed_at      TEXT,
+                alert_count    INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_incidents_open
+                ON incidents(namespace, workload, closed_at, last_active_at);
             """
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_investigations_incident "
+            "ON investigations(incident_id)"
         )
         _ensure_columns(con, "feedback_events", {
             "prompt_text": "TEXT",
@@ -1253,7 +1273,7 @@ def find_open_investigation(fingerprint: str, within_hours: int = 24) -> Optiona
     with _conn() as con:
         row = con.execute(
             f"""
-            SELECT id, occurrence_count, status, created_at
+            SELECT id, occurrence_count, status, created_at, incident_id
             FROM investigations
             WHERE fingerprint = ?
               AND status IN ({placeholders})
@@ -1954,3 +1974,163 @@ def record_silence_match(silence_id: str) -> None:
             "WHERE id = ?",
             (silence_id,),
         )
+
+
+# ── Incidents ─────────────────────────────────────────────────────────────
+#
+# Adjacent-in-time alerts about the same workload almost always share a root
+# cause: a crashlooping pod fires CrashLoopBackOff, then OOMKilled, then a
+# probe failure. Attaching them to one incident is what lets the UI show one
+# problem instead of three, and what makes "how many incidents this week" a
+# number that means something.
+#
+# Correlation is fail-soft everywhere. It is an enhancement to ingestion, and
+# no failure of it should stop an alert being investigated.
+
+
+def find_or_open_incident(
+    namespace: str,
+    workload: str,
+    window_minutes: int,
+    max_lifetime_hours: int,
+) -> Optional[str]:
+    """The open incident for this workload, opening one if there is none.
+
+    Returns None when the alert cannot be correlated, so the caller leaves
+    `incident_id` unset rather than inventing a grouping.
+
+    The window slides on last activity rather than on when the incident opened.
+    A workload that keeps firing for an hour is one incident; anchoring to the
+    open time would start a fresh one every window period and reintroduce
+    exactly the fragmentation this removes.
+
+    `max_lifetime_hours` is the backstop for an incident that never closes.
+    Alertmanager can be configured with `send_resolved: false`, in which case
+    nothing ever tells us the condition ended — and without a cap that incident
+    would keep absorbing alerts forever.
+    """
+    if not namespace or not workload:
+        return None
+
+    now = datetime.now(timezone.utc)
+    active_since = (now - timedelta(minutes=window_minutes)).isoformat()
+    opened_since = (now - timedelta(hours=max_lifetime_hours)).isoformat()
+
+    with _conn() as con:
+        row = con.execute(
+            """
+            SELECT id FROM incidents
+            WHERE namespace = ? AND workload = ?
+              AND closed_at IS NULL
+              AND last_active_at >= ?
+              AND opened_at >= ?
+            ORDER BY last_active_at DESC
+            LIMIT 1
+            """,
+            (namespace, workload, active_since, opened_since),
+        ).fetchone()
+
+        if row:
+            con.execute(
+                "UPDATE incidents "
+                "SET last_active_at = ?, alert_count = alert_count + 1 "
+                "WHERE id = ?",
+                (now.isoformat(), row["id"]),
+            )
+            return row["id"]
+
+        incident_id = str(uuid.uuid4())
+        con.execute(
+            "INSERT INTO incidents "
+            "(id, namespace, workload, opened_at, last_active_at, alert_count) "
+            "VALUES (?, ?, ?, ?, ?, 1)",
+            (incident_id, namespace, workload, now.isoformat(), now.isoformat()),
+        )
+        return incident_id
+
+
+def attach_to_incident(investigation_id: str, incident_id: str) -> None:
+    """Set once at ingest.
+
+    Kept out of the orchestrator's document save for the same reason as
+    occurrence_count: that save rewrites the row from an object built before
+    correlation ran, and would clobber it back to NULL.
+    """
+    with _conn() as con:
+        con.execute(
+            "UPDATE investigations SET incident_id = ? WHERE id = ?",
+            (incident_id, investigation_id),
+        )
+
+
+def close_incident_if_settled(incident_id: str) -> bool:
+    """Close the incident once every investigation attached to it is terminal.
+
+    Returns True if this call closed it. An incident with no investigations is
+    left open — it was just created, and closing it would immediately reopen a
+    new one for the next alert of the same problem.
+    """
+    placeholders = ",".join("?" * len(OPEN_INVESTIGATION_STATUSES))
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        row = con.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status IN ({placeholders}) THEN 1 ELSE 0 END) AS open
+            FROM investigations WHERE incident_id = ?
+            """,
+            (*OPEN_INVESTIGATION_STATUSES, incident_id),
+        ).fetchone()
+
+        if not row or not row["total"] or row["open"]:
+            return False
+
+        cur = con.execute(
+            "UPDATE incidents SET closed_at = ? "
+            "WHERE id = ? AND closed_at IS NULL",
+            (now, incident_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_incident(incident_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM incidents WHERE id = ?", (incident_id,)
+        ).fetchone()
+        if not row:
+            return None
+        incident = dict(row)
+        incident["investigations"] = [
+            dict(r)
+            for r in con.execute(
+                "SELECT id, status, severity, source, created_at "
+                "FROM investigations WHERE incident_id = ? ORDER BY created_at",
+                (incident_id,),
+            ).fetchall()
+        ]
+    return incident
+
+
+def list_incidents(limit: int = 50, include_closed: bool = False) -> list[dict]:
+    clause = "" if include_closed else "WHERE closed_at IS NULL"
+    with _conn() as con:
+        rows = con.execute(
+            f"SELECT * FROM incidents {clause} "
+            f"ORDER BY last_active_at DESC LIMIT ?",
+            (max(1, min(limit, 500)),),
+        ).fetchall()
+        incidents = []
+        for row in rows:
+            incident = dict(row)
+            incident["investigation_ids"] = [
+                r["id"]
+                for r in con.execute(
+                    "SELECT id FROM investigations WHERE incident_id = ? "
+                    "ORDER BY created_at",
+                    (incident["id"],),
+                ).fetchall()
+            ]
+            incidents.append(incident)
+    return incidents

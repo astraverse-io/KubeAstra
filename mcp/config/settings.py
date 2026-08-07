@@ -157,6 +157,19 @@ class Settings(BaseSettings):
     # actual one, and reaching the webhook is a deliberate act.
     alertmanager_webhook_enabled: bool = False
 
+    # How close in time two alerts about the same workload have to be to count
+    # as one incident. The window slides on last activity rather than on when
+    # the incident opened, so a workload that keeps firing stays one incident
+    # instead of fragmenting into a new one every window period.
+    alert_correlation_window_minutes: int = 10
+
+    # An incident normally closes when every investigation attached to it is
+    # terminal. This is the backstop for when that never happens — an
+    # Alertmanager configured with `send_resolved: false` never tells us the
+    # condition ended, so without a lifetime cap the incident would keep
+    # absorbing new alerts forever and they would stop being investigated.
+    alert_incident_max_lifetime_hours: int = 24
+
     # ── RAG ingestion (Phase 1.2) ─────────────────────────────────────────────
     # Path to the YAML config consumed by scripts/reindex.py. Only the
     # CronJob honors this; the MCP/backend never reads it directly.
