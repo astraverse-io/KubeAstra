@@ -170,6 +170,12 @@ class Settings(BaseSettings):
     # absorbing new alerts forever and they would stop being investigated.
     alert_incident_max_lifetime_hours: int = 24
 
+    # Directory holding per-cluster SSH private keys, one file per
+    # `credential_ref` in the cluster registry. Mounted from a Secret in
+    # server mode. The registry stores only the file name, so the database
+    # never contains key material.
+    cluster_ssh_secret_dir: str = "/etc/kubeastra/cluster-credentials"
+
     # ── RAG ingestion (Phase 1.2) ─────────────────────────────────────────────
     # Path to the YAML config consumed by scripts/reindex.py. Only the
     # CronJob honors this; the MCP/backend never reads it directly.
