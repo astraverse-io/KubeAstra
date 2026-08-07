@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
+import alert_correlation
 import alert_silences
 import auth
 import db
@@ -177,6 +178,9 @@ class AlertWebhookResponse(BaseModel):
     # How many matched an active silence and were recorded without starting
     # anything.
     silenced: int = 0
+    # How many new investigations were attached to an incident, existing or
+    # newly opened.
+    correlated: int = 0
 
 @router.post("/webhook", response_model=AlertWebhookResponse)
 async def receive_webhook(
@@ -209,6 +213,9 @@ async def receive_webhook(
 
     resolved = 0
     silenced = 0
+    correlated = 0
+
+    settings = _webhook_settings()
 
     # Read once per request, not per alert: Alertmanager posts batches, and the
     # silence set cannot meaningfully change inside one.
@@ -241,6 +248,13 @@ async def receive_webhook(
                 )
                 investigation_ids.append(existing["id"])
                 resolved += 1
+                # The alert clearing may have settled the last open
+                # investigation on its incident.
+                try:
+                    if existing.get("incident_id"):
+                        db.close_incident_if_settled(existing["incident_id"])
+                except Exception as e:  # pragma: no cover — defensive
+                    logger.error("incident close failed: %s", e)
             else:
                 # Nothing open to close: the firing delivery predates this
                 # feature, was already closed, or never arrived. Still not a
@@ -304,6 +318,25 @@ async def receive_webhook(
         
         await repo.save(investigation)
         investigation_ids.append(investigation_id)
+
+        # Correlation is an enhancement to ingestion, never a gate on it: an
+        # alert that cannot be grouped still gets investigated on its own.
+        try:
+            namespace, workload = alert_correlation.correlation_key(dict(alert.labels))
+            incident_id = db.find_or_open_incident(
+                namespace,
+                workload,
+                window_minutes=settings.alert_correlation_window_minutes,
+                max_lifetime_hours=settings.alert_incident_max_lifetime_hours,
+            )
+            if incident_id:
+                # Set after save(): the orchestrator rewrites this row from an
+                # object built before correlation ran, so writing it earlier
+                # would be clobbered back to NULL.
+                db.attach_to_incident(investigation_id, incident_id)
+                correlated += 1
+        except Exception as e:  # pragma: no cover — defensive
+            logger.error("correlation failed for %s: %s", investigation_id, e)
         
         # Phase 2: Start the orchestrator here
         # We need to run the orchestrator in the background task
@@ -317,6 +350,7 @@ async def receive_webhook(
         deduplicated=deduped,
         resolved=resolved,
         silenced=silenced,
+        correlated=correlated,
     )
 
 class ManualInvestigationRequest(BaseModel):
@@ -492,6 +526,27 @@ async def trigger_manual_investigation(
     background_tasks.add_task(orchestrate_investigation, alert, investigation_id, repo)
     
     return ManualInvestigationResponse(investigation_id=investigation_id)
+
+@router.get("/incidents")
+async def list_incidents(limit: int = 50, include_closed: bool = False) -> dict:
+    """Alerts grouped by the problem they are about.
+
+    Declared before the `/{...}` reading routes below so `incidents` is not
+    swallowed as a path parameter.
+    """
+    incidents = await run_in_threadpool(
+        db.list_incidents, limit=limit, include_closed=include_closed
+    )
+    return {"incidents": incidents, "count": len(incidents)}
+
+
+@router.get("/incidents/{incident_id}")
+async def get_incident(incident_id: str) -> dict:
+    incident = await run_in_threadpool(db.get_incident, incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return incident
+
 
 @router.get("")
 async def list_alerts(limit: int = 50):
