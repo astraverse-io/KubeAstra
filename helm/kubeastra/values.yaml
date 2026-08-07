@@ -601,6 +601,15 @@ serviceAccount:
 rbac:
   create: true
 
+  # `create` on pods/exec is arbitrary command execution in any container in
+  # any namespace — the broadest permission this chart can grant. Nothing in
+  # alert-driven remediation needs it; only the interactive `exec_pod_command`
+  # tool does.
+  #
+  # It also requires backend.config.enableRecoveryOperations to be "true", so
+  # this alone grants nothing.
+  allowPodExec: false
+
 # ── Ingress ───────────────────────────────────────────────────────────────────
 ingress:
   enabled: false
