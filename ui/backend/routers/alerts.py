@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 import alert_correlation
 import alert_silences
+import cluster_routing
 import auth
 import db
 import log_safety
@@ -181,6 +182,10 @@ class AlertWebhookResponse(BaseModel):
     # How many new investigations were attached to an incident, existing or
     # newly opened.
     correlated: int = 0
+    # How many named a cluster this deployment has no route to. The
+    # investigation exists so the alert is visible, but nothing was
+    # investigated — see its status and notes for why.
+    unroutable: int = 0
 
 @router.post("/webhook", response_model=AlertWebhookResponse)
 async def receive_webhook(
@@ -214,8 +219,18 @@ async def receive_webhook(
     resolved = 0
     silenced = 0
     correlated = 0
+    unroutable = 0
 
     settings = _webhook_settings()
+    # Read once per request: the registry cannot meaningfully change inside one
+    # Alertmanager batch, and this is on the hot path.
+    try:
+        registry_empty = db.registry_is_empty()
+    except Exception as e:  # pragma: no cover — defensive
+        # Fail to single-cluster rather than refusing every alert: an
+        # unreadable registry must not stop alerting outright.
+        logger.error("cluster registry unreadable, assuming single cluster: %s", e)
+        registry_empty = True
 
     # Read once per request, not per alert: Alertmanager posts batches, and the
     # silence set cannot meaningfully change inside one.
@@ -319,6 +334,25 @@ async def receive_webhook(
         await repo.save(investigation)
         investigation_ids.append(investigation_id)
 
+        # Route before investigating. An alert investigated against the wrong
+        # cluster produces a confident, fully-evidenced answer about a
+        # different machine — worse than no answer, because nothing about it
+        # looks wrong.
+        route = cluster_routing.resolve(
+            dict(alert.labels),
+            registry_is_empty=registry_empty,
+            lookup=db.get_cluster,
+        )
+        if not route.investigate:
+            db.mark_investigation_needs_config(investigation_id, route.reason)
+            logger.warning(
+                "alert %s not investigated: %s",
+                log_safety.one_line(alert.name),
+                log_safety.one_line(route.reason),
+            )
+            unroutable += 1
+            continue
+
         # Correlation is an enhancement to ingestion, never a gate on it: an
         # alert that cannot be grouped still gets investigated on its own.
         try:
@@ -351,6 +385,7 @@ async def receive_webhook(
         resolved=resolved,
         silenced=silenced,
         correlated=correlated,
+        unroutable=unroutable,
     )
 
 class ManualInvestigationRequest(BaseModel):

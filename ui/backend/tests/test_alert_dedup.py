@@ -80,10 +80,27 @@ def test_open_statuses_come_from_the_enum_not_a_guess():
         set(db.OPEN_INVESTIGATION_STATUSES)
         == all_values - db.TERMINAL_INVESTIGATION_STATUSES
     )
-    # Named explicitly as well: the set subtraction above stays true if someone
-    # adds a status to both sides, and a new terminal state that is not really
-    # terminal would quietly stop dedup for it.
-    assert db.TERMINAL_INVESTIGATION_STATUSES == {"completed", "failed", "resolved"}
+
+    # The assertion above is self-consistent for *any* enum — it derives one
+    # set from the other, so a newly added status silently lands in "open" and
+    # is treated as in flight forever. That is not hypothetical: adding
+    # `needs_config` passed every check here until both sets were spelled out.
+    # An investigation stuck in a bogus "open" status keeps absorbing repeats
+    # and holds its incident open permanently.
+    #
+    # So both halves are written literally, and the union must cover the enum.
+    # A new status fails this until somebody decides which half it belongs to.
+    assert db.TERMINAL_INVESTIGATION_STATUSES == {
+        "completed",
+        "failed",
+        "resolved",
+        "needs_config",
+    }
+    assert db.ACTIVE_INVESTIGATION_STATUSES == {"received", "classified", "running"}
+    assert (
+        db.TERMINAL_INVESTIGATION_STATUSES | db.ACTIVE_INVESTIGATION_STATUSES
+        == all_values
+    ), "a status was added to InvestigationStatus without being classified"
 
 
 @pytest.mark.parametrize("status", ["received", "classified", "running"])

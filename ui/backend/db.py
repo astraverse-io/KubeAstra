@@ -293,6 +293,13 @@ def init_db() -> None:
             # investigations produced RCAs nobody could rate, so a playbook
             # that consistently produced a wrong answer looked the same as one
             # that always worked.
+            # Why an investigation is in the status it is in — currently only
+            # written for `needs_config`, where "nothing was investigated" is
+            # useless without "because no cluster is registered as prod-eu".
+            # Kept separate from feedback_notes: a routing reason is not a
+            # human's verdict, and sharing the column would have mixed the two
+            # in any query that read either.
+            "status_reason": "TEXT",
             "feedback_rating": "TEXT",
             "feedback_notes": "TEXT",
             "feedback_at": "TEXT",
@@ -341,6 +348,21 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_incidents_open
                 ON incidents(namespace, workload, closed_at, last_active_at);
+
+            -- Which cluster an alert is about, and how to reach it. No secret
+            -- material lives here: `credential_ref` names a mounted secret,
+            -- so a database dump does not hand over cluster access.
+            CREATE TABLE IF NOT EXISTS cluster_registry (
+                id              TEXT PRIMARY KEY,
+                display_name    TEXT,
+                ssh_host        TEXT NOT NULL,
+                ssh_port        INTEGER NOT NULL DEFAULT 22,
+                ssh_user        TEXT NOT NULL,
+                credential_ref  TEXT NOT NULL,
+                kubectl_context TEXT,
+                status          TEXT NOT NULL DEFAULT 'active',
+                registered_at   TEXT NOT NULL
+            );
             """
         )
         con.execute(
@@ -1248,7 +1270,16 @@ class SqliteInvestigationRepository(_InvestigationRepositoryBase):
 # them is a silent failure: a name that does not exist matches nothing, so
 # dedup would appear to work and never fire. Everything not terminal is in
 # flight.
-TERMINAL_INVESTIGATION_STATUSES = frozenset({"completed", "failed", "resolved"})
+# Every InvestigationStatus must appear in exactly one of these two sets. They
+# are written out rather than derived from each other because deriving one from
+# the other is self-consistent for any enum: a new status added to the enum
+# would quietly fall into "open" and be treated as in-flight forever. Spelling
+# both out means a new status fails the partition test until somebody decides
+# which it is.
+TERMINAL_INVESTIGATION_STATUSES = frozenset(
+    {"completed", "failed", "resolved", "needs_config"}
+)
+ACTIVE_INVESTIGATION_STATUSES = frozenset({"received", "classified", "running"})
 
 
 def _open_statuses() -> tuple:
@@ -2245,3 +2276,116 @@ def investigation_feedback_summary(within_days: int = 30) -> list[dict]:
 
     summary.sort(key=lambda e: (-e["down_rate"], -e["total"]))
     return summary
+
+
+# ── Cluster registry ──────────────────────────────────────────────────────
+#
+# One assistant, several clusters, each with its own Prometheus pointing here.
+# Without a registry every alert was investigated against whatever the backend
+# happened to be aimed at — so an alert from staging produced a confident,
+# fully-evidenced answer about production. Wrong answers about the wrong
+# cluster are worse than no answer, because nothing about them looks wrong.
+#
+# An empty registry means single-cluster mode and changes nothing: existing
+# deployments keep using the default target and cluster labels are ignored.
+#
+# No credential material is stored. `credential_ref` names a secret mounted
+# into the pod, so this table can be dumped without handing over any cluster.
+
+
+CLUSTER_STATUSES = ("active", "disabled")
+
+
+def register_cluster(
+    cluster_id: str,
+    ssh_host: str,
+    ssh_user: str,
+    credential_ref: str,
+    display_name: str = "",
+    ssh_port: int = 22,
+    kubectl_context: str = "",
+    status: str = "active",
+) -> dict:
+    """Add or replace a cluster. The id is the value alerts carry in their
+    `cluster` label, which is what makes routing possible at all."""
+    if status not in CLUSTER_STATUSES:
+        raise ValueError(f"status must be one of {CLUSTER_STATUSES}, got {status!r}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO cluster_registry "
+            "(id, display_name, ssh_host, ssh_port, ssh_user, credential_ref, "
+            " kubectl_context, status, registered_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "  display_name=excluded.display_name, ssh_host=excluded.ssh_host, "
+            "  ssh_port=excluded.ssh_port, ssh_user=excluded.ssh_user, "
+            "  credential_ref=excluded.credential_ref, "
+            "  kubectl_context=excluded.kubectl_context, status=excluded.status",
+            (
+                cluster_id,
+                display_name or cluster_id,
+                ssh_host,
+                ssh_port,
+                ssh_user,
+                credential_ref,
+                kubectl_context or None,
+                status,
+                now,
+            ),
+        )
+    return get_cluster(cluster_id)
+
+
+def get_cluster(cluster_id: str) -> Optional[dict]:
+    if not cluster_id:
+        return None
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM cluster_registry WHERE id = ?", (cluster_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_clusters(include_disabled: bool = True) -> list[dict]:
+    clause = "" if include_disabled else "WHERE status = 'active'"
+    with _conn() as con:
+        rows = con.execute(
+            f"SELECT * FROM cluster_registry {clause} ORDER BY id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def registry_is_empty() -> bool:
+    """True when no cluster has ever been registered.
+
+    This is the switch between single-cluster and multi-cluster behaviour, and
+    it is deliberately "has any row" rather than "has any active row":
+    disabling every cluster should not silently send all alerts back to the
+    default target, which is the one outcome nobody would intend by disabling
+    things.
+    """
+    with _conn() as con:
+        return con.execute("SELECT 1 FROM cluster_registry LIMIT 1").fetchone() is None
+
+
+def remove_cluster(cluster_id: str) -> bool:
+    with _conn() as con:
+        return con.execute(
+            "DELETE FROM cluster_registry WHERE id = ?", (cluster_id,)
+        ).rowcount > 0
+
+
+def mark_investigation_needs_config(investigation_id: str, reason: str) -> None:
+    """Record that an alert arrived for a cluster we cannot reach.
+
+    The investigation still exists so the operator sees the alert — the point
+    is that nothing was investigated, not that nothing happened.
+    """
+    with _conn() as con:
+        con.execute(
+            "UPDATE investigations SET status = 'needs_config', "
+            "status_reason = ? WHERE id = ?",
+            (reason, investigation_id),
+        )
