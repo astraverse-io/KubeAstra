@@ -288,6 +288,15 @@ def init_db() -> None:
         # interval by design, so without these every delivery of one ongoing
         # problem started a fresh investigation — a full LLM run each time.
         _ensure_columns(con, "investigations", {
+            # Was this answer any good? Chat has had thumbs for a while and
+            # promotes good answers into the runbook collection; alert-driven
+            # investigations produced RCAs nobody could rate, so a playbook
+            # that consistently produced a wrong answer looked the same as one
+            # that always worked.
+            "feedback_rating": "TEXT",
+            "feedback_notes": "TEXT",
+            "feedback_at": "TEXT",
+            "feedback_by": "TEXT",
             "incident_id": "TEXT",
             "resolved_at": "TEXT",
             "mttr_seconds": "REAL",
@@ -2134,3 +2143,105 @@ def list_incidents(limit: int = 50, include_closed: bool = False) -> list[dict]:
             ]
             incidents.append(incident)
     return incidents
+
+
+# ── Feedback on investigations ────────────────────────────────────────────
+#
+# An alert investigation produces a root-cause answer chosen by a playbook.
+# Until now nothing recorded whether that answer was right, so a playbook that
+# was consistently wrong was indistinguishable from one that always worked —
+# and the only way to find out was for somebody to remember.
+#
+# A rating alone is a number. What makes a bad answer fixable is the note
+# beside it, which is why `feedback_notes` is stored verbatim and surfaced in
+# the summary rather than being reduced to a count.
+
+FEEDBACK_RATINGS = ("up", "down")
+
+
+def record_investigation_feedback(
+    investigation_id: str,
+    rating: str,
+    notes: str = "",
+    rated_by: str = "",
+) -> bool:
+    """Attach a verdict to an investigation. Returns False if there is no such
+    investigation.
+
+    A rating can be changed — someone marks an answer wrong, then finds it was
+    right after all — so this overwrites rather than appending. The timestamp
+    moves with it, so the summary reflects the current view rather than the
+    first impression.
+    """
+    if rating not in FEEDBACK_RATINGS:
+        raise ValueError(
+            f"rating must be one of {FEEDBACK_RATINGS}, got {rating!r}"
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE investigations "
+            "SET feedback_rating = ?, feedback_notes = ?, feedback_at = ?, "
+            "    feedback_by = ? "
+            "WHERE id = ?",
+            (rating, notes or None, now, rated_by or None, investigation_id),
+        )
+        return cur.rowcount > 0
+
+
+def _playbook_of(document: Optional[str]) -> str:
+    """Which playbook produced this answer.
+
+    Read from the stored document rather than a column because that is where
+    the orchestrator already records it. An investigation that failed before
+    classification has none, and is grouped under "" — worth seeing separately,
+    since a pile of unclassified failures is its own problem.
+    """
+    if not document:
+        return ""
+    try:
+        return str(json.loads(document).get("selected_playbook") or "")
+    except (TypeError, ValueError):
+        return ""
+
+
+def investigation_feedback_summary(within_days: int = 30) -> list[dict]:
+    """Per-playbook verdict counts, worst first.
+
+    Ordered by down-rate so the playbook most in need of editing is the first
+    thing read. Ties break on volume: a playbook wrong twice out of two matters
+    less than one wrong thirty times out of forty.
+
+    Sample notes travel with the counts. A rate tells you *that* a playbook is
+    failing; only the text tells you how.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=within_days)).isoformat()
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT document, feedback_rating, feedback_notes "
+            "FROM investigations "
+            "WHERE feedback_rating IS NOT NULL AND feedback_at >= ?",
+            (cutoff,),
+        ).fetchall()
+
+    by_playbook: dict[str, dict] = {}
+    for row in rows:
+        playbook = _playbook_of(row["document"])
+        entry = by_playbook.setdefault(
+            playbook, {"playbook": playbook, "up": 0, "down": 0, "sample_notes": []}
+        )
+        entry[row["feedback_rating"]] += 1
+        if row["feedback_rating"] == "down" and row["feedback_notes"]:
+            if len(entry["sample_notes"]) < 5:
+                entry["sample_notes"].append(row["feedback_notes"])
+
+    summary = []
+    for entry in by_playbook.values():
+        total = entry["up"] + entry["down"]
+        entry["total"] = total
+        entry["down_rate"] = round(entry["down"] / total, 3) if total else 0.0
+        summary.append(entry)
+
+    summary.sort(key=lambda e: (-e["down_rate"], -e["total"]))
+    return summary

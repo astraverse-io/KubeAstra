@@ -527,6 +527,64 @@ async def trigger_manual_investigation(
     
     return ManualInvestigationResponse(investigation_id=investigation_id)
 
+class InvestigationFeedback(BaseModel):
+    rating: str
+    # Optional on purpose. A bare 👎 is nearly useless for fixing a playbook,
+    # but requiring an explanation loses the signal from everyone who does not
+    # have time to write one — and a rate computed from ratings people actually
+    # left beats a better-annotated one they did not.
+    notes: str = ""
+
+
+@router.get("/feedback/summary")
+async def feedback_summary(within_days: int = 30) -> dict:
+    """Which playbooks are producing answers people reject.
+
+    Declared before the feedback POST and any dynamic segment so `feedback` is
+    not read as an investigation id.
+    """
+    summary = await run_in_threadpool(
+        db.investigation_feedback_summary, within_days=within_days
+    )
+    return {"playbooks": summary, "window_days": within_days}
+
+
+@router.post("/{investigation_id}/feedback")
+async def submit_feedback(
+    request: Request, investigation_id: str, body: InvestigationFeedback
+) -> dict:
+    """Rate an investigation's root-cause answer.
+
+    Behind interactive user auth: a verdict is attributable, and "who said this
+    was wrong" is the first question when a playbook is about to be rewritten
+    on the strength of it.
+    """
+    user = auth.require_current_user(request)
+    rated_by = str(user.get("email") or user.get("id") or "local")
+
+    try:
+        recorded = await run_in_threadpool(
+            db.record_investigation_feedback,
+            investigation_id,
+            body.rating,
+            body.notes,
+            rated_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not recorded:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+
+    logger.info(
+        "investigation %s rated %s by %s",
+        log_safety.one_line(investigation_id),
+        log_safety.one_line(body.rating),
+        log_safety.one_line(rated_by),
+    )
+    return {"id": investigation_id, "rating": body.rating}
+
+
 @router.get("/incidents")
 async def list_incidents(limit: int = 50, include_closed: bool = False) -> dict:
     """Alerts grouped by the problem they are about.
