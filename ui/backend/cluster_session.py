@@ -25,6 +25,7 @@ import os
 from typing import Any, Dict, Optional
 
 import db
+import log_safety
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,14 @@ def resolve(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
     try:
         conn = db.get_cluster_connection(session_id)
     except Exception as error:  # a DB hiccup must not silently retarget
-        logger.warning("cluster lookup failed for session %s: %s", session_id, error)
+        # session_id arrives from the request. A newline in it lets the
+        # writer append a line that reads like the application produced it,
+        # which is what log_safety.one_line exists to prevent (alert 148).
+        logger.warning(
+            "cluster lookup failed for session %s: %s",
+            log_safety.one_line(session_id),
+            log_safety.one_line(error),
+        )
         # The underlying error is logged above and chained below; it is
         # deliberately not interpolated into `reason`. Nothing reads .reason —
         # every handler renders str(exc), which is fixed text — so carrying the
@@ -78,7 +86,9 @@ def resolve(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
     if path and not os.path.isfile(path):
         cluster = conn.get("cluster_name") or conn.get("context_name") or "unknown"
         logger.warning(
-            "session %s references a kubeconfig that is gone: %s", session_id, path
+            "session %s references a kubeconfig that is gone: %s",
+            log_safety.one_line(session_id),
+            log_safety.one_line(path),
         )
         raise ClusterConnectionUnavailable(cluster, "kubeconfig file is missing")
 
