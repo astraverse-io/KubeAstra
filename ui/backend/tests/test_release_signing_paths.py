@@ -161,6 +161,36 @@ def test_a_bundle_hook_signs_the_sidecar():
     )
 
 
+@pytest.mark.parametrize(
+    "cwd",
+    ["", "desktop", "desktop/src-tauri", "desktop/src-tauri/splash", "ui/backend"],
+)
+def test_the_hook_finds_the_signer_from_any_working_directory(cwd: str):
+    """Tauri does not document which directory it runs bundle hooks from, and
+    it is none of the obvious ones.
+
+    An earlier version tried three hard-coded relative paths — `scripts/`,
+    `../scripts/`, `desktop/scripts/` — which covered every directory anyone
+    thought to test and still failed in CI with exit 127, after a three-minute
+    Rust build. The hook walks up from $PWD now, so no guess is involved.
+    """
+    import subprocess
+
+    hook = _tauri_conf()["build"]["beforeBundleCommand"]
+    result = subprocess.run(
+        ["sh", "-c", hook],
+        cwd=REPO_ROOT / cwd if cwd else REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "not found" not in result.stderr, (
+        f"the bundle hook cannot locate sign-sidecar.sh from {cwd or '<repo root>'}: "
+        f"{result.stderr.strip()}"
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_the_signer_exists_and_is_executable():
     assert SIGN_SIDECAR.exists()
     assert SIGN_SIDECAR.stat().st_mode & 0o111, f"{SIGN_SIDECAR.name} is not executable"
