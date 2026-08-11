@@ -1,0 +1,87 @@
+name: Check public websites
+
+# kubeastra.io and astraverse.dev live in their own repositories, so no test
+# in this repo can see them. Both drifted to "51 tools" while the registry
+# said 52 — in seven places on kubeastra.io alone, including the meta
+# description and the OpenGraph and Twitter cards. Nothing failed, because
+# nothing was looking.
+#
+# Deliberately NOT part of CI:
+#   - it needs the network, and a unit suite that needs DNS fails on a plane
+#   - a PR is the wrong moment to learn a *separate* repo is stale
+#   - GitHub Pages being slow would turn PR red for a reason the author
+#     cannot fix, which teaches people to ignore red
+#
+# So it runs on a schedule, and after a release — the moment a tool count or
+# an install command is most likely to have just become wrong.
+
+on:
+  schedule:
+    # Mondays, 09:00 UTC. Drift here is measured in weeks, not minutes.
+    - cron: "0 9 * * 1"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The failure path files an issue; without this it 403s at the one moment
+  # it is supposed to be useful.
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The tool count comes from importing tool_registry, so the runtime deps
+      # it pulls in have to be installed. requirements-core is enough; the
+      # full set drags in torch for no benefit here.
+      - name: Install core dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r mcp/requirements-core.txt
+          pip install pytest
+
+      - name: Compare the live sites against the registry
+        env:
+          CHECK_LIVE_WEBSITES: "true"
+          PYTHONPATH: ${{ github.workspace }}/mcp
+        run: |
+          pytest ui/backend/tests/test_websites_match_reality.py -v
+
+      # A failure here means a public page is telling people something untrue,
+      # which nobody will notice from a red tick on a scheduled run.
+      - name: Open an issue when a site has drifted
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The label may not exist yet; creating it is idempotent and
+          # `gh issue create --label` hard-fails on an unknown label.
+          gh label create website-drift \
+            --description "A public site contradicts the code" \
+            --color D93F0B 2>/dev/null || true
+
+          existing=$(gh issue list --label website-drift --state open \
+            --json number --jq '.[0].number // ""')
+          if [ -n "$existing" ]; then
+            echo "issue #$existing is already open; not filing another"
+            exit 0
+          fi
+          gh issue create \
+            --title "A public website contradicts the code" \
+            --label website-drift \
+            --body "The scheduled website check failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          kubeastra.io and astraverse.dev are in separate repositories and are
+          edited by hand, so a tool count or install command can go stale
+          without anything in this repo noticing. The run log says which claim
+          is wrong and on which site."
