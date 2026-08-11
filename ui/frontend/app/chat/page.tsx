@@ -832,6 +832,16 @@ export default function ChatPage() {
             await loadAccountSessions();
           }
         } else if (!status.auth_enabled && typeof window !== "undefined") {
+          // The pending-session key has to be consumed here too, not just on
+          // the authenticated path. Desktop mode has auth disabled, and
+          // returning from Alerts carries the session id through this same
+          // key — so with nothing to consume it the key stayed set, the
+          // history effect below bailed out on its presence, historyLoaded
+          // never flipped, and the app sat on "Loading history…" forever.
+          //
+          // Safe to call unconditionally: both its success and failure paths
+          // clear the key and set historyLoaded, so it cannot deadlock.
+          await loadPendingSharedSession(status);
           try {
             const stored = JSON.parse(localStorage.getItem("k8s_sessions") || "[]");
             setSessions(stored);
