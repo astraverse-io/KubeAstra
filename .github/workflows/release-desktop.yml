@@ -407,5 +407,13 @@ jobs:
           xcrun stapler validate "$DMG"
           spctl -a -vvv -t open --context context:primary-signature "$DMG"
 
-          gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber \
-            --repo "$GITHUB_REPOSITORY"
+          # Only a tag push has a release to upload to. A dispatched run
+          # still notarizes and staples — that is the part worth verifying —
+          # but GITHUB_REF_NAME is a branch there, and `gh release upload`
+          # ends the job with a bare "release not found".
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            echo "dispatched run on $GITHUB_REF_NAME — notarized and stapled, nothing to upload"
+          fi

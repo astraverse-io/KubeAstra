@@ -370,6 +370,18 @@ def test_the_dmg_check_asks_the_question_the_user_asks():
     assert "stapler validate" in run
 
 
+def test_the_upload_is_skipped_when_there_is_no_release():
+    """The workflow also runs on workflow_dispatch, where GITHUB_REF_NAME is a
+    branch. `gh release upload` then ends the job with a bare "release not
+    found" — after signing, notarizing and stapling all succeeded, which is a
+    confusing way to fail a run that did everything right."""
+    run = _step("Notarize and staple the DMG")["run"]
+
+    assert 'GITHUB_REF_TYPE" = "tag"' in run, (
+        "the upload is unconditional; a dispatched run will fail on it"
+    )
+
+
 def test_the_stapled_dmg_replaces_the_one_already_uploaded():
     """tauri-action uploads the DMG before this step runs, so without
     --clobber the release keeps the unstapled copy and every check here passes

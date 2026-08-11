@@ -40,7 +40,15 @@ def _kubeconfig_dir_path() -> Path:
     # single predictable path. Without it, whichever user starts first owns the
     # directory and every other user fails the ownership check below — a fix
     # for one problem that hands you a denial of service instead.
-    return Path(tempfile.gettempdir()) / f"kubeastra-kubeconfigs-{os.geteuid()}"
+    #
+    # Windows has no geteuid, and needs none here: GetTempPath already returns
+    # a per-user directory under the user's own profile, so the contention this
+    # guards against cannot arise. Calling it unguarded would raise
+    # AttributeError the first time anyone connected a cluster — the same crash
+    # that killed the frozen backend at startup from kubectl_runner.
+    if hasattr(os, "geteuid"):
+        return Path(tempfile.gettempdir()) / f"kubeastra-kubeconfigs-{os.geteuid()}"
+    return Path(tempfile.gettempdir()) / "kubeastra-kubeconfigs"
 
 
 def _ensure_private_dir(path: Path) -> Path:

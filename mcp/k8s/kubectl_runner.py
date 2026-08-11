@@ -156,6 +156,19 @@ def _append_audit_entry(path: Path, entry: str, max_bytes: int) -> None:
             raise
 
 
+def _process_identity() -> str:
+    """`uid=<n> gid=<n>` on unix, `uid=n/a` elsewhere.
+
+    os.geteuid and os.getegid do not exist on Windows. They were called here
+    unguarded — including inside the except handler below, so the error path
+    raised while reporting the error — and the frozen backend died at startup
+    with `module 'os' has no attribute 'geteuid'` before it served anything.
+    """
+    if hasattr(os, "geteuid"):
+        return f"uid={os.geteuid()} gid={os.getegid()}"
+    return "uid=n/a gid=n/a"
+
+
 def _log_audit_configuration(path: Path) -> None:
     path_key = str(path.absolute())
     with _audit_warning_lock:
@@ -168,19 +181,17 @@ def _log_audit_configuration(path: Path) -> None:
         parent_mode = oct(parent_stat.st_mode & 0o777)
         writable = os.access(path.parent, os.W_OK)
         logger.info(
-            "audit_log resolved=%s uid=%s gid=%s parent_mode=%s writable=%s",
+            "audit_log resolved=%s %s parent_mode=%s writable=%s",
             path.resolve(),
-            os.geteuid(),
-            os.getegid(),
+            _process_identity(),
             parent_mode,
             str(writable).lower(),
         )
     except Exception as exc:
         logger.warning(
-            "audit_log resolved=%s uid=%s gid=%s parent_unavailable=true error=%s",
+            "audit_log resolved=%s %s parent_unavailable=true error=%s",
             path.absolute(),
-            os.geteuid(),
-            os.getegid(),
+            _process_identity(),
             exc,
         )
 
