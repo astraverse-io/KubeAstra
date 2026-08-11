@@ -30,6 +30,24 @@ import log_safety
 logger = logging.getLogger(__name__)
 
 
+def unavailable_message(cluster: str) -> str:
+    """The text an operator sees when their cluster has gone.
+
+    A function rather than a line inside the exception so that callers can
+    build it from `error.cluster` instead of from `str(error)`. Serialising an
+    exception into a response is the shape CodeQL's stack-trace-exposure query
+    looks for (alert 114), and it is right to look: the day someone raises
+    this with an interpolated internal detail, the detail ships to the client.
+    Taking a plain string attribute cannot do that whatever the exception says.
+    """
+    return (
+        f"The kubeconfig for cluster '{cluster}' is no longer available, so "
+        f"this session cannot reach it. Nothing was run — reconnect the "
+        f"cluster to continue. Commands were NOT run against a different "
+        f"cluster."
+    )
+
+
 class ClusterConnectionUnavailable(RuntimeError):
     """A session's cluster is configured but no longer reachable.
 
@@ -40,12 +58,7 @@ class ClusterConnectionUnavailable(RuntimeError):
     def __init__(self, cluster: str, reason: str) -> None:
         self.cluster = cluster
         self.reason = reason
-        super().__init__(
-            f"The kubeconfig for cluster '{cluster}' is no longer available, so "
-            f"this session cannot reach it. Nothing was run — reconnect the "
-            f"cluster to continue. Commands were NOT run against a different "
-            f"cluster."
-        )
+        super().__init__(unavailable_message(cluster))
 
 
 def resolve(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -178,7 +191,9 @@ def status_for(session_id: str) -> Dict[str, Any]:
         return {
             "connected": False,
             "stale": True,
-            "reason": str(error),
+            # Built from the cluster name, not from str(error). Identical text,
+            # but nothing an exception carries can reach the client through it.
+            "reason": unavailable_message(error.cluster),
             "cluster_name": error.cluster,
         }
 
