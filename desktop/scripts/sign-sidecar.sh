@@ -161,8 +161,25 @@ while IFS= read -r -d '' fw; do
         done
     fi
 
+    # Sign the .framework itself, not the version directory inside it.
+    #
+    # Targeting the version directory was a workaround for the flattened
+    # layout, which made the framework ambiguous to codesign. The relink above
+    # removes that ambiguity, and signing a versioned framework at its bundle
+    # root is the operation codesign is actually designed for: it signs the
+    # current version and seals it so every path into it validates. Signing
+    # the version directory instead produced a signature Apple called invalid
+    # when reached through Python.framework/Python.
     codesign --force --timestamp --options runtime \
-        --sign "$IDENTITY" "${version_dir:-$fw}"
+        --sign "$IDENTITY" "$fw"
+
+    # Verify here rather than discovering it from Apple 90 seconds later. This
+    # exact framework has now failed notarization twice, each time with an
+    # error that codesign itself can see.
+    if ! codesign --verify --strict --verbose=2 "$fw" 2>&1 | tail -3; then
+        echo "sign-sidecar: FAIL — $fw does not verify after signing." >&2
+        exit 1
+    fi
     frameworks=$((frameworks + 1))
 done < <(find "$SIDECAR" -type d -name "*.framework" -print0)
 
