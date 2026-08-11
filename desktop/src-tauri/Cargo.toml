@@ -1,6 +1,6 @@
 [package]
 name = "kubeastra-desktop"
-version = "0.2.0"
+version = "0.2.1"
 description = "KubeAstra Desktop Application"
 authors = ["Astraverse Team"]
 edition = "2021"

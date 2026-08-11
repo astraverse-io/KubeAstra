@@ -11,8 +11,8 @@ type: application
 # version is this?" on a public repo. A guard test now fails if they diverge.
 #
 # Bump all three together, in the same commit as the release tag.
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.2.1
+appVersion: "0.2.1"
 keywords:
   - kubernetes
   - devops
