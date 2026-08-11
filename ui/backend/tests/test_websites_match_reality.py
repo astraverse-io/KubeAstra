@@ -136,25 +136,101 @@ def test_the_advertised_install_command_matches_the_published_cask():
     )
 
 
-def test_the_advertised_download_actually_exists():
-    """`releases/latest` is only useful if the newest release carries a DMG.
-    A desktop release that failed to attach one would leave the button on a
-    page with nothing to download."""
+# ── the updater endpoint ──────────────────────────────────────────────────
+#
+# Not a website, but the same failure shape: a URL baked into shipped copies,
+# pointing at a separate system, that nothing in this repo verifies.
+
+
+def _updater_endpoint() -> str:
+    import json
+
+    conf = json.loads(
+        (REPO_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text()
+    )
+    return conf["plugins"]["updater"]["endpoints"][0]
+
+
+def test_the_updater_endpoint_actually_serves_a_manifest():
+    """This URL is compiled into every installed copy and cannot be changed
+    afterwards, so a 404 here means those copies never update again and there
+    is no way to tell them so.
+
+    It broke exactly once, silently: the endpoint is
+    `releases/latest/download/latest.json`, and both desktop releases were
+    published with `--latest=false` to avoid displacing the server release.
+    `releases/latest` therefore resolved to the server tag, which carries no
+    latest.json. Publishing "worked" both times and nothing looked.
+    """
+    import json
+
+    body = _fetch(_updater_endpoint())
+    try:
+        manifest = json.loads(body)
+    except ValueError:
+        pytest.fail(
+            f"{_updater_endpoint()} did not return JSON. If it returned a 404 "
+            f"page, the newest desktop release is probably not marked "
+            f"'latest' — `gh release edit <tag> --latest`."
+        )
+
+    assert manifest.get("version"), "manifest has no version"
+    assert manifest.get("platforms"), "manifest lists no platforms"
+
+
+def test_the_updater_manifest_is_signed():
+    """An unsigned manifest is refused by the client, which looks identical to
+    'no update available' from the user's side."""
+    import json
+
+    manifest = json.loads(_fetch(_updater_endpoint()))
+
+    for name, platform in manifest["platforms"].items():
+        assert platform.get("signature"), f"{name} entry carries no signature"
+        assert platform.get("url", "").endswith(".tar.gz"), (
+            f"{name} points at {platform.get('url')!r}, which is not an "
+            f"updater bundle"
+        )
+
+
+def test_the_updater_offers_the_newest_release():
+    """A manifest that resolves but lags the newest release means nobody
+    upgrades to it, which is the same outcome as the 404 and just as quiet."""
+    import json
+
+    manifest = json.loads(_fetch(_updater_endpoint()))
+    newest = _newest_desktop_release()["tag_name"].removeprefix("desktop-v")
+
+    assert manifest["version"] == newest, (
+        f"the updater offers {manifest['version']} but the newest published "
+        f"desktop release is {newest}"
+    )
+
+
+def _newest_desktop_release() -> dict:
+    import json
+
     request = urllib.request.Request(
         "https://api.github.com/repos/astraverse-io/KubeAstra/releases",
         headers={"User-Agent": "kubeastra-doc-check",
                  "Accept": "application/vnd.github+json"},
     )
     with urllib.request.urlopen(request, timeout=45) as response:
-        import json
-
         releases = json.load(response)
 
     desktop = [r for r in releases
                if r["tag_name"].startswith("desktop-v") and not r["draft"]]
-    assert desktop, "no published desktop release for the download link to reach"
+    assert desktop, "no published desktop release"
+    return desktop[0]
 
-    assets = [a["name"] for a in desktop[0]["assets"]]
+
+def test_the_advertised_download_actually_exists():
+    """`releases/latest` is only useful if the newest release carries a DMG.
+    A desktop release that failed to attach one would leave the button on a
+    page with nothing to download."""
+    release = _newest_desktop_release()
+    assets = [a["name"] for a in release["assets"]]
+
     assert any(a.endswith(".dmg") for a in assets), (
-        f"newest desktop release {desktop[0]['tag_name']} has no DMG: {assets}"
+        f"newest desktop release {release['tag_name']} has no DMG: {assets}"
     )
