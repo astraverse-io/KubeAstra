@@ -9,9 +9,9 @@ name: CI
 # bisect spans a phase of work instead of a commit.
 on:
   push:
-    branches: [main, feat/desktop]
+    branches: [main, feat/desktop, feat/windows]
   pull_request:
-    branches: [main, feat/desktop]
+    branches: [main, feat/desktop, feat/windows]
 
 # Least privilege for the automatic GITHUB_TOKEN. Without this the token
 # inherits the repository default, which on many repos is write — and these

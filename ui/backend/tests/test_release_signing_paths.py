@@ -194,8 +194,13 @@ def test_the_signing_step_runs_before_the_build_that_bundles_it():
 
 
 def test_the_signing_step_only_runs_when_a_certificate_exists():
-    """Unguarded, it would fail every unsigned build at `security import`."""
-    assert _step("Sign the sidecar binaries")["if"] == "env.HAS_APPLE_CERT == 'true'"
+    """Unguarded, it would fail every unsigned build at `security import` —
+    and, since the Windows lane was added, every Windows build too, because
+    HAS_APPLE_CERT is a secret-presence flag and is equally true there."""
+    condition = _step("Sign the sidecar binaries")["if"]
+
+    assert "env.HAS_APPLE_CERT == 'true'" in condition
+    assert "startsWith(matrix.platform, 'macos')" in condition
 
 
 def test_the_signing_step_demands_an_identity_rather_than_skipping():
@@ -373,6 +378,91 @@ def test_the_stapled_dmg_replaces_the_one_already_uploaded():
 
     assert "gh release upload" in run
     assert "--clobber" in run
+
+
+# ── the Windows lane ──────────────────────────────────────────────────────
+#
+# HAS_APPLE_CERT is a secret-presence flag, not a platform flag: it is equally
+# 'true' on the Windows runner. Every Apple step therefore needs the platform
+# in its condition as well, or the Windows lane runs `security`, `codesign`
+# and `xcrun` and dies.
+
+
+def _matrix() -> list[dict]:
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build-desktop"]
+    return job["strategy"]["matrix"]["include"]
+
+
+def _fires(condition: str, *, mac: bool, cert: bool, api_key: bool) -> bool:
+    """Evaluate a step `if` for one scenario. Crude, but these conditions are
+    built from exactly three predicates and nothing else."""
+    c = condition.replace("startsWith(matrix.platform, 'macos')", "True" if mac else "False")
+    c = c.replace("env.HAS_APPLE_CERT == 'true'", "True" if cert else "False")
+    c = c.replace("env.HAS_APPLE_CERT != 'true'", "False" if cert else "True")
+    c = c.replace("env.HAS_APPLE_API_KEY == 'true'", "True" if api_key else "False")
+    c = c.replace("env.HAS_APPLE_API_KEY != 'true'", "False" if api_key else "True")
+    c = c.replace("&&", " and ").replace("||", " or ")
+    c = c.replace("!True", "not True").replace("!False", "not False")
+    return bool(eval(c))  # noqa: S307 — fixed vocabulary, from a file in this repo
+
+
+def test_there_is_a_windows_lane():
+    platforms = {e["platform"] for e in _matrix()}
+
+    assert any(p.startswith("windows") for p in platforms), "the Windows lane is gone"
+    assert any(p.startswith("macos") for p in platforms)
+
+
+@pytest.mark.parametrize("mac", [True, False], ids=["macos", "windows"])
+@pytest.mark.parametrize("cert", [True, False], ids=["cert", "nocert"])
+@pytest.mark.parametrize("api_key", [True, False], ids=["apikey", "noapikey"])
+def test_exactly_one_build_step_fires(mac: bool, cert: bool, api_key: bool):
+    """Two firing means two Tauri builds racing for the same artifacts; zero
+    means a release with nothing in it. Neither announces itself."""
+    builds = [s for s in _build_steps()]
+    hits = [s["name"] for s in builds if _fires(s["if"], mac=mac, cert=cert, api_key=api_key)]
+
+    assert len(hits) == 1, (
+        f"{'macOS' if mac else 'Windows'} cert={cert} api_key={api_key} fires "
+        f"{len(hits)} build steps: {hits}"
+    )
+
+
+@pytest.mark.parametrize(
+    "step_name",
+    [
+        "Sign the sidecar binaries",
+        "Materialize App Store Connect API key",
+        "Build Tauri App (signed, notarized with an API key)",
+        "Build Tauri App (signed, notarized with an app-specific password)",
+        "Notarize and staple the DMG",
+    ],
+)
+def test_every_apple_step_is_gated_on_macos(step_name: str):
+    """Without the platform check these run on windows-latest, where
+    `security` and `codesign` do not exist."""
+    assert "startsWith(matrix.platform, 'macos')" in _step(step_name)["if"], (
+        f"{step_name} would run on the Windows runner"
+    )
+
+
+def test_the_job_runs_bash_on_both_platforms():
+    """windows-latest defaults to PowerShell, and every `run:` here is bash —
+    `set -euo pipefail`, `$RUNNER_TEMP`, `test -f`."""
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build-desktop"]
+
+    assert job.get("defaults", {}).get("run", {}).get("shell") == "bash"
+
+
+def test_no_step_hardcodes_slash_tmp():
+    """/tmp is not a usable path on the Windows runner; $RUNNER_TEMP is
+    defined everywhere."""
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build-desktop"]
+    offenders = [
+        s.get("name", "?") for s in job["steps"] if "/tmp/" in str(s.get("run", ""))
+    ]
+
+    assert offenders == [], f"these hardcode /tmp: {offenders}"
 
 
 def test_the_p8_secret_is_never_named_by_a_build_step():

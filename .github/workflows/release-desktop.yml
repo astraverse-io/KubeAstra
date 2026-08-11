@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'desktop-v*'
+  # Build without minting a tag. The macOS lane took nine attempts to get
+  # right; doing that through real version tags would have left nine
+  # releases behind. A dispatched run builds and verifies but publishes
+  # nothing, because tauri-action only uploads when it has a tag.
+  workflow_dispatch:
 
 jobs:
   build-desktop:
@@ -16,6 +21,9 @@ jobs:
           - platform: 'macos-latest'
             target: 'aarch64-apple-darwin'
             args: '--target aarch64-apple-darwin'
+          - platform: 'windows-latest'
+            target: 'x86_64-pc-windows-msvc'
+            args: '--target x86_64-pc-windows-msvc'
           # arm64 only. There is no x86_64 macOS entry and no Linux entry —
           # both deliberate, both explained in desktop/README.md § Platforms.
           #
@@ -26,6 +34,12 @@ jobs:
           # an arm64 runner would ship an arm64 sidecar inside an x86_64 app.
 
     runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        # windows-latest defaults to PowerShell. Every `run:` in this job is
+        # bash, and Git Bash ships on the image, so one default keeps both
+        # lanes running the same script instead of forking each step.
+        shell: bash
     # `secrets` is not available in a step-level `if`, but it is here.
     env:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
@@ -81,7 +95,7 @@ jobs:
       # launch + /health smoke test. PyInstaller exits 0 on all of those
       # failures, so calling it directly lets a broken bundle go green.
       - name: Build and verify PyInstaller backend
-        run: desktop/pyinstaller/build.sh /tmp/pyi-dist /tmp/pyi-work
+        run: desktop/pyinstaller/build.sh "$RUNNER_TEMP/pyi-dist" "$RUNNER_TEMP/pyi-work"
 
       # Shipped through bundle.resources, so the directory keeps its name and
       # carries no target-triple suffix. externalBin cannot be used here: it
@@ -89,10 +103,17 @@ jobs:
       # Contents/MacOS/, which strands _internal/ and breaks the launcher.
       - name: Stage sidecar for Tauri
         run: |
+          set -euo pipefail
           rm -rf desktop/src-tauri/binaries
           mkdir -p desktop/src-tauri/binaries
-          cp -r /tmp/pyi-dist/kubeastra-backend desktop/src-tauri/binaries/kubeastra-backend
-          test -x desktop/src-tauri/binaries/kubeastra-backend/kubeastra-backend
+          cp -r "$RUNNER_TEMP/pyi-dist/kubeastra-backend" desktop/src-tauri/binaries/kubeastra-backend
+          # PyInstaller appends .exe on Windows, and main.rs looks for exactly
+          # that name under cfg!(windows). Checked with -f rather than -x:
+          # Git Bash reports permission bits that do not mean what they do on
+          # a unix filesystem.
+          EXE=kubeastra-backend
+          [ "$RUNNER_OS" = "Windows" ] && EXE=kubeastra-backend.exe
+          test -f "desktop/src-tauri/binaries/kubeastra-backend/$EXE"
           test -d desktop/src-tauri/binaries/kubeastra-backend/_internal
 
       # Notarization needs every Mach-O in the bundle signed, and codesign does
@@ -111,7 +132,7 @@ jobs:
       # into Contents/Resources/, and Tauri sealing the .app afterwards records
       # them rather than replacing them.
       - name: Sign the sidecar binaries
-        if: env.HAS_APPLE_CERT == 'true'
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -187,7 +208,7 @@ jobs:
       # certificate actually exists. This needs no edit when the certs land —
       # add the secrets and the signed path takes over on its own.
       - name: Build Tauri App (unsigned)
-        if: env.HAS_APPLE_CERT != 'true'
+        if: env.HAS_APPLE_CERT != 'true' || !startsWith(matrix.platform, 'macos')
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -207,7 +228,7 @@ jobs:
       # a secret base64-encoded and is materialised here, on the runner, for
       # the length of one job.
       - name: Materialize App Store Connect API key
-        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
@@ -219,7 +240,7 @@ jobs:
             || { echo "::error::APPLE_API_KEY_P8 did not decode to a PEM private key."; exit 1; }
 
       - name: Build Tauri App (signed, notarized with an API key)
-        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -247,7 +268,7 @@ jobs:
       # an unset variable, so naming APPLE_API_* here would make Tauri choose
       # the API-key branch with blank credentials and fail.
       - name: Build Tauri App (signed, notarized with an app-specific password)
-        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY != 'true'
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY != 'true'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -266,6 +287,34 @@ jobs:
           prerelease: false
           workdir: desktop
           args: ${{ matrix.args }}
+
+      # The Windows counterpart of the .app check below. Weaker on purpose:
+      # confirming the sidecar runs from inside an *installed* app means
+      # actually running the MSI, which needs an elevated install and an
+      # uninstall to follow. That is a later phase. What this catches now is
+      # the failure that has bitten every other lane — a bundle that builds
+      # clean and ships nothing usable.
+      - name: Verify the Windows bundle
+        if: startsWith(matrix.platform, 'windows')
+        run: |
+          set -euo pipefail
+          MSI="$(find desktop/src-tauri/target -name '*.msi' | head -1)"
+          [ -n "$MSI" ] || { echo "::error::no MSI was produced"; exit 1; }
+          echo "built $MSI ($(du -m "$MSI" | cut -f1)MB)"
+
+          # An MSI that omits the sidecar still installs and then fails at
+          # launch, which is exactly how the macOS lane shipped a dead bundle
+          # twice. The sidecar is ~100MB, so a tiny MSI means it is missing.
+          size_mb="$(du -m "$MSI" | cut -f1)"
+          [ "$size_mb" -gt 40 ] || {
+            echo "::error::MSI is only ${size_mb}MB — the sidecar is almost certainly not in it"
+            exit 1
+          }
+
+          # The staged sidecar must at least start. build.sh already smoke
+          # tests it, but it runs before Tauri touches anything.
+          ./desktop/src-tauri/binaries/kubeastra-backend/kubeastra-backend.exe --help >/dev/null
+          echo "staged sidecar executes"
 
       # The check that matters. Every earlier gate passed on a .app whose
       # sidecar could not start — bundling had flattened the onedir tree, so
@@ -333,7 +382,7 @@ jobs:
       # The DMG has already been uploaded to the draft release by this point,
       # so the stapled copy replaces it with --clobber.
       - name: Notarize and staple the DMG
-        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
