@@ -129,6 +129,88 @@ def test_the_api_key_file_is_written_before_the_build_that_reads_it():
     assert materialize < build
 
 
+# ── the sidecar has to be signed too ──────────────────────────────────────
+#
+# codesign does not recurse into bundle resources, and the PyInstaller sidecar
+# arrives as a resource. Tauri signing the .app therefore leaves ~130 Mach-O
+# files carrying PyInstaller's ad-hoc signatures, and Apple refuses the lot:
+# desktop-v0.2.0 came back with 192 errors across 96 binaries, every one of
+# them under Contents/Resources/binaries/kubeastra-backend/.
+#
+# Nothing about that is visible before notarization. The build succeeds, the
+# DMG opens, and only Apple says otherwise — so these are pinned here.
+
+TAURI_CONF = REPO_ROOT / "desktop" / "src-tauri" / "tauri.conf.json"
+SIGN_SIDECAR = REPO_ROOT / "desktop" / "scripts" / "sign-sidecar.sh"
+
+
+def _tauri_conf() -> dict:
+    import json
+
+    return json.loads(TAURI_CONF.read_text())
+
+
+def test_a_bundle_hook_signs_the_sidecar():
+    """Without this hook the bundler copies unsigned binaries into the .app and
+    the failure surfaces only once Apple has looked at it."""
+    hook = _tauri_conf()["build"].get("beforeBundleCommand", "")
+
+    assert "sign-sidecar.sh" in hook, (
+        "beforeBundleCommand no longer runs the sidecar signer; notarization "
+        "will fail with one error per binary in the PyInstaller output"
+    )
+
+
+def test_the_signer_exists_and_is_executable():
+    assert SIGN_SIDECAR.exists()
+    assert SIGN_SIDECAR.stat().st_mode & 0o111, f"{SIGN_SIDECAR.name} is not executable"
+
+
+@pytest.mark.parametrize(
+    "flag,why",
+    [
+        ("--force", "PyInstaller leaves ad-hoc signatures; codesign will not replace them without it"),
+        ("--timestamp", "'The signature does not include a secure timestamp.' — 192 of them"),
+        ("--options runtime", "'The executable does not have the hardened runtime enabled.'"),
+    ],
+)
+def test_the_signer_passes_the_flags_apple_requires(flag: str, why: str):
+    assert flag in SIGN_SIDECAR.read_text(), f"missing {flag}: {why}"
+
+
+def test_the_entitlements_the_signer_references_exist():
+    """A wrong path here fails at bundle time on a release build only."""
+    entitlements = REPO_ROOT / "desktop" / "src-tauri" / "entitlements.plist"
+
+    assert entitlements.exists()
+    assert "entitlements.plist" in SIGN_SIDECAR.read_text()
+
+
+def test_a_missing_identity_is_not_an_error():
+    """The workflow deliberately produces unsigned builds when no certificate
+    secret exists. A signer that exits non-zero without an identity would turn
+    that supported path into a failed release.
+
+    This also pins a real bug: `set -e` plus `pipefail` made the identity
+    lookup's own grep-found-nothing kill the script silently, exit 1, no
+    output.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        ["bash", str(SIGN_SIDECAR)],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin", "APPLE_SIGNING_IDENTITY": ""},
+    )
+
+    if "no Developer ID identity" in result.stdout:
+        assert result.returncode == 0, (
+            f"signer exited {result.returncode} with no identity available; "
+            f"that breaks the unsigned build path.\nstderr: {result.stderr}"
+        )
+
+
 def test_the_p8_secret_is_never_named_by_a_build_step():
     """The key material is decoded to a file by one step. A build step that
     also named it would put the raw key into the environment of a third-party

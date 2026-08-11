@@ -4,7 +4,8 @@
   "version": "0.2.0",
   "identifier": "io.astraverse.kubeastra",
   "build": {
-    "frontendDist": "splash"
+    "frontendDist": "splash",
+    "beforeBundleCommand": "bash -c 'p=scripts/sign-sidecar.sh; [ -f \"$p\" ] || p=../scripts/sign-sidecar.sh; [ -f \"$p\" ] || p=desktop/scripts/sign-sidecar.sh; bash \"$p\"'"
   },
   "app": {
     "windows": [
