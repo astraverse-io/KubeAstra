@@ -485,3 +485,21 @@ def test_the_p8_secret_is_never_named_by_a_build_step():
         assert "APPLE_API_KEY_P8" not in set(step.get("env", {})), (
             f"{step['name']} exposes the raw .p8 to tauri-action"
         )
+
+
+def test_a_non_tag_run_cannot_publish():
+    """tauri-action decides what to upload from the version in
+    tauri.conf.json, not from what triggered the run. With a literal tagName,
+    a workflow_dispatch on a branch expanded __VERSION__ to the current
+    version, matched the release already published under that tag, and
+    uploaded into it — adding an unverified MSI to the live 0.2.3 release and
+    rewriting the latest.json every installed copy polls.
+
+    An empty tagName makes it build and upload nothing.
+    """
+    for step in _build_steps():
+        tag_name = step["with"]["tagName"]
+        assert "github.ref_type == 'tag'" in tag_name, (
+            f"{step['name']} publishes regardless of trigger; a dispatched "
+            f"run will upload into whatever release matches the current version"
+        )

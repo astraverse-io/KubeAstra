@@ -5,9 +5,15 @@ on:
     tags:
       - 'desktop-v*'
   # Build without minting a tag. The macOS lane took nine attempts to get
-  # right; doing that through real version tags would have left nine
-  # releases behind. A dispatched run builds and verifies but publishes
-  # nothing, because tauri-action only uploads when it has a tag.
+  # right; doing that through real version tags would have left nine releases
+  # behind.
+  #
+  # A dispatched run publishes nothing ONLY because tagName is empty unless
+  # github.ref_type is 'tag' — see the build steps. tauri-action does not
+  # care what triggered the run: it expands __VERSION__ from tauri.conf.json,
+  # and if a release already exists under that tag it uploads into it. That
+  # is not hypothetical; it added an unverified MSI to the live 0.2.3 release
+  # and rewrote latest.json.
   workflow_dispatch:
 
 jobs:
@@ -215,7 +221,16 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: desktop-v__VERSION__
+          # Empty on anything that is not a tag push, which stops
+          # tauri-action creating or touching a release at all.
+          #
+          # __VERSION__ expands from tauri.conf.json, so on a dispatched run
+          # this resolved to the CURRENT version — matched the release already
+          # published under that tag, and uploaded into it. A CI test run
+          # added an unverified MSI to the live 0.2.3 release and rewrote the
+          # latest.json every installed copy polls. The trigger was never part
+          # of the decision; only the version was.
+          tagName: ${{ github.ref_type == 'tag' && 'desktop-v__VERSION__' || '' }}
           releaseName: 'KubeAstra Desktop v__VERSION__'
           releaseBody: 'Unsigned build — macOS will warn on first launch.'
           releaseDraft: true
@@ -254,7 +269,16 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: desktop-v__VERSION__
+          # Empty on anything that is not a tag push, which stops
+          # tauri-action creating or touching a release at all.
+          #
+          # __VERSION__ expands from tauri.conf.json, so on a dispatched run
+          # this resolved to the CURRENT version — matched the release already
+          # published under that tag, and uploaded into it. A CI test run
+          # added an unverified MSI to the live 0.2.3 release and rewrote the
+          # latest.json every installed copy polls. The trigger was never part
+          # of the decision; only the version was.
+          tagName: ${{ github.ref_type == 'tag' && 'desktop-v__VERSION__' || '' }}
           releaseName: 'KubeAstra Desktop v__VERSION__'
           releaseBody: 'See release notes for desktop updates.'
           releaseDraft: true
@@ -280,7 +304,16 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: desktop-v__VERSION__
+          # Empty on anything that is not a tag push, which stops
+          # tauri-action creating or touching a release at all.
+          #
+          # __VERSION__ expands from tauri.conf.json, so on a dispatched run
+          # this resolved to the CURRENT version — matched the release already
+          # published under that tag, and uploaded into it. A CI test run
+          # added an unverified MSI to the live 0.2.3 release and rewrote the
+          # latest.json every installed copy polls. The trigger was never part
+          # of the decision; only the version was.
+          tagName: ${{ github.ref_type == 'tag' && 'desktop-v__VERSION__' || '' }}
           releaseName: 'KubeAstra Desktop v__VERSION__'
           releaseBody: 'See release notes for desktop updates.'
           releaseDraft: true
