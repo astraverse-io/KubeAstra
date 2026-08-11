@@ -11,7 +11,7 @@
 
 **Your clusters are talking. This assistant helps you listen.**
 
-An AI-powered Kubernetes troubleshooting assistant that lets teams investigate, diagnose, and resolve cluster issues through natural language — as a **local app on your laptop** (`kubeastra open`), a **chat-based web UI** deployed for a team, or directly inside your **IDE (Cursor / Claude Desktop / VS Code via MCP)**.
+An AI-powered Kubernetes troubleshooting assistant that lets teams investigate, diagnose, and resolve cluster issues through natural language — as a **signed macOS app** (`brew install --cask kubeastra`), a **chat-based web UI** deployed for a team, or directly inside your **IDE (Cursor / Claude Desktop / VS Code via MCP)**.
 
 Combines live `kubectl` access with pluggable LLM providers (Gemini, Claude, GPT, or a fully local Ollama model) for root-cause analysis that turns cryptic Kubernetes failures into clear answers and actionable fix commands.
 
@@ -255,7 +255,34 @@ Match your situation to the feature that solves it:
 
 ## Quick Start
 
-### Option 1: Try the demo (60 seconds, no cluster needed)
+### Option 1: Install the macOS app
+
+```bash
+brew tap astraverse-io/tap
+brew install --cask kubeastra
+```
+
+Or download the DMG from
+[the latest desktop release](https://github.com/astraverse-io/KubeAstra/releases/latest).
+
+Signed and notarized by Apple, so it opens without a Gatekeeper warning.
+**Apple silicon and macOS 11+** — there is no Intel build. It uses the
+`kubectl` and kubeconfig already on your machine; nothing is installed into
+any cluster, and the app listens only on loopback.
+
+Verify the download yourself if you like:
+
+```bash
+spctl -a -t open --context context:primary-signature KubeAstra_*.dmg
+```
+
+`accepted` / `source=Notarized Developer ID` is the answer you want.
+
+> On Linux and Windows, use `kubeastra open` (Option 3) — the same app, run
+> from a source checkout. A Windows installer needs a code-signing
+> certificate and is not built yet.
+
+### Option 2: Try the demo (60 seconds, no cluster needed)
 
 Prerequisites: Docker Desktop, `kind`, `kubectl`
 
@@ -271,7 +298,7 @@ Open http://localhost:3300 and ask *"what's broken in the demo namespace?"*.
 
 > The demo generates its own kubeconfig automatically — it does not touch your host's current kubectl context. See [`demo/README.md`](demo/README.md) for full prerequisites and troubleshooting.
 
-### Option 2: Run it as a local app (no Docker)
+### Option 3: Run it as a local app (no Docker)
 
 Prerequisites: Python 3.11+, Node 20+, and a kubeconfig you already use.
 
@@ -289,7 +316,7 @@ installed into any cluster, and nothing listens on an external interface.
 
 Add `--no-browser` to start it and print the URL instead.
 
-### Option 3: Run locally against your own cluster
+### Option 4: Run locally against your own cluster
 
 Prerequisites: a running Kubernetes cluster with `kubectl` access, and a [Google Gemini API key](https://aistudio.google.com/) (free tier) **or** [Ollama](https://ollama.com/) running locally.
 
@@ -305,7 +332,7 @@ docker compose up --build
 # 3. Open http://localhost:3300
 ```
 
-### Option 4: Use via MCP (Cursor / Claude Desktop)
+### Option 5: Use via MCP (Cursor / Claude Desktop)
 
 ```bash
 cd mcp
@@ -320,7 +347,7 @@ ALLOWED_NAMESPACES=prod,staging,default
 
 Restart your IDE — all 52 tools appear as MCP tools.
 
-### Option 5: Use the CLI
+### Option 6: Use the CLI
 
 For terminal-first workflows: a thin HTTP + SSE client for the backend, published as a standalone Python package.
 
@@ -340,7 +367,7 @@ kubeastra config set backend-url https://kubeastra.mycompany.com
 
 Full command reference in [`cli/README.md`](cli/README.md).
 
-### Option 6: Deploy to Kubernetes via Helm
+### Option 7: Deploy to Kubernetes via Helm
 
 The chart pulls public images from `ghcr.io/astraverse-io/kubeastra-{backend,frontend}`,
 so there is nothing to build. It defaults to `latest`; pin `0.2.0` for a fixed
