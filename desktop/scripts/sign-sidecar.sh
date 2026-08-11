@@ -113,14 +113,54 @@ IFS=$'\n' sorted=($(printf '%s\n' "${mach_o[@]}" \
     | awk -F/ '{print NF"\t"$0}' | sort -rn | cut -f2-))
 unset IFS
 
-# Frameworks are signed as bundles, at their version directory rather than at
-# the .framework itself — PyInstaller's copy has the Versions/Current symlink
-# but not always the top-level layout codesign wants, and pointing it at the
-# version directory is unambiguous either way.
+# Frameworks are signed as bundles, at their version directory.
+#
+# The sidecar's Python.framework arrives FLATTENED: Python.framework/Python,
+# Versions/Current/Python and Versions/3.x/Python are three byte-identical
+# real files where a correct framework has the first two as symlinks. Signing
+# the version directory then signs exactly one of the three, and Apple rejects
+# the other two — which is precisely what it did, naming those two paths and
+# nothing else.
+#
+# Relinking is the fix rather than signing each copy: codesign will not sign a
+# binary inside a .framework as a loose file at all ("bundle format is
+# ambiguous"), a framework with duplicated binaries is malformed by
+# construction, and collapsing them reclaims ~11MB of the 16MB framework.
 frameworks=0
 while IFS= read -r -d '' fw; do
     version_dir="$(find "$fw/Versions" -maxdepth 1 -mindepth 1 -type d \
         ! -name Current 2>/dev/null | head -1 || true)"
+
+    if [ -n "$version_dir" ]; then
+        version="$(basename "$version_dir")"
+
+        # Versions/Current -> <version>
+        if [ ! -L "$fw/Versions/Current" ] && [ -e "$fw/Versions/Current" ]; then
+            rm -rf "$fw/Versions/Current"
+            ln -s "$version" "$fw/Versions/Current"
+        fi
+
+        # Top-level entries -> Versions/Current/<name>. Only when the copy is
+        # byte-identical to what it should point at: anything else is a
+        # framework this script does not understand, and deleting from it
+        # would be worse than leaving it for Apple to reject.
+        for entry in "$fw"/*; do
+            name="$(basename "$entry")"
+            [ "$name" = "Versions" ] && continue
+            [ -L "$entry" ] && continue
+            target="$version_dir/$name"
+            [ -e "$target" ] || continue
+
+            if [ -f "$entry" ] && [ -f "$target" ]; then
+                [ "$(shasum -a 256 <"$entry")" = "$(shasum -a 256 <"$target")" ] \
+                    || { echo "sign-sidecar: $name differs from $target, leaving it" >&2
+                         continue; }
+            fi
+            rm -rf "$entry"
+            ln -s "Versions/Current/$name" "$entry"
+        done
+    fi
+
     codesign --force --timestamp --options runtime \
         --sign "$IDENTITY" "${version_dir:-$fw}"
     frameworks=$((frameworks + 1))

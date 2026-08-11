@@ -241,6 +241,35 @@ def test_frameworks_are_signed_as_bundles_not_as_loose_files():
     assert '-name "*.framework"' in source, "frameworks are never signed at all"
 
 
+def test_a_flattened_framework_is_relinked_before_signing():
+    """The sidecar's Python.framework arrives with no symlinks at all — three
+    byte-identical copies of the binary at Python.framework/Python,
+    Versions/Current/Python and Versions/3.x/Python.
+
+    Signing the version directory covers one of the three. Apple rejected the
+    other two by name and nothing else. Relinking is the fix rather than
+    signing each copy, because codesign will not sign a binary inside a
+    .framework as a loose file, and a framework with duplicated binaries is
+    malformed to begin with. It also drops the framework from 16MB to 5.2MB.
+    """
+    source = SIGN_SIDECAR.read_text()
+
+    assert 'ln -s "$version" "$fw/Versions/Current"' in source
+    assert 'ln -s "Versions/Current/$name" "$entry"' in source
+
+
+def test_relinking_refuses_to_delete_a_file_that_differs():
+    """The relink deletes real files. If a top-level entry is not identical to
+    the versioned one, the framework is not the shape this script assumes, and
+    deleting from it would destroy something rather than deduplicate it."""
+    source = SIGN_SIDECAR.read_text()
+
+    assert "shasum -a 256" in source, (
+        "the relink no longer verifies the copies are identical before "
+        "replacing them with symlinks"
+    )
+
+
 def test_the_framework_version_is_discovered_not_hardcoded():
     """CI builds on Python 3.11 and a developer checkout may be on anything
     else. A hardcoded Versions/3.11 silently signs nothing on the other one."""
