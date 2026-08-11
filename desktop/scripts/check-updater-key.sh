@@ -22,7 +22,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CONF="$ROOT/desktop/src-tauri/tauri.conf.json"
+# Relative from here on, and everything runs with the repo root as cwd.
+#
+# $ROOT is a Git Bash path on Windows — /d/a/KubeAstra/KubeAstra — and the
+# python that reads this config is a native Windows binary that has never
+# heard of it. Handing it the absolute path failed with
+#   FileNotFoundError: '/d/a/KubeAstra/KubeAstra/desktop/src-tauri/tauri.conf.json'
+# A relative path needs no translation, because both worlds agree on cwd.
+cd "$ROOT"
+CONF="desktop/src-tauri/tauri.conf.json"
 
 # sha256 of the development public key generated 2026-07-30. Storing the hash
 # rather than the key keeps a second copy of it out of the repo, and makes the

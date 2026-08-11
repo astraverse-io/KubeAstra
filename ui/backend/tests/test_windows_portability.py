@@ -142,3 +142,21 @@ def test_the_kubeconfig_dir_resolves_without_geteuid():
     finally:
         if saved is not None:
             os_module.geteuid = saved
+
+
+def test_cross_platform_scripts_do_not_pass_shell_paths_to_python():
+    """Git Bash reports /d/a/KubeAstra/…; a native Windows python cannot open
+    that. check-updater-key.sh runs on both lanes and interpolated an absolute
+    $ROOT into a python snippet, which failed with
+
+        FileNotFoundError: '/d/a/KubeAstra/KubeAstra/desktop/src-tauri/tauri.conf.json'
+
+    A relative path needs no translation, because both worlds agree on cwd.
+    """
+    script = (REPO_ROOT / "desktop" / "scripts" / "check-updater-key.sh").read_text()
+
+    assert 'CONF="desktop/src-tauri/tauri.conf.json"' in script, (
+        "CONF is absolute again; a native Windows python cannot open a Git "
+        "Bash path"
+    )
+    assert 'cd "$ROOT"' in script, "the relative CONF only works with cwd set"
