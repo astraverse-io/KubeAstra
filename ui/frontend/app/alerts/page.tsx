@@ -212,7 +212,16 @@ export default function AlertsPage() {
             if (typeof window !== "undefined") {
               returnSession = sessionStorage.getItem("k8s_chat_return_session");
             }
-            window.location.href = returnSession ? `/chat/${returnSession}` : "/chat";
+            // `/chat?session=<id>`, never `/chat/<id>`. The path form is a
+            // dynamic route, and a dynamic route cannot exist in the desktop
+            // static export — session ids are not knowable at build time, so
+            // generateStaticParams() has nothing to enumerate. The server
+            // build has a back-compat page that forwards the old shape, but
+            // build-desktop.mjs stashes that page aside, so in the desktop app
+            // this landed on a 404 with the chat still sitting there behind it.
+            window.location.href = returnSession
+              ? `/chat?session=${encodeURIComponent(returnSession)}`
+              : "/chat";
           }}
           style={{
             fontSize: "0.8125rem",
