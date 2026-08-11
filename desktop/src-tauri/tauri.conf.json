@@ -52,7 +52,7 @@
       }
     },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFFOTNFN0E0OUE4OUQwRkQKUldUOTBJbWFwT2VUcnJEejFlZFpRM0xnRXhRKzByWGRhTkpZSHU0Y2NWQm1Qb3U4ajFXRk4wV0wK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5RjVFRjVCMDZDMUFDNzcKUldSM3JNRUdXKy8xNlk5RU1mUGxWbFVJcGNQQW1qZFpQL2ZQL0tsSkF6NUhoYnJSNmNvV1ZhRnkK",
       "endpoints": [
         "https://github.com/astraverse-io/KubeAstra/releases/latest/download/latest.json"
       ]

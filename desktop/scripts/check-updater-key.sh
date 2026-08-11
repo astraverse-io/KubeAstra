@@ -65,7 +65,10 @@ To fix:
          TAURI_SIGNING_PRIVATE_KEY_PASSWORD
   4. Keep an OFFLINE backup of the private key. Losing it permanently ends
      auto-update for every installed copy — treat it like the signing certs.
-  5. Update DEV_KEY_SHA256 in this script so the guard keeps working.
+  5. Leave DEV_KEY_SHA256 alone. It is the hash of the key that must never
+     ship, not the hash of the current one — setting it to the production
+     key would make this guard reject every real release. Change it only if
+     the development keypair itself is regenerated.
 EOF
         exit 1
     fi

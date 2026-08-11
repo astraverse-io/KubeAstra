@@ -30,6 +30,13 @@ jobs:
     env:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
       HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+      # Which notarization credential to use. Apple accepts either an
+      # app-specific password or an App Store Connect API key; Tauri picks the
+      # API key when it sees one. Both are wired because the app-specific
+      # password is generated behind a gate that asks for the Apple Account
+      # password, and that gate can refuse for reasons no error message
+      # explains — leaving signing possible but notarization impossible.
+      HAS_APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -149,8 +156,52 @@ jobs:
           workdir: desktop
           args: ${{ matrix.args }}
 
-      - name: Build Tauri App (signed and notarized)
-        if: env.HAS_APPLE_CERT == 'true'
+      # The .p8 is a file on disk as far as Apple's tooling is concerned, and
+      # it can only be downloaded once from App Store Connect — so it lives in
+      # a secret base64-encoded and is materialised here, on the runner, for
+      # the length of one job.
+      - name: Materialize App Store Connect API key
+        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/apple-api-key.p8"
+          chmod 600 "$RUNNER_TEMP/apple-api-key.p8"
+          # A truncated or mis-encoded secret otherwise surfaces much later as
+          # an opaque notarization failure.
+          head -1 "$RUNNER_TEMP/apple-api-key.p8" | grep -q "BEGIN PRIVATE KEY" \
+            || { echo "::error::APPLE_API_KEY_P8 did not decode to a PEM private key."; exit 1; }
+
+      - name: Build Tauri App (signed, notarized with an API key)
+        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # APPLE_API_KEY is the Key ID (e.g. 2X9R4HXF34), not key material.
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/apple-api-key.p8
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: desktop-v__VERSION__
+          releaseName: 'KubeAstra Desktop v__VERSION__'
+          releaseBody: 'See release notes for desktop updates.'
+          releaseDraft: true
+          prerelease: false
+          workdir: desktop
+          args: ${{ matrix.args }}
+
+      # Same build, app-specific password instead of an API key. A third step
+      # rather than extra `env` keys on the one above, for the reason spelled
+      # out before the unsigned step: an absent secret is an empty string, not
+      # an unset variable, so naming APPLE_API_* here would make Tauri choose
+      # the API-key branch with blank credentials and fail.
+      - name: Build Tauri App (signed, notarized with an app-specific password)
+        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY != 'true'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
