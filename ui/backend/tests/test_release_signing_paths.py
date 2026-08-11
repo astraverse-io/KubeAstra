@@ -258,6 +258,29 @@ def test_a_flattened_framework_is_relinked_before_signing():
     assert 'ln -s "Versions/Current/$name" "$entry"' in source
 
 
+def test_the_duplicate_top_level_binary_is_deleted_not_symlinked():
+    """Tauri's bundle.resources glob copies file-by-file, and std::fs::copy
+    follows a symlink — so a top-level link becomes a plain copy again inside
+    the .app, carrying the framework binary's embedded signature at a path
+    where nothing seals it. Apple calls that "the signature of the binary is
+    invalid", and it was the single error that outlived every other fix.
+
+    Directory symlinks survive, because the glob does not recurse into them:
+    Apple stopped reporting Versions/Current/Python the moment that became
+    one, while still reporting the top-level file. That asymmetry is the whole
+    reason this deletes rather than links.
+
+    Nothing needs the top-level binary — dependents resolve @rpath/Python, and
+    the sidecar was verified to start with the file removed.
+    """
+    source = SIGN_SIDECAR.read_text()
+
+    assert 'rm -f "$entry"' in source, (
+        "the duplicate top-level framework binary is being symlinked again "
+        "instead of deleted; Tauri will flatten it back into an unsealed copy"
+    )
+
+
 def test_relinking_refuses_to_delete_a_file_that_differs():
     """The relink deletes real files. If a top-level entry is not identical to
     the versioned one, the framework is not the shape this script assumes, and

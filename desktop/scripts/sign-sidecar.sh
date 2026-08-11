@@ -155,6 +155,23 @@ while IFS= read -r -d '' fw; do
                 [ "$(shasum -a 256 <"$entry")" = "$(shasum -a 256 <"$target")" ] \
                     || { echo "sign-sidecar: $name differs from $target, leaving it" >&2
                          continue; }
+                # Delete rather than symlink. Tauri's `bundle.resources` glob
+                # copies file-by-file and std::fs::copy follows a symlink, so a
+                # top-level link is turned back into a plain copy inside the
+                # .app — carrying the framework binary's embedded signature at
+                # a path where nothing seals it. Apple calls that "the
+                # signature of the binary is invalid", and it is the one error
+                # that survived after everything else was signed.
+                #
+                # Directory symlinks (Resources, Versions/Current) do survive:
+                # the glob does not recurse into them, which is why Apple
+                # stopped reporting Versions/Current/Python once it became one.
+                #
+                # Nothing needs the top-level binary. Dependents resolve
+                # @rpath/Python, and the sidecar was verified to start with
+                # this file removed.
+                rm -f "$entry"
+                continue
             fi
             rm -rf "$entry"
             ln -s "Versions/Current/$name" "$entry"
