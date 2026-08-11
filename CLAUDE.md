@@ -101,9 +101,15 @@ feat/desktop            long-lived; phases land here via PR
   └─ feat/desktop-p2    short-lived work branch -> PR into feat/desktop
 ```
 
-`feat/desktop` is the current example — the desktop app is phases 1–3 and
-cannot be installed until Phase 2 produces a signed installer, so it stays off
-`main` until then.
+`feat/desktop` was the worked example: the desktop app spanned phases 1–3 and
+could not be installed until Phase 2 produced a signed installer, so it stayed
+off `main` for that whole time. It **merged on 2026-08-11** (#70), once
+`desktop-v0.2.0` had produced a DMG that Gatekeeper accepts as
+`Notarized Developer ID`. The rule held: `main` never advertised an app nobody
+could install.
+
+The branch still exists for further desktop phases. Apply the same pattern to
+the next multi-phase feature.
 
 Single, self-contained fixes still go straight to `main` via their own PR.
 
