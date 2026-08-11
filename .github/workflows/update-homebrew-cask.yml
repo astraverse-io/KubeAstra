@@ -1,0 +1,110 @@
+name: Update Homebrew cask
+
+# Points astraverse-io/homebrew-tap at a newly published desktop release.
+#
+# Deliberately triggered by `release: published`, NOT by the desktop-v* tag
+# that builds it. release-desktop.yml creates a DRAFT release, and a draft's
+# assets are not served from
+#   https://github.com/.../releases/download/desktop-vX/...
+# which is exactly where the tap's update-cask.yml fetches the DMG to
+# checksum it. Dispatching at build time would therefore fail every single
+# time, with "arm64 DMG is required" and no hint that the cause was timing.
+#
+# Publishing the draft is the moment the file becomes fetchable, so that is
+# the moment to update the cask.
+
+on:
+  release:
+    types: [published]
+  # For re-running against a release that is already published.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. desktop-v0.2.0"
+        required: true
+        type: string
+
+# Nothing here touches this repository. The only API calls go to
+# astraverse-io/homebrew-tap through TAP_DISPATCH_TOKEN, so GITHUB_TOKEN needs
+# no permissions at all — and without this block it would silently inherit
+# whatever the repository default is.
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    # `secrets` is not available in a job-level or step-level `if`, but it is
+    # here — the same reason release-desktop.yml computes its flags this way.
+    env:
+      HAS_TAP_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN != '' }}
+      TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+    steps:
+      - name: Skip anything that is not a desktop release
+        id: gate
+        run: |
+          set -euo pipefail
+          if [[ "$TAG" != desktop-v* ]]; then
+            echo "::notice::$TAG is not a desktop release; nothing to update."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          VERSION="${TAG#desktop-v}"
+          # The tap's workflow rejects anything that is not dotted-numeric, and
+          # a bad value here would surface there rather than in this log.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+)+$'; then
+            echo "::error::'$VERSION' is not a dotted numeric version"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      # Without the token this is a no-op with a visible note rather than a
+      # red X: the cask can always be updated by hand, and a missing optional
+      # secret should not make a successful release look broken.
+      - name: Note the missing token
+        if: steps.gate.outputs.proceed == 'true' && env.HAS_TAP_TOKEN != 'true'
+        run: |
+          echo "::warning::TAP_DISPATCH_TOKEN is not set, so the Homebrew cask was not updated."
+          echo "Run it by hand:"
+          echo "  gh workflow run update-cask.yml --repo astraverse-io/homebrew-tap \\"
+          echo "    -f version=${{ steps.gate.outputs.version }}"
+
+      - name: Trigger the tap's cask update
+        if: steps.gate.outputs.proceed == 'true' && env.HAS_TAP_TOKEN == 'true'
+        env:
+          # A fine-grained token scoped to homebrew-tap with Actions: write and
+          # nothing else. Deliberately not Contents: write — that is what the
+          # repository_dispatch route needs, and it would let this token push
+          # code to the tap. The tap's own workflow commits with its built-in
+          # GITHUB_TOKEN, so triggering is all this needs to do.
+          GH_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
+          VERSION: ${{ steps.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh workflow run update-cask.yml \
+            --repo astraverse-io/homebrew-tap \
+            -f version="$VERSION"
+          echo "dispatched cask update for $VERSION"
+
+      # `gh workflow run` returns as soon as the request is accepted, so a
+      # failure inside the tap's job would otherwise go unnoticed until
+      # somebody tried to install a version the cask does not know about.
+      - name: Confirm the cask actually updated
+        if: steps.gate.outputs.proceed == 'true' && env.HAS_TAP_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
+          VERSION: ${{ steps.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            sleep 10
+            state=$(gh run list --repo astraverse-io/homebrew-tap \
+              --workflow=update-cask.yml --limit 1 \
+              --json status,conclusion \
+              --jq '.[0] | "\(.status):\(.conclusion // "")"' 2>/dev/null || echo "")
+            case "$state" in
+              completed:success) echo "cask updated to $VERSION"; exit 0 ;;
+              completed:*)       echo "::error::tap workflow finished $state"; exit 1 ;;
+            esac
+          done
+          echo "::warning::tap workflow did not finish within five minutes; check it manually."
