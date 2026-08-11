@@ -73,6 +73,22 @@ def test_the_release_build_still_produces_a_draft():
     assert drafts and all(drafts), "releases are no longer drafts; revisit the cask dispatch trigger"
 
 
+def test_the_workflow_declares_permissions():
+    """Without a `permissions:` block a workflow inherits the repository
+    default, which on many repos is read/write across the board. CodeQL
+    flagged this one (alert: "Workflow does not contain permissions").
+
+    Nothing here touches this repository — every API call goes to the tap
+    through TAP_DISPATCH_TOKEN — so GITHUB_TOKEN needs nothing.
+    """
+    doc = _wf()
+
+    assert "permissions" in doc, "no permissions block; the job inherits repo defaults"
+    assert doc["permissions"] in ({}, None), (
+        f"this workflow grants GITHUB_TOKEN {doc['permissions']} but never uses it"
+    )
+
+
 def test_a_missing_token_warns_instead_of_failing():
     """The cask can always be updated by hand. An optional secret that is not
     set should not make a successful release look broken."""

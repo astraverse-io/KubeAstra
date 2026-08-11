@@ -24,6 +24,12 @@ on:
         required: true
         type: string
 
+# Nothing here touches this repository. The only API calls go to
+# astraverse-io/homebrew-tap through TAP_DISPATCH_TOKEN, so GITHUB_TOKEN needs
+# no permissions at all — and without this block it would silently inherit
+# whatever the repository default is.
+permissions: {}
+
 jobs:
   dispatch:
     runs-on: ubuntu-latest
