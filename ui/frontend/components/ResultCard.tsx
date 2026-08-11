@@ -1585,8 +1585,24 @@ function renderRagGrounded(r: Record<string, unknown>) {
 
 const ANALYZE_TOOLS = ["analyze_error", "get_fix_commands", "generate_runbook", "cluster_report", "error_summary"];
 
-export default function ResultCard({ tool, result, footerSlot }: Props) {
+export default function ResultCard({ tool, result: rawResult, footerSlot }: Props) {
   const [showRaw, setShowRaw] = useState(false);
+
+  // ReAct-surface results arrive as a ToolEnvelope — a *summary* built for the
+  // model (get_events keeps eight deduplicated messages, not the events).
+  // Every renderer below looks for `events`, `pods`, `logs`, and an envelope
+  // has none of them, so an enveloped result rendered as an empty card. The
+  // backend now carries the original result through as `payload`; prefer it,
+  // and fall back to the result itself for the un-enveloped surfaces.
+  const result = ((): typeof rawResult => {
+    if (rawResult && typeof rawResult === "object" && !Array.isArray(rawResult)) {
+      const payload = (rawResult as Record<string, unknown>).payload;
+      if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+        return payload as typeof rawResult;
+      }
+    }
+    return rawResult;
+  })();
 
   let body: React.ReactNode;
   if (ANALYZE_TOOLS.includes(tool)) body = renderAnalyzeError(result);

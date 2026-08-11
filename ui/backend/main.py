@@ -20,12 +20,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # ── Resolve mcp path ───────────────────────────────────────────────
-MCP_PATH = os.environ.get(
-    "MCP_PATH",
-    str(Path(__file__).resolve().parent.parent.parent / "mcp"),
-)
+if getattr(sys, "frozen", False):
+    _meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    MCP_PATH = str(_meipass / "mcp")
+    if not Path(MCP_PATH).exists():
+        MCP_PATH = str(Path(sys.executable).parent / "mcp")
+else:
+    MCP_PATH = os.environ.get(
+        "MCP_PATH",
+        str(Path(__file__).resolve().parent.parent.parent / "mcp"),
+    )
 if MCP_PATH not in sys.path:
     sys.path.insert(0, MCP_PATH)
+# Export it. `alerts._resolve_mcp_path()` reads the environment and otherwise
+# falls back to a repo-relative "../../../mcp", which does not exist inside a
+# frozen bundle — so the playbook registry loaded zero playbooks and every
+# investigation died with "Unknown playbook: generic". setdefault, so an
+# explicit MCP_PATH from the container image or a developer still wins.
+os.environ.setdefault("MCP_PATH", MCP_PATH)
 
 # Load .env from MCP project so all settings (GEMINI_API_KEY etc.) are available
 from dotenv import load_dotenv
@@ -142,6 +154,15 @@ async def lifespan(app: FastAPI):
             logger.error("Failed to instrument FastAPI app: %s", exc)
     db.init_db()
     db.sweep_orphaned_investigations()
+    # Uploaded kubeconfigs are durable in desktop mode, so they outlive the
+    # process. Drop only the ones no session references any more, instead of
+    # the old exit-time wipe that destroyed every one of them.
+    try:
+        import cluster_session
+
+        cluster_session.prune_orphan_kubeconfigs()
+    except Exception as exc:
+        logger.warning("kubeconfig prune failed: %s", exc)
     _bootstrap_rag_collections()
     health.set_initialization_state(
         initialized=True,

@@ -69,6 +69,8 @@ export function IntentBar({ onSend, listening, contextName, onStop }: IntentBarP
         <textarea
           name="chat-message"
           ref={textareaRef}
+          // See CommandBar: the desktop shell focuses whichever bar is mounted.
+          data-kubeastra-input=""
           value={val}
           onChange={e => setVal(e.target.value)}
           onKeyDown={e => {

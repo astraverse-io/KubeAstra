@@ -68,6 +68,17 @@ def secrets_path() -> Path:
     return state_dir() / "secrets.json"
 
 
+def config_path() -> Path:
+    """Settings that must outlive the process.
+
+    Most desktop settings live in environment variables, which is fine for
+    ones the wizard re-derives on every launch. An Alertmanager URL is not
+    one of those — a user who configures it once expects it to still be there
+    tomorrow.
+    """
+    return state_dir() / "config.json"
+
+
 def ensure_layout() -> Path:
     """Create the directory tree. Idempotent; safe to call on every launch.
 

@@ -745,6 +745,22 @@ export interface DesktopSettingsState {
   memory_available: boolean;
   keychain_secure: boolean;
   keychain_backend: string;
+  /** Persisted in config.json, unlike the flags above which live in env. */
+  alertmanager_url: string;
+  notifications_enabled: boolean;
+  /**
+   * Cluster that alert-driven investigations target. Read-only: it is set by
+   * connecting a cluster, so there is one act of choosing. Empty means
+   * background investigations refuse to run rather than guess.
+   */
+  default_cluster_context: string;
+  /**
+   * Which kubectl the backend resolved, and any credential plugins it could
+   * not find. Both depend on the launch environment — a GUI launch inherits
+   * almost no PATH — so these are worth showing rather than assuming.
+   */
+  kubectl_path: string;
+  missing_auth_plugins: string[];
 }
 
 /** Returns null in server mode (endpoint absent), the state otherwise. */
@@ -778,8 +794,26 @@ export async function fetchDesktopSettings(): Promise<DesktopSettingsState> {
 export async function updateDesktopSettings(payload: {
   memory_enabled?: boolean;
   remote_diagnostics_enabled?: boolean;
+  alertmanager_url?: string;
+  notifications_enabled?: boolean;
 }): Promise<DesktopSettingsState> {
   return fetchJson("/api/desktop/settings", { method: "PUT", body: payload });
+}
+
+/**
+ * Check an Alertmanager URL before storing it.
+ *
+ * Same verify-before-store rule the wizard's LLM and embeddings steps follow:
+ * polling happens on a background thread, so a bad URL would otherwise fail
+ * where nobody can see it.
+ */
+export async function testAlertmanager(
+  alertmanager_url: string,
+): Promise<{ ok: boolean; url: string; firing: number }> {
+  return fetchJson("/api/desktop/notifications/test", {
+    method: "POST",
+    body: { alertmanager_url },
+  });
 }
 
 export async function forgetDesktopSecret(name: string): Promise<{ ok: boolean }> {

@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
-from config.settings import settings
+from config.settings import get_settings
 from k8s.kubectl_runner import KubectlError, KubectlResult, KubectlTimeoutError
 from k8s.remote_connection import (
     REMOTE_CONNECTION_REASONS,
@@ -318,15 +318,23 @@ class SSHKubectlRunner:
         if password is not None and credential_path is not None:
             raise ValueError("password and credential_path are mutually exclusive")
 
-        self.host = host
+        # Lower-cased because host-key lookup is the thing that cares. DNS
+        # names are case-insensitive and OpenSSH lower-cases before matching
+        # known_hosts; paramiko does not, and its lookup is a plain dict get.
+        #
+        # An operator typing "S60503-gfs-k8s-m.example.com" into the connect
+        # dialog therefore missed an entry stored as "s60503-…", and the
+        # RejectPolicy below turned that into "SSH host key is not registered"
+        # for a host they had in fact trusted for months.
+        self.host = host.lower() if isinstance(host, str) else host
         self.username = username
         self._password = password
         self._credential_path = credential_path
         self.port = port
-        self.timeout = float(timeout or settings.kubectl_timeout_seconds)
+        self.timeout = float(timeout or get_settings().kubectl_timeout_seconds)
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
-        self.max_output_bytes = settings.max_output_bytes
+        self.max_output_bytes = get_settings().max_output_bytes
         self.context = context
         self.known_hosts_path = (
             known_hosts_path
@@ -352,6 +360,10 @@ class SSHKubectlRunner:
         # port 22 entries; a bracketed port-22 line will not match the plain
         # form and vice versa, so operators who copy this convention into a
         # reviewed known_hosts file must follow it exactly.
+        # Lower-cased for the same reason self.host is: paramiko's known_hosts
+        # lookup is case-sensitive, so an alias or host differing only in case
+        # silently fails to match.
+        host = host.lower() if isinstance(host, str) else host
         return host if port == 22 else f"[{host}]:{port}"
 
     def _configure_host_keys(

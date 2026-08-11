@@ -1,0 +1,362 @@
+name: Release Desktop
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+
+jobs:
+  build-desktop:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            target: 'aarch64-apple-darwin'
+            args: '--target aarch64-apple-darwin'
+          # arm64 only. There is no x86_64 macOS entry and no Linux entry —
+          # both deliberate, both explained in desktop/README.md § Platforms.
+          #
+          # x86_64 was dropped on 2026-07-30 after `macos-13` sat queued
+          # across three runs and never had a runner assigned; GitHub has
+          # retired that image. Restoring it is not a matrix edit: PyInstaller
+          # cannot cross-compile, so a `--target x86_64-apple-darwin` build on
+          # an arm64 runner would ship an arm64 sidecar inside an x86_64 app.
+
+    runs-on: ${{ matrix.platform }}
+    # `secrets` is not available in a step-level `if`, but it is here.
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+      # Which notarization credential to use. Apple accepts either an
+      # app-specific password or an App Store Connect API key; Tauri picks the
+      # API key when it sees one. Both are wired because the app-specific
+      # password is generated behind a gate that asks for the Apple Account
+      # password, and that gate can refuse for reasons no error message
+      # explains — leaving signing possible but notarization impossible.
+      HAS_APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: 'ui/frontend/package-lock.json'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Rust
+        # `toolchain` is passed explicitly rather than left to the default. This
+        # action ships a separate action.yml on each of its `stable`/`nightly`/…
+        # branches, and the only thing that selected the toolchain before was
+        # which branch `@stable` resolved to. A commit pin has no branch, so a
+        # future re-pin to a SHA from `master` — where `toolchain` is required
+        # and has no default — would fail the build with "'toolchain' is a
+        # required input" and no hint as to why.
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install Frontend Dependencies & Build Static SPA
+        run: |
+          npm ci --prefix ui/frontend
+          npm run build:desktop --prefix ui/frontend
+
+      - name: Install Python Desktop Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r desktop/requirements.txt
+          pip install pyinstaller
+
+      # build.sh wraps pyinstaller with the checks it does not perform itself:
+      # unresolved hidden imports, onedir layout, no developer dotfiles, and a
+      # launch + /health smoke test. PyInstaller exits 0 on all of those
+      # failures, so calling it directly lets a broken bundle go green.
+      - name: Build and verify PyInstaller backend
+        run: desktop/pyinstaller/build.sh /tmp/pyi-dist /tmp/pyi-work
+
+      # Shipped through bundle.resources, so the directory keeps its name and
+      # carries no target-triple suffix. externalBin cannot be used here: it
+      # expects a single executable and flattens a onedir tree into
+      # Contents/MacOS/, which strands _internal/ and breaks the launcher.
+      - name: Stage sidecar for Tauri
+        run: |
+          rm -rf desktop/src-tauri/binaries
+          mkdir -p desktop/src-tauri/binaries
+          cp -r /tmp/pyi-dist/kubeastra-backend desktop/src-tauri/binaries/kubeastra-backend
+          test -x desktop/src-tauri/binaries/kubeastra-backend/kubeastra-backend
+          test -d desktop/src-tauri/binaries/kubeastra-backend/_internal
+
+      # Notarization needs every Mach-O in the bundle signed, and codesign does
+      # not recurse into bundle resources — so Tauri signing the .app leaves
+      # ~130 PyInstaller binaries carrying ad-hoc signatures. Apple refused the
+      # first attempt with 192 errors, every one of them in here.
+      #
+      # This cannot be a Tauri beforeBundleCommand, which was the obvious place
+      # for it: Tauri imports the certificate AFTER running that hook, so the
+      # signer found no identity and skipped. The log ordering is unambiguous —
+      # "no Developer ID identity available" on the line before "1 identity
+      # imported". Signing here, before tauri-action runs at all, means owning
+      # the keychain setup, which is the price of the identity existing.
+      #
+      # Signatures live inside the Mach-O, so they survive the bundler's copy
+      # into Contents/Resources/, and Tauri sealing the .app afterwards records
+      # them rather than replacing them.
+      - name: Sign the sidecar binaries
+        if: env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/sidecar-signing.keychain-db"
+          KEYCHAIN_PWD="$(uuidgen)"
+
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # Without this, codesign blocks on a GUI prompt that never comes and
+          # the job hangs until it times out.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+
+          # Append rather than replace: dropping login.keychain from the search
+          # list breaks tauri-action's own import later in the job.
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+
+          desktop/scripts/sign-sidecar.sh --require-identity
+
+      # Must come AFTER staging. `bundle.resources` is a glob that tauri-build
+      # resolves in the build script, and it hard-fails when nothing matches:
+      #   glob pattern binaries/kubeastra-backend/**/* path not found
+      # So any cargo command — including `cargo test` — needs the sidecar
+      # already in place. Locally this is invisible, because binaries/ is left
+      # behind by the previous build.
+      #
+      # Deep links come from outside the app: the OS hands any process's
+      # kubeastra:// URL straight to us, so the parsing and the fragment
+      # encoding are worth unit tests.
+      - name: Test the Tauri shell
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
+
+      # A release signed by the development updater key would be worse than
+      # one with no updater at all: every install would permanently reject
+      # real updates, and the channel to tell them so is the broken one.
+      - name: Refuse the development updater key
+        if: env.HAS_UPDATER_KEY == 'true'
+        run: desktop/scripts/check-updater-key.sh --release
+
+      # `createUpdaterArtifacts` makes the build *require* a signing key, so
+      # without one the whole release would fail rather than just skip the
+      # updater. Turn it off instead, and say so in the log.
+      - name: Skip updater artifacts when unsigned
+        if: env.HAS_UPDATER_KEY != 'true'
+        run: |
+          python3 - <<'EOF'
+          import json
+          path = 'desktop/src-tauri/tauri.conf.json'
+          conf = json.load(open(path))
+          conf['bundle']['createUpdaterArtifacts'] = False
+          json.dump(conf, open(path, 'w'), indent=2)
+          EOF
+          echo '::warning::No TAURI_SIGNING_PRIVATE_KEY — this build ships without auto-update.'
+
+      # Two steps, because a missing secret is an EMPTY STRING, not an unset
+      # variable. Passing APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      # with no such secret still defines the variable, so Tauri believes it
+      # has a certificate and fails:
+      #   failed codesign application: failed to run command security import:
+      #   failed to import keychain certificate
+      # There is no way to conditionally omit a single `env` key, so the
+      # signing variables have to live on a step that only runs when a
+      # certificate actually exists. This needs no edit when the certs land —
+      # add the secrets and the signed path takes over on its own.
+      - name: Build Tauri App (unsigned)
+        if: env.HAS_APPLE_CERT != 'true'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: desktop-v__VERSION__
+          releaseName: 'KubeAstra Desktop v__VERSION__'
+          releaseBody: 'Unsigned build — macOS will warn on first launch.'
+          releaseDraft: true
+          prerelease: true
+          workdir: desktop
+          args: ${{ matrix.args }}
+
+      # The .p8 is a file on disk as far as Apple's tooling is concerned, and
+      # it can only be downloaded once from App Store Connect — so it lives in
+      # a secret base64-encoded and is materialised here, on the runner, for
+      # the length of one job.
+      - name: Materialize App Store Connect API key
+        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/apple-api-key.p8"
+          chmod 600 "$RUNNER_TEMP/apple-api-key.p8"
+          # A truncated or mis-encoded secret otherwise surfaces much later as
+          # an opaque notarization failure.
+          head -1 "$RUNNER_TEMP/apple-api-key.p8" | grep -q "BEGIN PRIVATE KEY" \
+            || { echo "::error::APPLE_API_KEY_P8 did not decode to a PEM private key."; exit 1; }
+
+      - name: Build Tauri App (signed, notarized with an API key)
+        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # APPLE_API_KEY is the Key ID (e.g. 2X9R4HXF34), not key material.
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/apple-api-key.p8
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: desktop-v__VERSION__
+          releaseName: 'KubeAstra Desktop v__VERSION__'
+          releaseBody: 'See release notes for desktop updates.'
+          releaseDraft: true
+          prerelease: false
+          workdir: desktop
+          args: ${{ matrix.args }}
+
+      # Same build, app-specific password instead of an API key. A third step
+      # rather than extra `env` keys on the one above, for the reason spelled
+      # out before the unsigned step: an absent secret is an empty string, not
+      # an unset variable, so naming APPLE_API_* here would make Tauri choose
+      # the API-key branch with blank credentials and fail.
+      - name: Build Tauri App (signed, notarized with an app-specific password)
+        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY != 'true'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: desktop-v__VERSION__
+          releaseName: 'KubeAstra Desktop v__VERSION__'
+          releaseBody: 'See release notes for desktop updates.'
+          releaseDraft: true
+          prerelease: false
+          workdir: desktop
+          args: ${{ matrix.args }}
+
+      # The check that matters. Every earlier gate passed on a .app whose
+      # sidecar could not start — bundling had flattened the onedir tree, so
+      # PyInstaller failed on "Failed to load Python shared library
+      # .../Contents/Frameworks/Python" and the app opened to a blank window.
+      # Verifying the pre-bundle binary proves nothing about the bundle.
+      - name: Verify the bundled app
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          set -euo pipefail
+          APP=$(find desktop/src-tauri/target -path '*/release/bundle/macos/KubeAstra.app' | head -1)
+          [ -n "$APP" ] || { echo "No KubeAstra.app was produced"; exit 1; }
+          echo "Verifying $APP"
+
+          RES="$APP/Contents/Resources/binaries/kubeastra-backend"
+          SIDECAR="$RES/kubeastra-backend"
+          [ -x "$SIDECAR" ] || { echo "No sidecar at $SIDECAR"; exit 1; }
+          [ -d "$RES/_internal" ] \
+            || { echo "_internal/ missing — the onedir tree was flattened"; exit 1; }
+
+          # Contents/MacOS/ must hold only the Tauri binary. 480 entries there
+          # was the symptom of externalBin flattening the sidecar tree.
+          count=$(ls "$APP/Contents/MacOS" | wc -l)
+          [ "$count" -eq 1 ] || { ls "$APP/Contents/MacOS"; echo "Contents/MacOS has $count entries, expected 1"; exit 1; }
+
+          # Nothing from the build machine may reach a user.
+          if find "$APP" -name '.env*' -o -name '.git*' | grep -q .; then
+            find "$APP" -name '.env*' -o -name '.git*'
+            echo "Developer files are inside the app bundle"; exit 1
+          fi
+
+          python3 - "$SIDECAR" <<'PY'
+          import subprocess, sys, urllib.request
+          proc = subprocess.Popen([sys.argv[1]], stdout=subprocess.PIPE, text=True)
+          port = None; ready = False
+          try:
+              for line in proc.stdout:
+                  print("   ", line.rstrip())
+                  if line.startswith("PORT="): port = line[5:].strip()
+                  elif line.strip() == "READY": ready = True; break
+              if not (port and ready):
+                  sys.exit("Bundled sidecar never reached READY")
+              with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=30) as r:
+                  if r.status != 200:
+                      sys.exit(f"Bundled sidecar /health returned {r.status}")
+              print(f"    bundled sidecar healthy on port {port}")
+          finally:
+              proc.terminate()
+              try: proc.wait(timeout=10)
+              except subprocess.TimeoutExpired: proc.kill()
+          PY
+
+      # tauri-action notarizes and staples the .app, then wraps it in a DMG and
+      # stops. The wrapper is signed but never notarized, and Gatekeeper judges
+      # the DMG when somebody double-clicks the download:
+      #
+      #   KubeAstra_0.2.0_aarch64.dmg: rejected
+      #   source=Unnotarized Developer ID
+      #
+      # The app inside launches cleanly once mounted, so this is invisible in
+      # CI and in any check that looks at the .app — but the user still gets
+      # "macOS cannot verify this app is free from malware", which is the exact
+      # warning the whole signing exercise exists to remove.
+      #
+      # The DMG has already been uploaded to the draft release by this point,
+      # so the stapled copy replaces it with --clobber.
+      - name: Notarize and staple the DMG
+        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DMG="$(find desktop/src-tauri/target -path '*/bundle/dmg/*.dmg' | head -1)"
+          [ -n "$DMG" ] || { echo "::error::no DMG was produced"; exit 1; }
+          echo "notarizing $DMG"
+
+          xcrun notarytool submit "$DMG" \
+            --key "$RUNNER_TEMP/apple-api-key.p8" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait --timeout 30m
+
+          xcrun stapler staple "$DMG"
+
+          # Verify rather than trust the exit codes above. `spctl -t open` is
+          # the question the user's double-click actually asks; `-t exec` would
+          # answer a different one and pass on an unstapled image.
+          xcrun stapler validate "$DMG"
+          spctl -a -vvv -t open --context context:primary-signature "$DMG"
+
+          gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber \
+            --repo "$GITHUB_REPOSITORY"

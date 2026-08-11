@@ -34,7 +34,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -80,6 +80,46 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   });
 }
 
+/**
+ * Replace the exported root document.
+ *
+ * `app/page.tsx` is `redirect("/chat")` from next/navigation — a server-side
+ * redirect. `output: "export"` has no way to emit one, so instead of failing
+ * the build Next writes an error-boundary document to out/index.html:
+ *
+ *     <html id="__next_error__"> … Application error …
+ *
+ * It answers 200, so nothing downstream notices. Desktop mode used to send
+ * users straight into it, because /auth redirected to /.
+ *
+ * A meta refresh plus a Location-style fallback link is deliberately plain
+ * HTML: it needs no hydration, no framework runtime, and no JS, so it works
+ * as the very first paint before any chunk has loaded.
+ */
+function writeRootRedirect() {
+  const indexPath = join(frontendDir, "out", "index.html");
+  if (!existsSync(indexPath)) {
+    console.error("desktop build: no out/index.html to replace");
+    process.exit(1);
+  }
+  writeFileSync(
+    indexPath,
+    `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>KubeAstra</title>
+    <meta http-equiv="refresh" content="0; url=/chat/" />
+    <link rel="canonical" href="/chat/" />
+  </head>
+  <body>
+    <p>Opening KubeAstra… <a href="/chat/">Continue</a></p>
+  </body>
+</html>
+`,
+  );
+}
+
 try {
   stash();
   execFileSync("npx", ["next", "build"], {
@@ -94,5 +134,7 @@ try {
 } finally {
   restore();
 }
+
+writeRootRedirect();
 
 console.log("\nStatic export written to ui/frontend/out — serve it with `kubeastra open`.");

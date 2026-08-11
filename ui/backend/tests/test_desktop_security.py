@@ -120,7 +120,10 @@ def test_auth_exchange_sets_cookie_and_redirects(desktop):
     module, client = desktop
     response = client.get(f"/auth?token={TOKEN}", follow_redirects=False)
     assert response.status_code == 302
-    assert response.headers["location"] == "/"
+    # /chat/, not / — the exported root is Next's error-boundary document,
+    # because app/page.tsx uses a server-side redirect() that `output: export`
+    # cannot represent. Landing on / showed every user "Application error".
+    assert response.headers["location"] == "/chat/"
     cookie = response.cookies.get(module.cookie_name())
     assert cookie == TOKEN
 

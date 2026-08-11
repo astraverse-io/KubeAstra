@@ -110,7 +110,51 @@ def _write_fallback(data: dict) -> None:
 # ── public API ────────────────────────────────────────────────────────────
 
 
+# Read-through cache, process lifetime.
+#
+# Every keychain read is a potential "allow access?" prompt, and startup used
+# to make four of them: `_resolve_provider()` probes each provider it might
+# have a key for, then the winner is read again. On a build whose signature
+# changes — an ad-hoc signed development build, where identity is derived from
+# the binary hash — macOS treats each launch as a new application and asks
+# again for every one of them.
+#
+# A secret written or deleted through this module invalidates its entry. One
+# edited *outside* the process (Keychain Access) is not noticed until restart,
+# which is the right trade: the alternative is prompting on every read.
+_secret_cache: Dict[str, Optional[str]] = {}
+
+
+def keychain_disabled() -> bool:
+    """True when this process must not touch the keychain at all.
+
+    Reading a keychain item is not a headless operation. macOS derives an
+    application's identity from its code signature, and an ad-hoc signed build
+    gets a fresh identity on every rebuild — so a newly built binary is an
+    unknown application asking for another application's secret, and the OS
+    puts up a dialog and waits. Forever, if nobody is at the keyboard.
+
+    That is fine in the app and fatal in a build. `build.sh` launches the
+    frozen backend and waits for it to print READY; with a prompt in the way it
+    never prints anything. CI does not see this because a fresh runner has an
+    empty keychain, so the lookup misses without asking — the hang only happens
+    on a developer machine that has actually used the app, which is the machine
+    least likely to be watched during a build.
+
+    Setting KUBEASTRA_NO_KEYCHAIN=1 makes every read miss, exactly as it would
+    on a first-run install. Nothing else changes: no credential is invented, no
+    fallback file is consulted, and the app still starts — it just starts
+    without credentials, which is a state it already has to handle.
+    """
+    return os.environ.get("KUBEASTRA_NO_KEYCHAIN", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
 def set_secret(name: str, value: str) -> None:
+    _secret_cache[name] = value
     if is_secure():
         _keyring().set_password(SERVICE, name, value)
         return
@@ -120,16 +164,29 @@ def set_secret(name: str, value: str) -> None:
 
 
 def get_secret(name: str) -> Optional[str]:
+    # Before the cache, so the answer cannot depend on what a previous call
+    # happened to store.
+    if keychain_disabled():
+        return None
+
+    if name in _secret_cache:
+        return _secret_cache[name]
+
     if is_secure():
         try:
-            return _keyring().get_password(SERVICE, name)
+            value = _keyring().get_password(SERVICE, name)
         except Exception as exc:
             logger.warning("keyring read failed for %s: %s", name, exc)
-            return None
-    return _read_fallback().get(name)
+            return None  # not cached: a transient failure must be retryable
+    else:
+        value = _read_fallback().get(name)
+
+    _secret_cache[name] = value
+    return value
 
 
 def delete_secret(name: str) -> None:
+    _secret_cache.pop(name, None)
     if is_secure():
         try:
             _keyring().delete_password(SERVICE, name)
@@ -141,6 +198,11 @@ def delete_secret(name: str) -> None:
     data = _read_fallback()
     data.pop(name, None)
     _write_fallback(data)
+
+
+def clear_cache() -> None:
+    """Forget cached reads. For tests, and after an external key change."""
+    _secret_cache.clear()
 
 
 def list_configured() -> list[str]:
@@ -159,3 +221,107 @@ def list_configured() -> list[str]:
 
 def has_secret(name: str) -> bool:
     return bool(get_secret(name))
+
+
+# Provider -> the env var `mcp/config/settings.py` reads its key from.
+_PROVIDER_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+
+def _resolve_provider() -> Optional[str]:
+    """Which LLM provider this install is configured for.
+
+    Prefers the recorded choice. Installs made before that was persisted have
+    no record, so fall back to whichever credential is actually stored — that
+    is the only evidence left of what the user set up.
+    """
+    import desktop_config
+
+    recorded = (desktop_config.load().get("llm_provider") or "").strip().lower()
+    if recorded in LLM_PROVIDERS:
+        return recorded
+
+    # Nothing recorded — an install predating that field. Probe, but probe the
+    # likeliest first and stop there: each miss is a separate key name, so a
+    # blind sweep of all three is three keychain prompts rather than one.
+    # Ollama needs no credential and so can never be inferred; only an
+    # explicit record selects it.
+    preferred = (os.environ.get("LLM_PROVIDER") or "gemini").lower()
+    order = [preferred] if preferred in _PROVIDER_ENV else []
+    order += [p for p in _PROVIDER_ENV if p != preferred]
+
+    for provider in order:
+        if has_secret(f"llm.{provider}"):
+            # Record it, so the probe happens once per install rather than
+            # once per launch.
+            try:
+                desktop_config.save({"llm_provider": provider})
+            except Exception as error:
+                logger.debug("could not record inferred provider: %s", error)
+            return provider
+    return None
+
+
+def restore_to_environ() -> Optional[str]:
+    """Put stored credentials back into the environment. Returns the provider.
+
+    Desktop mode keeps credentials in the keychain but every consumer reads
+    them from the environment via pydantic-settings, and that bridge only ever
+    existed inside the setup wizard's save handler. So a key survived a
+    restart in the keychain while the process that needed it started blank —
+    `GeminiProvider.enabled` went False, and chat silently downgraded to
+    single-shot: tools still ran, but no reasoning trace and no synthesis. A
+    bundled `mcp/.env` masked this until it was (correctly) removed.
+
+    Called from `desktop_main` before the app is imported, because settings
+    are read and memoised at import time.
+
+    An env var already set wins — a developer exporting a key in their shell
+    is being explicit. Returning None is a normal state, not an error: a
+    first-run install has no credential yet and must still start so the wizard
+    can be reached.
+    """
+    provider = _resolve_provider()
+    if not provider:
+        return None
+
+    os.environ.setdefault("LLM_PROVIDER", provider)
+
+    env_name = _PROVIDER_ENV.get(provider)
+    if env_name and not os.environ.get(env_name):
+        key = get_secret(f"llm.{provider}")
+        if key:
+            os.environ[env_name] = key
+
+    import desktop_config
+
+    embeddings = (desktop_config.load().get("embeddings_provider") or "").strip().lower()
+    if embeddings in EMBEDDING_PROVIDERS and not os.environ.get("EMBEDDINGS_API_KEY"):
+        key = get_secret(f"embeddings.{embeddings}")
+        if key:
+            os.environ.setdefault("EMBEDDINGS_MODE", "api")
+            os.environ.setdefault("EMBEDDINGS_PROVIDER", embeddings)
+            os.environ["EMBEDDINGS_API_KEY"] = key
+            return provider
+
+    # No deliberate embeddings choice — derive one from the chat provider, the
+    # same way the wizard does. Skipping this was why memory came back
+    # keyword-only after every relaunch even when the wizard had just
+    # reported vector mode: `_apply_provider` set it up in a process that then
+    # exited, and nothing here reconstructed it.
+    #
+    # `setdefault` throughout, so an operator exporting EMBEDDINGS_MODE keeps
+    # what they exported.
+    if provider == "ollama":
+        os.environ.setdefault("EMBEDDINGS_MODE", "ollama")
+    elif provider in EMBEDDING_PROVIDERS and not os.environ.get("EMBEDDINGS_API_KEY"):
+        key = get_secret(f"llm.{provider}")
+        if key:
+            os.environ.setdefault("EMBEDDINGS_MODE", "api")
+            os.environ.setdefault("EMBEDDINGS_PROVIDER", provider)
+            os.environ["EMBEDDINGS_API_KEY"] = key
+
+    return provider

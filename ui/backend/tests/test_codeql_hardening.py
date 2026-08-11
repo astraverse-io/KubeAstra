@@ -249,9 +249,39 @@ def test_nothing_supplied_is_not_an_error():
     assert cluster._allowed_kubeconfig_path("") is None
 
 
-# The Alertmanager URL-scheme tests live on `feat/desktop` with the module they
-# cover: desktop_alerts.py polls Alertmanager from a laptop, and exists only
-# there. Nothing on this branch calls urlopen on an operator-supplied URL.
+# ── the Alertmanager URL is a URL, not a path ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "file:///etc/shadow",
+        "/etc/shadow",
+        "ftp://alertmanager.internal",
+        "alertmanager.internal:9093",  # no scheme — urlsplit reads it as one
+        "",
+    ],
+)
+def test_a_non_http_alertmanager_url_is_refused(value):
+    import desktop_alerts
+
+    with pytest.raises(ValueError):
+        desktop_alerts._http_url(value)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("http://localhost:9093", "http://localhost:9093"),
+        ("https://am.example.com/", "https://am.example.com"),
+        ("https://am.example.com/prefix/", "https://am.example.com/prefix"),
+        ("  http://localhost:9093  ", "http://localhost:9093"),
+    ],
+)
+def test_a_real_alertmanager_url_survives_unchanged(value, expected):
+    import desktop_alerts
+
+    assert desktop_alerts._http_url(value) == expected
 
 
 # ── third-party actions are pinned ────────────────────────────────────────

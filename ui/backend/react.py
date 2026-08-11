@@ -1087,7 +1087,17 @@ def _react_loop_inner(
                             from services.tool_envelope import ToolEnvelope
                             if isinstance(result, ToolEnvelope):
                                 envelope_obj = result
+                                payload = result.payload
                                 result = result.model_dump(by_alias=True)
+                                # Re-attach for the frontend only. `payload` is
+                                # exclude=True so it never rides along into a
+                                # prompt; `_truncate_observation` strips it
+                                # again before the model sees this dict. The
+                                # ResultCard renderer looks for `events`,
+                                # `pods`, `logs` — an envelope has none of
+                                # them, so without this the card renders empty.
+                                if payload is not None:
+                                    result["payload"] = payload
                         except ImportError:
                             pass
                         if action == "investigate_pod" and isinstance(result, dict):
@@ -1421,7 +1431,11 @@ def _react_loop_inner(
                         from services.tool_envelope import ToolEnvelope
                         if isinstance(forced_result, ToolEnvelope):
                             forced_envelope = forced_result
+                            forced_payload = forced_result.payload
                             forced_result = forced_result.model_dump(by_alias=True)
+                            # Same reasoning as the main unwrap above.
+                            if forced_payload is not None:
+                                forced_result["payload"] = forced_payload
                     except ImportError:
                         pass
                     if isinstance(forced_result, dict):
@@ -3353,6 +3367,14 @@ def _truncate_observation(result: dict, tool: str) -> str:
     Every return path passes through ``sanitize_observation`` so secrets cannot
     leak into the next ReAct prompt or the persisted observation preview.
     """
+    # `payload` carries the full original tool result for the UI to render.
+    # It must never reach the model: the envelope exists precisely to put a
+    # summary in front of the LLM instead of the raw dump, and serialising the
+    # payload here would hand back everything the summary was hiding — while
+    # still paying for the summary.
+    if isinstance(result, dict) and "payload" in result:
+        result = {k: v for k, v in result.items() if k != "payload"}
+
     if isinstance(result, dict) and "verification_report" in result:
         return sanitize_observation(result["verification_report"], MAX_OBSERVATION_CHARS)
 

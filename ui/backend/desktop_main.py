@@ -32,9 +32,18 @@ import threading
 import time
 from pathlib import Path
 
-BACKEND_DIR = Path(__file__).resolve().parent
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+if getattr(sys, "frozen", False):
+    _meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    BACKEND_DIR = _meipass
+    if str(BACKEND_DIR) not in sys.path:
+        sys.path.insert(0, str(BACKEND_DIR))
+    _mcp_dir = _meipass / "mcp"
+    if _mcp_dir.exists() and str(_mcp_dir) not in sys.path:
+        sys.path.insert(0, str(_mcp_dir))
+else:
+    BACKEND_DIR = Path(__file__).resolve().parent
+    if str(BACKEND_DIR) not in sys.path:
+        sys.path.insert(0, str(BACKEND_DIR))
 
 
 def announce(line: str) -> None:
@@ -144,11 +153,45 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("DB_PATH", str(desktop_paths.db_path()))
     os.environ.setdefault("AUDIT_LOG_PATH", str(desktop_paths.audit_log_path()))
     os.environ.setdefault("KUBEASTRA_KUBECONFIG_DIR", str(desktop_paths.kubeconfig_dir()))
-    # Investigation memory: embedded vectors, no Qdrant server, embeddings via
-    # the user's provider API (no torch in the desktop bundle).
+    # Investigation memory: embedded vectors, no Qdrant server. EMBEDDINGS_MODE
+    # is deliberately not set here — `restore_to_environ` below derives it from
+    # the stored chat provider, and this file's fallback runs after it.
     os.environ.setdefault("VECTOR_DB_MODE", "local")
     os.environ.setdefault("VECTOR_DB_PATH", str(desktop_paths.vectors_path()))
+    # ALLOWED_NAMESPACES defaults to "default", which is a multi-tenant server
+    # guardrail: it stops one team's operator reaching another team's
+    # namespaces. On a laptop there is one tenant — the user — and the
+    # kubeconfig they chose already bounds what is reachable. Leaving the
+    # server default in place silently confines the app to `default`, which no
+    # real cluster keeps its workloads in; a kubeastra://investigate link for
+    # any other namespace fails with "not in the allowed list".
+    # Mutations remain gated by the approval flow, which is the actual
+    # safety boundary here. Overridable, for anyone who wants it narrower.
+    os.environ.setdefault("ALLOWED_NAMESPACES", "*")
+
+    # Credentials live in the keychain; everything that consumes them reads
+    # the environment. Bridge the two here — before `main` is imported, since
+    # settings are read and memoised at import time. Without this the app
+    # starts with no API key, the LLM provider reports itself disabled, and
+    # chat quietly degrades to single-shot tool output with no reasoning
+    # trace and no synthesis.
+    try:
+        import desktop_secrets
+
+        restored = desktop_secrets.restore_to_environ()
+        if restored:
+            announce(f"LLM_PROVIDER={restored}")
+        else:
+            announce("LLM_PROVIDER=none (run setup)")
+    except Exception as error:  # a broken keychain must not block startup
+        print(f"warning: could not restore stored credentials: {error}", file=sys.stderr)
+
+    # Last resort, after restore has had its say. `local` would mean
+    # sentence-transformers, and torch is not in the desktop bundle — so an
+    # install with no stored provider gets `api` and no backend, which is the
+    # keyword-only path the wizard exists to move people off.
     os.environ.setdefault("EMBEDDINGS_MODE", "api")
+    announce(f"EMBEDDINGS_MODE={os.environ['EMBEDDINGS_MODE']}")
 
     sock, port = bind_socket(args.host, args.port)
     os.environ["KUBEASTRA_DESKTOP_PORT"] = str(port)
@@ -158,6 +201,33 @@ def main(argv: list[str] | None = None) -> int:
     import uvicorn  # noqa: E402  (deferred on purpose)
 
     import main as backend_main  # noqa: E402
+
+    # `main` puts mcp/ on sys.path, so this is the first point k8s.binaries
+    # can be imported. The runners resolve kubectl explicitly, but helm and
+    # kubectl's own plugins are found by walking PATH — and a GUI launch
+    # gives us roughly /usr/bin:/bin:/usr/sbin:/sbin, which contains none of
+    # the places Kubernetes tooling installs itself.
+    try:
+        from k8s import binaries  # noqa: E402
+
+        added = binaries.augment_path()
+        binaries.reset_cache()
+        kubectl_path = binaries.found("kubectl")
+        announce(f"KUBECTL={kubectl_path or 'not found'}")
+        if added:
+            print(f"PATH extended with: {', '.join(added)}", file=sys.stderr)
+        # Cloud clusters authenticate through a credential plugin kubectl
+        # invokes itself. Say up front which ones are unreachable, rather
+        # than letting the first GKE query fail with kubectl's own wording.
+        missing = binaries.missing_auth_plugins()
+        if missing:
+            print(
+                f"note: credential plugins not found: {', '.join(missing)} "
+                f"(only matters for clusters whose kubeconfig uses them)",
+                file=sys.stderr,
+            )
+    except Exception as error:  # never block startup over tool discovery
+        print(f"warning: tool discovery failed: {error}", file=sys.stderr)
 
     token = os.environ["KUBEASTRA_DESKTOP_TOKEN"]
     announce(f"PORT={port}")
@@ -171,6 +241,16 @@ def main(argv: list[str] | None = None) -> int:
         # writes through, so nothing extra is needed here.
     )
     server = uvicorn.Server(config)
+
+    # Only starts polling if the user has configured and enabled it; the
+    # thread otherwise idles. Started after the app is built so a failure here
+    # cannot stop the window from opening.
+    try:
+        import desktop_alerts
+
+        desktop_alerts.poller.start()
+    except Exception as error:  # pragma: no cover — never block startup
+        print(f"alert polling unavailable: {error}", file=sys.stderr)
 
     announce("READY")
     # Started after the handshake so a parent that dies mid-startup still gets

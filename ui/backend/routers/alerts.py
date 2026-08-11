@@ -1,3 +1,4 @@
+import contextlib
 import hmac
 import logging
 import os
@@ -13,6 +14,8 @@ import alert_correlation
 import alert_silences
 import cluster_execution
 import cluster_routing
+import cluster_session
+import db
 import auth
 import db
 import log_safety
@@ -20,6 +23,37 @@ import log_safety
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
+
+
+@contextlib.contextmanager
+def _bound_to_chosen_cluster():
+    """Target the cluster the operator chose, or nothing at all.
+
+    An alert has no session to inherit a runner from, so every kubectl call
+    below used to fall through `get_runner()` to the ambient runner — the
+    machine's `current-context`. On a laptop that is routinely an employer's
+    cluster the operator never pointed this app at, and a proactive
+    investigation would run `kubectl get pods --all-namespaces` against it.
+
+    In server mode `resolve_default()` returns None and the ambient runner is
+    correct: it is the in-cluster ServiceAccount, which is the whole point.
+    """
+    conn = cluster_session.resolve_default()
+    if not conn:
+        yield None
+        return
+
+    from k8s.kubectl_runner import KubectlRunner, runner_ctx, set_runner
+
+    token = set_runner(KubectlRunner(
+        kubeconfig_path=conn.get("kubeconfig_path"),
+        context=conn["context_name"],
+    ))
+    logger.info("investigation bound to cluster %s", conn["context_name"])
+    try:
+        yield conn
+    finally:
+        runner_ctx.reset(token)
 
 
 def _resolve_mcp_path() -> str:
@@ -161,18 +195,35 @@ async def orchestrate_investigation(
             notifications=NotificationDispatcher([LoggingNotificationChannel()]),
         )
 
-        # Everything the orchestrator runs — including tools reached through
-        # run_in_threadpool, since a thread copies the context — goes to the
-        # routed cluster. `cluster is None` keeps the default runner, which is
-        # single-cluster mode and every manual run.
-        with cluster_execution.routed_execution(cluster):
-            await orchestrator.investigate(alert, investigation_id)
-    except cluster_execution.ClusterUnreachable as e:
-        # Deliberately not a fallback to the default runner. Running here would
-        # produce a confident, fully-evidenced answer about the wrong machine —
-        # the exact failure routing exists to prevent.
+        # Two mechanisms, one for each mode, and each a no-op in the other.
+        #
+        # `_bound_to_chosen_cluster` is desktop: it targets the cluster the
+        # operator picked in the UI, because on a laptop the ambient
+        # current-context is routinely an employer's cluster nobody pointed
+        # this app at. In server mode resolve_default() returns None and it
+        # does nothing.
+        #
+        # `routed_execution` is server: it targets the cluster the alert's
+        # label names. With no registry it does nothing, which is desktop and
+        # every existing single-cluster deployment.
+        #
+        # Routing is innermost deliberately. If both were ever live, the
+        # per-alert route must win — a stale "chosen cluster" row overriding it
+        # would be exactly the wrong-cluster answer both of these exist to
+        # prevent.
+        with _bound_to_chosen_cluster():
+            with cluster_execution.routed_execution(cluster):
+                await orchestrator.investigate(alert, investigation_id)
+    except (cluster_session.NoDefaultCluster,
+            cluster_session.ClusterConnectionUnavailable,
+            cluster_execution.ClusterUnreachable) as e:
+        # One clause because the answer is the same on both sides: refuse
+        # rather than fall back. Running against whatever the machine's
+        # kubeconfig happens to point at, or against the default target when
+        # the alert named another cluster, produces a confident and
+        # fully-evidenced answer about the wrong machine.
         logger.error(
-            "cluster unreachable for %s: %s",
+            "investigation %s not run — no usable cluster: %s",
             log_safety.one_line(investigation_id),
             log_safety.one_line(str(e)),
         )
@@ -180,7 +231,7 @@ async def orchestrate_investigation(
         if investigation:
             from alerts.domain.enums import InvestigationStatus
             investigation.status = InvestigationStatus.FAILED
-            investigation.append_audit("cluster_unreachable", {"error": str(e)})
+            investigation.append_audit("cluster_unavailable", {"error": str(e)})
             await repo.save(investigation)
         return
     except Exception as e:
@@ -449,6 +500,15 @@ async def trigger_manual_investigation(
     if mcp_path not in sys.path:
         sys.path.insert(0, mcp_path)
 
+    # Fail before any kubectl runs. find_workload below is a cluster-wide
+    # `kubectl get pods --all-namespaces`, so discovering "no cluster chosen"
+    # afterwards would already have queried the wrong one.
+    try:
+        cluster_session.resolve_default()
+    except (cluster_session.NoDefaultCluster,
+            cluster_session.ClusterConnectionUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     # For pod targets we always run find_workload — both to auto-discover the
     # namespace (when the user typed a bare name or `pod/<name>`) AND to read
     # the pod's effective status, which we use below to alias the synthetic
@@ -464,7 +524,10 @@ async def trigger_manual_investigation(
             # find_workload runs a blocking `kubectl get pods --all-namespaces`
             # subprocess — offload to a worker thread so the event loop stays
             # responsive while kubectl runs (1-3s on large clusters).
-            result = await run_in_threadpool(find_workload, name)
+            # Bound to the chosen cluster: run_in_threadpool copies the
+            # current context, so the runner contextvar carries into it.
+            with _bound_to_chosen_cluster():
+                result = await run_in_threadpool(find_workload, name)
             # find_workload returns flattened dicts with top-level "namespace",
             # "name", and "status" (the *effective* status — already collapses
             # CrashLoopBackOff/ImagePullBackOff/OOMKilled waiting/terminated

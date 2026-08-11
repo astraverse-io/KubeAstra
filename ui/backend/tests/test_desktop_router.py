@@ -5,6 +5,7 @@ been proven to work. A silently-stored bad key produces an app whose first
 symptom is a failed investigation with nothing pointing back at the cause.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -47,6 +48,12 @@ class _MemoryKeyring:
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("KUBEASTRA_STATE_DIR", str(tmp_path))
+    # desktop_secrets caches reads for the life of the process, because each
+    # one is a potential macOS "allow access?" prompt. Writes through the
+    # module invalidate it — the only writer in production — but swapping the
+    # keyring underneath it here is not a write, so entries from the previous
+    # test would survive into this one's fresh store.
+    desktop_secrets.clear_cache()
     # One instance for the whole test: a fresh keyring per call would discard
     # everything written, making storage assertions vacuously fail.
     fake_keyring = _MemoryKeyring()
@@ -234,3 +241,78 @@ def test_forget_rejects_unknown_names(client):
     """Stops arbitrary keyring access through this endpoint."""
     assert client.delete("/api/desktop/secrets/../../etc/passwd").status_code in (404, 400)
     assert client.delete("/api/desktop/secrets/llm.evil").status_code == 404
+
+
+# ── Settings screen support ───────────────────────────────────────────────
+#
+# The screen exists to escape two dead ends: a rotated key bricking the app
+# (configured is sticky and nothing could clear a stored key), and the
+# insecure-keychain warning appearing only once during first run.
+
+
+def test_settings_reports_the_cluster_background_work_targets(client, monkeypatch):
+    import desktop_config
+
+    monkeypatch.setattr(
+        desktop_config, "load",
+        lambda: {**desktop_config.DEFAULTS, "default_cluster_context": "kind-kubeastra-dev"},
+    )
+
+    body = client.get("/api/desktop/settings").json()
+    assert body["default_cluster_context"] == "kind-kubeastra-dev"
+
+
+def test_settings_reports_which_kubectl_is_in_use(client, monkeypatch):
+    """A GUI launch inherits almost no PATH, so this is worth stating."""
+    from routers import desktop as desktop_router
+
+    monkeypatch.setattr(desktop_router, "_kubectl_path", lambda: "/opt/homebrew/bin/kubectl")
+    monkeypatch.setattr(desktop_router, "_missing_auth_plugins", lambda: ["kubelogin"])
+
+    body = client.get("/api/desktop/settings").json()
+    assert body["kubectl_path"] == "/opt/homebrew/bin/kubectl"
+    assert body["missing_auth_plugins"] == ["kubelogin"]
+
+
+def test_kubectl_discovery_failing_does_not_break_settings(client, monkeypatch):
+    from k8s import binaries
+
+    def boom(_tool):
+        raise RuntimeError("discovery exploded")
+
+    monkeypatch.setattr(binaries, "found", boom)
+    body = client.get("/api/desktop/settings").json()
+    assert body["kubectl_path"] == ""
+
+
+def test_forgetting_an_llm_key_clears_the_recorded_provider(client, monkeypatch):
+    """Otherwise the app still believes it is configured for a dead key."""
+    import desktop_config
+    import desktop_secrets
+
+    saved = {}
+    monkeypatch.setattr(desktop_config, "save", lambda updates: saved.update(updates) or dict(saved))
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-key")
+    desktop_secrets.set_secret("llm.gemini", "gem-key")
+
+    response = client.delete("/api/desktop/secrets/llm.gemini")
+
+    assert response.status_code == 200
+    assert desktop_secrets.get_secret("llm.gemini") is None
+    assert saved["llm_provider"] == ""
+    assert "GEMINI_API_KEY" not in os.environ
+
+
+def test_forgetting_a_key_returns_the_app_to_unconfigured(client):
+    """This is what brings the first-run wizard back."""
+    import desktop_secrets
+
+    desktop_secrets.set_secret("llm.gemini", "gem-key")
+    client.delete("/api/desktop/secrets/llm.gemini")
+
+    assert client.get("/api/desktop/setup").json()["configured"] is False
+
+
+def test_only_secrets_this_app_owns_can_be_forgotten(client):
+    assert client.delete("/api/desktop/secrets/llm.evil").status_code == 404
+    assert client.delete("/api/desktop/secrets/../../etc/passwd").status_code in (404, 405)

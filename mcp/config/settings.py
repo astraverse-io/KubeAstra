@@ -31,7 +31,13 @@ class Settings(BaseSettings):
     allowed_namespaces: str = "default"
     kubectl_timeout_seconds: int = 15
     max_log_tail_lines: int = 200
-    max_output_bytes: int = 102400  # 100 KB — enough for logs/describe; run_json uses 10 MB
+    max_output_bytes: int = 102400  # 100 KB — enough for logs/describe
+    # Separate, much larger cap for JSON. A truncated JSON document is not
+    # "less data", it is unparseable — so this is the point at which a query
+    # is rejected outright rather than silently mangled. Tunable because the
+    # right value depends on cluster size: `get pods --all-namespaces -o json`
+    # on a few thousand pods is genuinely tens of megabytes.
+    max_json_bytes: int = 10 * 1024 * 1024  # 10 MB
     enable_k8sgpt: bool = False
     enable_audit_log: bool = True
     # The backend chart always mounts /app/data as a writable volume for UID

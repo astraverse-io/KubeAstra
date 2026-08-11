@@ -23,6 +23,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+import desktop_alerts
+import desktop_config
 import desktop_secrets
 
 logger = logging.getLogger(__name__)
@@ -86,11 +88,26 @@ class DesktopSettings(BaseModel):
     memory_available: bool = False
     keychain_secure: bool = True
     keychain_backend: str = ""
+    # Persisted in config.json rather than the environment: the user types
+    # these once and expects them to survive a restart.
+    alertmanager_url: str = ""
+    notifications_enabled: bool = False
+    # Which cluster background investigations target. Read-only here: it is
+    # set by connecting a cluster, so there is one act of choosing rather
+    # than two settings that can disagree.
+    default_cluster_context: str = ""
+    # Which kubectl is actually being used, and which credential plugins are
+    # missing. Both are launch-environment dependent — a GUI launch inherits
+    # almost no PATH — so "it works in my terminal" is not evidence.
+    kubectl_path: str = ""
+    missing_auth_plugins: list[str] = []
 
 
 class DesktopSettingsUpdate(BaseModel):
     memory_enabled: Optional[bool] = None
     remote_diagnostics_enabled: Optional[bool] = None
+    alertmanager_url: Optional[str] = None
+    notifications_enabled: Optional[bool] = None
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -123,6 +140,28 @@ def _reset_caches() -> None:
         embeddings.reset()
     except Exception:  # pragma: no cover — embeddings optional at this point
         logger.debug("embeddings reset skipped", exc_info=True)
+
+
+def _kubectl_path() -> str:
+    """Absolute path to the kubectl in use, or "" when none was found."""
+    try:
+        from k8s import binaries
+
+        return binaries.found("kubectl") or ""
+    except Exception:  # discovery must never break the settings screen
+        logger.debug("kubectl discovery failed", exc_info=True)
+        return ""
+
+
+def _missing_auth_plugins() -> list[str]:
+    """Credential plugins a cloud kubeconfig might name that we cannot find."""
+    try:
+        from k8s import binaries
+
+        return binaries.missing_auth_plugins()
+    except Exception:
+        logger.debug("auth plugin probe failed", exc_info=True)
+        return []
 
 
 def _stored_llm_provider() -> Optional[str]:
@@ -238,23 +277,107 @@ def _probe_llm(provider: str, api_key: Optional[str]) -> None:
 
 
 def _apply_provider(provider: str) -> None:
-    """Make the stored credential the active configuration."""
+    """Make the stored credential the active configuration.
+
+    Persists the choice as well as applying it. Applying it in-process only
+    meant the selection lasted until the app was closed, and the next launch
+    fell back to the `llm_provider` default with no key — the LLM silently
+    went away. `desktop_secrets.restore_to_environ` reads what is recorded
+    here at startup.
+    """
     os.environ["LLM_PROVIDER"] = provider
     env_name = _PROVIDER_ENV.get(provider)
     if env_name:
         key = desktop_secrets.get_secret(f"llm.{provider}")
         if key:
             os.environ[env_name] = key
+    _persist_choice("llm_provider", provider)
+    _follow_chat_provider_for_embeddings(provider)
     _reset_caches()
 
 
-def _apply_embeddings(provider: str) -> None:
+def _follow_chat_provider_for_embeddings(provider: str) -> None:
+    """Point embeddings somewhere the chat choice implies.
+
+    The wizard asks for an embeddings key only when the chat provider is
+    Anthropic, because the other three either publish an embeddings API or
+    run locally. Nothing acted on that: `EMBEDDINGS_PROVIDER` stayed empty,
+    and an empty provider under `EMBEDDINGS_MODE=api` — the desktop default —
+    resolves to `_NullBackend`. Memory dropped to keyword-only for three of
+    four providers, and the wizard reported success.
+
+    Ollama overrides an explicit choice; the rest defer to it. Someone moving
+    the chat model onto their own machine is asking for a local setup, and
+    quietly continuing to POST investigation text to Voyage would be a worse
+    failure than the one this function exists to fix.
+    """
+    if provider == "ollama":
+        os.environ["EMBEDDINGS_MODE"] = "ollama"
+        os.environ.pop("EMBEDDINGS_PROVIDER", None)
+        os.environ.pop("EMBEDDINGS_API_KEY", None)
+        return
+
+    chosen = _stored_embeddings_provider()
+    if chosen:
+        _apply_embeddings(chosen, persist=False)
+        return
+
+    if provider in EMBEDDING_PROVIDERS:
+        # The chat key is the embeddings key for these; a second prompt for
+        # the same credential is why the wizard skipped asking.
+        key = desktop_secrets.get_secret(f"llm.{provider}")
+        if key:
+            os.environ["EMBEDDINGS_MODE"] = "api"
+            os.environ["EMBEDDINGS_PROVIDER"] = provider
+            os.environ["EMBEDDINGS_API_KEY"] = key
+
+
+def _stored_embeddings_provider() -> Optional[str]:
+    """An embeddings provider the user picked deliberately, if it still works.
+
+    Deliberate means it went through `/setup/embeddings`, which verifies the
+    key before persisting. A recorded provider whose key has since been
+    removed is not a usable choice, so it does not count as one.
+    """
+    try:
+        import desktop_config
+
+        recorded = (desktop_config.load().get("embeddings_provider") or "").strip().lower()
+    except Exception:
+        logger.debug("could not read the persisted embeddings provider", exc_info=True)
+        return None
+
+    if recorded in EMBEDDING_PROVIDERS and desktop_secrets.has_secret(
+        f"embeddings.{recorded}"
+    ):
+        return recorded
+    return None
+
+
+def _apply_embeddings(provider: str, *, persist: bool = True) -> None:
     os.environ["EMBEDDINGS_MODE"] = "api"
     os.environ["EMBEDDINGS_PROVIDER"] = provider
     key = desktop_secrets.get_secret(f"embeddings.{provider}")
     if key:
         os.environ["EMBEDDINGS_API_KEY"] = key
+    if persist:
+        _persist_choice("embeddings_provider", provider)
     _reset_caches()
+
+
+def _persist_choice(key: str, provider: str) -> None:
+    """Record a provider selection so the next launch can find its key.
+
+    A failure to persist must not fail the request: the credential is already
+    saved and working for this session, and reporting an error would suggest
+    it was not.
+    """
+    try:
+        import desktop_config
+
+        desktop_config.save({key: provider})
+    except Exception:
+        logger.warning("could not persist %s=%s", key, provider, exc_info=True)
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────
@@ -346,6 +469,7 @@ def setup_embeddings(body: EmbeddingsSetupRequest) -> EmbeddingsSetupResponse:
 @router.get("/settings", response_model=DesktopSettings)
 def get_desktop_settings() -> DesktopSettings:
     available = _memory_available()
+    stored = desktop_config.load()
     return DesktopSettings(
         memory_enabled=os.environ.get("KUBEASTRA_MEMORY_ENABLED", "1") != "0",
         remote_diagnostics_enabled=os.environ.get(
@@ -356,6 +480,11 @@ def get_desktop_settings() -> DesktopSettings:
         memory_available=available,
         keychain_secure=desktop_secrets.is_secure(),
         keychain_backend=desktop_secrets.backend_name(),
+        alertmanager_url=str(stored.get("alertmanager_url") or ""),
+        notifications_enabled=bool(stored.get("notifications_enabled")),
+        default_cluster_context=str(stored.get("default_cluster_context") or ""),
+        kubectl_path=_kubectl_path(),
+        missing_auth_plugins=_missing_auth_plugins(),
     )
 
 
@@ -367,8 +496,76 @@ def update_desktop_settings(body: DesktopSettingsUpdate) -> DesktopSettings:
         os.environ["KUBEASTRA_REMOTE_DIAGNOSTICS"] = (
             "1" if body.remote_diagnostics_enabled else "0"
         )
+
+    updates: dict = {}
+    if body.alertmanager_url is not None:
+        try:
+            updates["alertmanager_url"] = desktop_config.normalize_alertmanager_url(
+                body.alertmanager_url
+            )
+        except ValueError as error:
+            # Reject rather than store something that would silently never
+            # poll — a notifications feature that quietly does nothing is
+            # worse than one that refuses to be configured.
+            raise HTTPException(status_code=400, detail=str(error)) from error
+    if body.notifications_enabled is not None:
+        updates["notifications_enabled"] = bool(body.notifications_enabled)
+
+    if updates:
+        merged = desktop_config.save(updates)
+        # Enabling with no URL configured cannot work; say so now.
+        if merged.get("notifications_enabled") and not merged.get("alertmanager_url"):
+            desktop_config.save({"notifications_enabled": False})
+            raise HTTPException(
+                status_code=400,
+                detail="Set an Alertmanager URL before enabling notifications.",
+            )
+        desktop_alerts.poller.start()
+        # Poll now rather than in up to a full interval. Enabling should
+        # prime against the cluster as it is at this moment; otherwise an
+        # alert that starts firing in the gap is written off as pre-existing.
+        desktop_alerts.poller.refresh()
+
     _reset_caches()
     return get_desktop_settings()
+
+
+@router.get("/notifications")
+def drain_notifications() -> dict:
+    """Alerts that have started firing since the last call.
+
+    Polled by the Tauri shell, which raises one native notification per item.
+    Draining is destructive — see AlertPoller.drain for why re-delivery would
+    be worse than an occasional loss.
+    """
+    return {
+        "alerts": desktop_alerts.poller.drain(),
+        "status": desktop_alerts.poller.status(),
+    }
+
+
+@router.post("/notifications/test")
+def test_alertmanager(body: DesktopSettingsUpdate) -> dict:
+    """Check a URL before the user commits to it.
+
+    Same verify-before-store rule the LLM and embeddings steps follow: a
+    settings screen that accepts anything and fails silently in a background
+    thread is untestable by the person using it.
+    """
+    try:
+        url = desktop_config.normalize_alertmanager_url(body.alertmanager_url or "")
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if not url:
+        raise HTTPException(status_code=400, detail="No Alertmanager URL given.")
+
+    try:
+        alerts = desktop_alerts.poller.fetch(url, timeout=8.0)
+    except Exception as error:
+        raise HTTPException(
+            status_code=400, detail=f"Could not reach Alertmanager: {error}"
+        ) from error
+    return {"ok": True, "url": url, "firing": len(alerts)}
 
 
 @router.delete("/secrets/{name}")
@@ -380,5 +577,20 @@ def forget_secret(name: str) -> dict:
     if name not in valid:
         raise HTTPException(404, f"Unknown secret '{name}'")
     desktop_secrets.delete_secret(name)
+
+    # Forget the recorded choice too, and clear the key out of the running
+    # process. Leaving either behind means the app still believes it is
+    # configured for a provider whose credential no longer exists — which is
+    # the state this endpoint exists to escape.
+    if name.startswith("llm."):
+        provider = name.split(".", 1)[1]
+        _persist_choice("llm_provider", "")
+        env_name = _PROVIDER_ENV.get(provider)
+        if env_name:
+            os.environ.pop(env_name, None)
+    elif name.startswith("embeddings."):
+        _persist_choice("embeddings_provider", "")
+        os.environ.pop("EMBEDDINGS_API_KEY", None)
+
     _reset_caches()
     return {"ok": True}

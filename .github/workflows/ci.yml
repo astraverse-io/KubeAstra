@@ -18,6 +18,13 @@ on:
 # workflows run code from pull requests. They only ever need to read the
 # tree, so say so rather than relying on a repo setting that can change
 # without anyone editing this file.
+#
+# Exactly one of these. `main` and `feat/desktop` each added the block
+# independently, at different offsets, so the merge took both without a
+# conflict — and a duplicate top-level key makes the workflow unloadable.
+# GitHub reported that as a run that failed in 0s with no jobs, which reads
+# like a flake rather than a syntax error, and `feat/desktop` went without any
+# CI at all until someone opened a run and noticed it had nothing in it.
 permissions:
   contents: read
 

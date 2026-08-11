@@ -82,6 +82,11 @@ venv-*/
 # Rust build output (Tauri spike / desktop shell)
 target/
 
+# Desktop packaging output
+desktop/build/
+desktop/src-tauri/binaries/
+desktop/src-tauri/gen/schemas/
+
 # ── Generated knowledge graphs (graphify) ─────────────────────────────────────
 # Regenerated from the source it describes, so it is derived data, not source.
 # Worth ignoring rather than merely not committing: a single run drops ~10 MB

@@ -26,6 +26,7 @@ import { MissionControlDiagnosis } from "../../components/MissionControlDiagnosi
 import { MissionControlApprovalOverlay } from "../../components/MissionControlApprovalOverlay";
 import { MissionControlToolTrail } from "../../components/MissionControlToolTrail";
 import { CommandBar } from "../../components/CommandBar";
+import { DesktopBridge } from "../../components/DesktopBridge";
 import { resultToMissionControlDiagnosis } from "../../lib/missionControlAdapters";
 import {
   sendChat,
@@ -64,6 +65,7 @@ import {
   type DesktopSetupState,
 } from "../../lib/api";
 import FirstRunWizard from "../../components/FirstRunWizard";
+import DesktopSettings from "../../components/DesktopSettings";
 
 /* ── types ───────────────────────────────────────────────────── */
 
@@ -658,6 +660,7 @@ export default function ChatPage() {
   const [mounted, setMounted] = useState(() => typeof document !== "undefined");
   // null while unknown or in server mode; a state object in desktop mode.
   const [desktopSetup, setDesktopSetup] = useState<DesktopSetupState | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -873,13 +876,25 @@ export default function ChatPage() {
       setMessages(historyToMessages(history));
       setHistoryLoaded(true);
     });
+    // Same only-ever-set bug as the cluster badge below: an SSH target from a
+    // previous session would otherwise linger over a session that has none.
+    setPendingReconnect(null);
     getSshTarget(sessionId).then((target) => {
-      if (target) setPendingReconnect(target);
-    });
+      setPendingReconnect(target ?? null);
+    }).catch(() => setPendingReconnect(null));
+    // Cluster connections are per-session; this badge was not. Because the
+    // old code only ever *set* it, switching to a session with no connection
+    // kept the previous session's pill on screen — while commands silently
+    // ran against the local kubeconfig, since the backend had no row to
+    // install a runner from. Clear first, then let the backend be
+    // authoritative, so the badge can only ever overstate by one request.
+    setClusterConn(null);
     clusterStatus(sessionId).then((status) => {
-      if (status.connected) setClusterConn(status);
+      setClusterConn(status.connected ? status : null);
     }).catch(() => {
-      // Cluster connection is optional; ignore status fetch failures on load.
+      // A failed status fetch must not leave a stale badge asserting a
+      // connection we can no longer confirm.
+      setClusterConn(null);
     });
   }, [sessionId, authLoaded, authIsEnabled, currentUser, isOwnedSession]);
 
@@ -1493,6 +1508,16 @@ export default function ChatPage() {
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
       ),
     },
+    ...(desktopSetup
+      ? [{
+          group: "This machine",
+          label: "Settings",
+          onSelect: () => setSettingsOpen(true),
+          icon: (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          ),
+        }]
+      : []),
     ...(authIsEnabled && currentUser
       ? [
           {
@@ -1660,6 +1685,21 @@ export default function ChatPage() {
           <FirstRunWizard
             state={desktopSetup}
             onComplete={() => {
+              fetchDesktopSetup()
+                .then(setDesktopSetup)
+                .catch(() => setDesktopSetup(null));
+            }}
+          />
+        )}
+
+        {/* Settings. Forgetting a credential re-reads setup, which is what
+            brings the wizard back — previously there was no way to reach it
+            again once a key had been stored. */}
+        {settingsOpen && (
+          <DesktopSettings
+            onClose={() => setSettingsOpen(false)}
+            onCredentialCleared={() => {
+              setSettingsOpen(false);
               fetchDesktopSetup()
                 .then(setDesktopSetup)
                 .catch(() => setDesktopSetup(null));
@@ -2263,6 +2303,10 @@ export default function ChatPage() {
           <div ref={bottomRef} />
         </div>
       </div>
+
+      {/* Desktop shell requests: tray, global shortcut, kubeastra:// links.
+          Inert in server mode, where the fragment never appears. */}
+      <DesktopBridge onInvestigate={(prompt) => submit(prompt)} />
 
       {/* ── input bar ── */}
       {isOwnedSession ? (

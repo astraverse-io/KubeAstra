@@ -3,7 +3,7 @@
 import re
 from typing import List, Optional
 
-from config.settings import settings
+from config.settings import get_settings
 
 
 class ValidationError(Exception):
@@ -63,7 +63,7 @@ def validate_namespace(namespace: str) -> str:
             "Examples: 'prod', 'staging-env', 'dev2'"
         )
     
-    allowed = settings.allowed_namespaces_list
+    allowed = get_settings().allowed_namespaces_list
     if "*" not in allowed and namespace not in allowed:
         raise ValidationError(
             f"Namespace '{namespace}' is not in the allowed list. "
@@ -193,7 +193,7 @@ def validate_tail_lines(tail: int) -> int:
     if tail < 0:
         raise ValidationError("Tail lines cannot be negative")
     
-    max_tail = settings.max_log_tail_lines
+    max_tail = get_settings().max_log_tail_lines
     if tail > max_tail:
         # Cap instead of error for better UX
         return max_tail
@@ -234,4 +234,4 @@ def get_allowed_namespaces() -> List[str]:
     Returns:
         List of allowed namespace strings
     """
-    return settings.allowed_namespaces_list
+    return get_settings().allowed_namespaces_list

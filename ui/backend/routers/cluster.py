@@ -5,7 +5,6 @@ Selected contexts are persisted by session so chat and execute can target the
 same cluster without changing the host's default kubectl context.
 """
 
-import atexit
 import logging
 import os
 import re
@@ -20,6 +19,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 import auth
+import cluster_session
 import db
 
 from http_errors import safe_error_text
@@ -209,7 +209,11 @@ def _delete_temp_kubeconfig(path: Optional[str]) -> None:
 
 
 def _connectivity_check(kubeconfig_path: Optional[str] = None, context: Optional[str] = None) -> dict:
-    cmd = ["kubectl", "cluster-info"]
+    # Resolved, not bare: this is the first kubectl a user hits, so a GUI
+    # launch with a minimal PATH failed here before anything else.
+    from k8s import binaries
+
+    cmd = [binaries.kubectl(), "cluster-info"]
     if kubeconfig_path:
         cmd.extend(["--kubeconfig", kubeconfig_path])
     if context:
@@ -285,15 +289,15 @@ def _is_in_cluster() -> bool:
     return Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
 
 
-def _cleanup_temp_files() -> None:
-    try:
-        for path in _TEMP_DIR.glob("kubeastra-*.yaml"):
-            path.unlink()
-    except Exception as e:
-        logger.warning("Cluster temp cleanup failed: %s", e)
-
-
-atexit.register(_cleanup_temp_files)
+# No atexit wipe. This used to delete every kubeastra-*.yaml on process exit,
+# which was harmless while they lived in /tmp — but desktop mode points
+# KUBEASTRA_KUBECONFIG_DIR at the durable app-data directory, so quitting the
+# app destroyed every kubeconfig the operator had uploaded while leaving the
+# SQLite rows that reference them. The next launch then either ran silently
+# against the local cluster, or (once targeting fails closed) refused to run
+# at all until they re-uploaded.
+#
+# Orphans are pruned at startup instead — see cluster_session.prune_orphan_kubeconfigs.
 
 
 @router.get("/cluster/autodetect")
@@ -400,6 +404,11 @@ def connect_context(body: ContextSelectBody, request: Request):
         namespace=namespace,
         kubeconfig_path=kubeconfig_path if body.mode == "kubeconfig-upload" else None,
     )
+    # Choosing a cluster here is also choosing it for background work. An
+    # alert has no session to inherit from, and the alternative — defaulting
+    # to the machine's current-context — is how proactive investigations
+    # ended up pointed at whatever cluster the laptop happened to have.
+    cluster_session.remember_default(body.context_name, kubeconfig_path)
     return {
         "connected": True,
         "cluster_name": cluster_name,
@@ -421,26 +430,7 @@ def disconnect(body: DisconnectBody, request: Request):
 @router.get("/cluster/status/{session_id}")
 def connection_status(session_id: str, request: Request):
     auth.require_owned_session(request, session_id)
-    conn = db.get_cluster_connection(session_id)
-    if conn:
-        return {
-            "connected": True,
-            "mode": conn["mode"],
-            "context_name": conn["context_name"],
-            "cluster_name": conn["cluster_name"],
-            "server_url": conn["server_url"],
-            "namespace": conn["namespace"],
-        }
-
-    ssh = db.get_ssh_target(session_id)
-    if ssh:
-        return {
-            "connected": True,
-            "mode": "ssh",
-            "cluster_name": ssh["host"],
-            "context_name": f"{ssh['username']}@{ssh['host']}",
-            "server_url": "",
-            "namespace": "",
-        }
-
-    return {"connected": False}
+    # Delegates to cluster_session so the badge and the code that actually
+    # targets kubectl agree on what "connected" means — including the stale
+    # case, where a row exists but its kubeconfig has gone.
+    return cluster_session.status_for(session_id)

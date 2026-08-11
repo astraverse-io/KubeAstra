@@ -48,6 +48,14 @@ class _FailKeyring(_FakeKeyring):
     __module__ = "keyring.backends.fail"
 
 
+@pytest.fixture(autouse=True)
+def _no_cached_reads():
+    """The read cache lives for the process, which spans the whole suite."""
+    desktop_secrets.clear_cache()
+    yield
+    desktop_secrets.clear_cache()
+
+
 @pytest.fixture
 def secure(tmp_path, monkeypatch):
     monkeypatch.setenv("KUBEASTRA_STATE_DIR", str(tmp_path))
@@ -181,3 +189,215 @@ def test_keyring_import_failure_reports_insecure(monkeypatch, tmp_path):
 def test_module_reimports_cleanly():
     """Guard against import-time side effects creeping in."""
     importlib.reload(desktop_secrets)
+
+
+# ── restoring credentials into the environment ────────────────────────────
+#
+# Regression cover for the bug where a key survived in the keychain but the
+# process that needed it started blank. Nothing bridged the two outside the
+# setup wizard's save handler, so every relaunch ran with no API key: the LLM
+# provider reported itself disabled and chat silently degraded to single-shot
+# tool output — no reasoning trace, no synthesis. A bundled `mcp/.env` hid it
+# until that file was correctly dropped from the installer.
+
+
+@pytest.fixture
+def clean_env(monkeypatch):
+    for name in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+                 "LLM_PROVIDER", "EMBEDDINGS_API_KEY", "EMBEDDINGS_PROVIDER"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_restore_puts_stored_key_in_the_environment(secure, clean_env):
+    desktop_secrets.set_secret("llm.gemini", "gem-key")
+
+    assert desktop_secrets.restore_to_environ() == "gemini"
+
+    import os
+
+    assert os.environ["GEMINI_API_KEY"] == "gem-key"
+    assert os.environ["LLM_PROVIDER"] == "gemini"
+
+
+def test_restore_honours_the_recorded_provider(secure, clean_env, monkeypatch):
+    """Two stored keys is not ambiguous once a choice has been recorded."""
+    import desktop_config
+
+    desktop_secrets.set_secret("llm.gemini", "gem-key")
+    desktop_secrets.set_secret("llm.anthropic", "ant-key")
+    monkeypatch.setattr(
+        desktop_config, "load", lambda: {"llm_provider": "anthropic"}
+    )
+
+    assert desktop_secrets.restore_to_environ() == "anthropic"
+
+    import os
+
+    assert os.environ["ANTHROPIC_API_KEY"] == "ant-key"
+    assert "GEMINI_API_KEY" not in os.environ
+
+
+def test_restore_infers_provider_for_installs_predating_the_record(
+    secure, clean_env, monkeypatch
+):
+    """No recorded choice: the single stored credential is the only evidence."""
+    import desktop_config
+
+    desktop_secrets.set_secret("llm.openai", "oai-key")
+    monkeypatch.setattr(desktop_config, "load", lambda: {"llm_provider": ""})
+
+    assert desktop_secrets.restore_to_environ() == "openai"
+
+    import os
+
+    assert os.environ["OPENAI_API_KEY"] == "oai-key"
+
+
+def test_restore_does_not_override_an_explicit_env_var(secure, clean_env, monkeypatch):
+    """A developer exporting a key in their shell is being explicit."""
+    import os
+
+    desktop_secrets.set_secret("llm.gemini", "from-keychain")
+    monkeypatch.setenv("GEMINI_API_KEY", "from-shell")
+
+    desktop_secrets.restore_to_environ()
+
+    assert os.environ["GEMINI_API_KEY"] == "from-shell"
+
+
+def test_restore_with_no_credentials_is_not_an_error(secure, clean_env):
+    """First run must still start, so the wizard can be reached."""
+    assert desktop_secrets.restore_to_environ() is None
+
+
+# ── keychain prompt volume ────────────────────────────────────────────────
+#
+# Every read is a potential "allow access?" dialog. Startup used to make four:
+# a blind sweep of all three credential providers, then the winner again. On a
+# build whose code signature changes each time, macOS treats every launch as a
+# new app and asks for all four.
+
+
+def _counting_keyring(monkeypatch, secure, stored: dict):
+    reads: list[str] = []
+
+    def get_password(service, name):
+        reads.append(name)
+        return stored.get(name)
+
+    monkeypatch.setattr(secure, "get_password", get_password)
+    return reads
+
+
+def test_startup_reads_the_keychain_once(secure, clean_env, monkeypatch):
+    desktop_secrets.clear_cache()
+    reads = _counting_keyring(monkeypatch, secure, {"llm.gemini": "gem-key"})
+
+    assert desktop_secrets.restore_to_environ() == "gemini"
+    assert reads == ["llm.gemini"], f"expected one keychain read, got {reads}"
+
+
+def test_repeat_reads_do_not_hit_the_keychain(secure, clean_env, monkeypatch):
+    desktop_secrets.clear_cache()
+    reads = _counting_keyring(monkeypatch, secure, {"llm.gemini": "gem-key"})
+
+    desktop_secrets.get_secret("llm.gemini")
+    desktop_secrets.get_secret("llm.gemini")
+    desktop_secrets.get_secret("llm.gemini")
+
+    assert len(reads) == 1
+
+
+def test_writing_a_secret_invalidates_the_cache(secure, clean_env):
+    desktop_secrets.clear_cache()
+    desktop_secrets.set_secret("llm.gemini", "first")
+    assert desktop_secrets.get_secret("llm.gemini") == "first"
+
+    desktop_secrets.set_secret("llm.gemini", "rotated")
+    assert desktop_secrets.get_secret("llm.gemini") == "rotated"
+
+
+def test_deleting_a_secret_invalidates_the_cache(secure, clean_env):
+    desktop_secrets.clear_cache()
+    desktop_secrets.set_secret("llm.gemini", "key")
+    desktop_secrets.get_secret("llm.gemini")
+
+    desktop_secrets.delete_secret("llm.gemini")
+    assert desktop_secrets.get_secret("llm.gemini") is None
+
+
+# ── embeddings survive a relaunch ─────────────────────────────────────────
+#
+# `_apply_provider` wires embeddings when the wizard runs, but that lives in
+# a process that ends. Without the same reasoning here, every relaunch fell
+# back to `EMBEDDINGS_MODE=api` with no provider — `_NullBackend`, keyword-only
+# memory — and the user's only clue was that recall got worse over time.
+
+
+def test_restore_wires_embeddings_to_the_chat_provider(secure, clean_env, monkeypatch):
+    """OpenAI and Gemini embed with the key they already chat with."""
+    import os
+
+    import desktop_config
+
+    monkeypatch.delenv("EMBEDDINGS_MODE", raising=False)
+    desktop_secrets.set_secret("llm.openai", "oai-key")
+    monkeypatch.setattr(desktop_config, "load", lambda: {"llm_provider": "openai"})
+
+    desktop_secrets.restore_to_environ()
+
+    assert os.environ["EMBEDDINGS_MODE"] == "api"
+    assert os.environ["EMBEDDINGS_PROVIDER"] == "openai"
+    assert os.environ["EMBEDDINGS_API_KEY"] == "oai-key"
+
+
+def test_restore_keeps_ollama_local(secure, clean_env, monkeypatch):
+    """Nothing about a relaunch changes what choosing Ollama meant."""
+    import os
+
+    import desktop_config
+
+    monkeypatch.delenv("EMBEDDINGS_MODE", raising=False)
+    monkeypatch.setattr(desktop_config, "load", lambda: {"llm_provider": "ollama"})
+
+    desktop_secrets.restore_to_environ()
+
+    assert os.environ["EMBEDDINGS_MODE"] == "ollama"
+    assert "EMBEDDINGS_API_KEY" not in os.environ
+
+
+def test_restore_prefers_a_deliberate_embeddings_choice(secure, clean_env, monkeypatch):
+    """A provider picked in the wizard outranks the chat provider's key."""
+    import os
+
+    import desktop_config
+
+    monkeypatch.delenv("EMBEDDINGS_MODE", raising=False)
+    desktop_secrets.set_secret("llm.openai", "oai-key")
+    desktop_secrets.set_secret("embeddings.voyage", "vk-key")
+    monkeypatch.setattr(
+        desktop_config,
+        "load",
+        lambda: {"llm_provider": "openai", "embeddings_provider": "voyage"},
+    )
+
+    desktop_secrets.restore_to_environ()
+
+    assert os.environ["EMBEDDINGS_PROVIDER"] == "voyage"
+    assert os.environ["EMBEDDINGS_API_KEY"] == "vk-key"
+
+
+def test_restore_does_not_override_an_explicit_embeddings_mode(
+    secure, clean_env, monkeypatch
+):
+    """Same rule as the API keys: a shell export is the user being explicit."""
+    import os
+
+    import desktop_config
+
+    monkeypatch.setenv("EMBEDDINGS_MODE", "local")
+    monkeypatch.setattr(desktop_config, "load", lambda: {"llm_provider": "ollama"})
+
+    desktop_secrets.restore_to_environ()
+
+    assert os.environ["EMBEDDINGS_MODE"] == "local"
