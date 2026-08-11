@@ -91,6 +91,12 @@ echo "sign-sidecar: signing with '$IDENTITY'"
 # resolve to clears all of them — and codesign on a symlink fails.
 mach_o=()
 while IFS= read -r -d '' f; do
+    # Anything inside a .framework is signed as part of that bundle, below.
+    # Handing codesign a binary in a framework's interior fails with
+    #   bundle format is ambiguous (could be app or framework)
+    # because it tries to interpret the enclosing directory and cannot. That
+    # is what broke the first run where signing actually happened.
+    case "$f" in *.framework/*) continue ;; esac
     if file -b "$f" 2>/dev/null | grep -q "Mach-O"; then
         mach_o+=("$f")
     fi
@@ -107,6 +113,19 @@ IFS=$'\n' sorted=($(printf '%s\n' "${mach_o[@]}" \
     | awk -F/ '{print NF"\t"$0}' | sort -rn | cut -f2-))
 unset IFS
 
+# Frameworks are signed as bundles, at their version directory rather than at
+# the .framework itself — PyInstaller's copy has the Versions/Current symlink
+# but not always the top-level layout codesign wants, and pointing it at the
+# version directory is unambiguous either way.
+frameworks=0
+while IFS= read -r -d '' fw; do
+    version_dir="$(find "$fw/Versions" -maxdepth 1 -mindepth 1 -type d \
+        ! -name Current 2>/dev/null | head -1 || true)"
+    codesign --force --timestamp --options runtime \
+        --sign "$IDENTITY" "${version_dir:-$fw}"
+    frameworks=$((frameworks + 1))
+done < <(find "$SIDECAR" -type d -name "*.framework" -print0)
+
 signed=0
 for f in "${sorted[@]}"; do
     codesign --force --timestamp --options runtime \
@@ -122,7 +141,7 @@ codesign --force --timestamp --options runtime \
     --entitlements "$ENTITLEMENTS" \
     --sign "$IDENTITY" "$SIDECAR/kubeastra-backend"
 
-echo "sign-sidecar: signed $signed binaries."
+echo "sign-sidecar: signed $signed binaries and $frameworks framework(s)."
 
 # Verify rather than trust the exit code — this repo has been bitten by tools
 # that exit 0 on a broken bundle.

@@ -222,6 +222,34 @@ def test_the_signer_passes_the_flags_apple_requires(flag: str, why: str):
     assert flag in SIGN_SIDECAR.read_text(), f"missing {flag}: {why}"
 
 
+def test_frameworks_are_signed_as_bundles_not_as_loose_files():
+    """codesign refuses a binary in a framework's interior:
+
+        Python.framework/Python: bundle format is ambiguous
+                                 (could be app or framework)
+
+    The sidecar carries Python.framework, so a flat "sign every Mach-O" loop
+    dies on it. Framework interiors are skipped and the framework is signed at
+    its version directory instead.
+    """
+    source = SIGN_SIDECAR.read_text()
+
+    assert "*.framework/*) continue" in source, (
+        "framework interiors are no longer skipped; codesign will fail with "
+        "'bundle format is ambiguous'"
+    )
+    assert '-name "*.framework"' in source, "frameworks are never signed at all"
+
+
+def test_the_framework_version_is_discovered_not_hardcoded():
+    """CI builds on Python 3.11 and a developer checkout may be on anything
+    else. A hardcoded Versions/3.11 silently signs nothing on the other one."""
+    source = SIGN_SIDECAR.read_text()
+
+    assert "Versions/3.11" not in source
+    assert "$fw/Versions" in source
+
+
 def test_the_entitlements_the_signer_references_exist():
     """A wrong path here fails at bundle time on a release build only."""
     entitlements = REPO_ROOT / "desktop" / "src-tauri" / "entitlements.plist"
