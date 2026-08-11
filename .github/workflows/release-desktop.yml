@@ -317,3 +317,46 @@ jobs:
               try: proc.wait(timeout=10)
               except subprocess.TimeoutExpired: proc.kill()
           PY
+
+      # tauri-action notarizes and staples the .app, then wraps it in a DMG and
+      # stops. The wrapper is signed but never notarized, and Gatekeeper judges
+      # the DMG when somebody double-clicks the download:
+      #
+      #   KubeAstra_0.2.0_aarch64.dmg: rejected
+      #   source=Unnotarized Developer ID
+      #
+      # The app inside launches cleanly once mounted, so this is invisible in
+      # CI and in any check that looks at the .app — but the user still gets
+      # "macOS cannot verify this app is free from malware", which is the exact
+      # warning the whole signing exercise exists to remove.
+      #
+      # The DMG has already been uploaded to the draft release by this point,
+      # so the stapled copy replaces it with --clobber.
+      - name: Notarize and staple the DMG
+        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DMG="$(find desktop/src-tauri/target -path '*/bundle/dmg/*.dmg' | head -1)"
+          [ -n "$DMG" ] || { echo "::error::no DMG was produced"; exit 1; }
+          echo "notarizing $DMG"
+
+          xcrun notarytool submit "$DMG" \
+            --key "$RUNNER_TEMP/apple-api-key.p8" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait --timeout 30m
+
+          xcrun stapler staple "$DMG"
+
+          # Verify rather than trust the exit codes above. `spctl -t open` is
+          # the question the user's double-click actually asks; `-t exec` would
+          # answer a different one and pass on an unstapled image.
+          xcrun stapler validate "$DMG"
+          spctl -a -vvv -t open --context context:primary-signature "$DMG"
+
+          gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber \
+            --repo "$GITHUB_REPOSITORY"

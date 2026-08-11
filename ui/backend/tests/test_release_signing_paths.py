@@ -335,6 +335,46 @@ def test_a_missing_identity_is_not_an_error():
         )
 
 
+# ── the DMG wrapper needs notarizing too ──────────────────────────────────
+
+
+def test_the_dmg_is_notarized_and_stapled():
+    """tauri-action notarizes and staples the .app, then wraps it in a DMG and
+    stops. Gatekeeper judges the DMG when somebody double-clicks the download:
+
+        KubeAstra_0.2.0_aarch64.dmg: rejected
+        source=Unnotarized Developer ID
+
+    The app inside launches cleanly once mounted, so every check that looks at
+    the .app passes — while the user still gets "macOS cannot verify this app
+    is free from malware".
+    """
+    run = _step("Notarize and staple the DMG")["run"]
+
+    assert "notarytool submit" in run
+    assert "stapler staple" in run
+
+
+def test_the_dmg_check_asks_the_question_the_user_asks():
+    """`spctl -t exec` evaluates an executable and passes on an unstapled disk
+    image. `-t open` is what a double-click actually triggers, and is the only
+    form that would have caught this."""
+    run = _step("Notarize and staple the DMG")["run"]
+
+    assert "-t open" in run
+    assert "stapler validate" in run
+
+
+def test_the_stapled_dmg_replaces_the_one_already_uploaded():
+    """tauri-action uploads the DMG before this step runs, so without
+    --clobber the release keeps the unstapled copy and every check here passes
+    against an artifact nobody downloads."""
+    run = _step("Notarize and staple the DMG")["run"]
+
+    assert "gh release upload" in run
+    assert "--clobber" in run
+
+
 def test_the_p8_secret_is_never_named_by_a_build_step():
     """The key material is decoded to a file by one step. A build step that
     also named it would put the raw key into the environment of a third-party
