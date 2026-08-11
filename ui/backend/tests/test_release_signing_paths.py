@@ -537,3 +537,19 @@ def test_the_msi_is_uninstalled_afterwards():
 
     assert "/x" in run, "the MSI is never uninstalled"
     assert "uninstall left" in run, "nothing checks the uninstall actually removed it"
+
+
+def test_the_installed_launcher_is_discovered_not_assumed():
+    """Tauri names the Windows executable after the Cargo binary
+    (kubeastra-desktop.exe), not after productName — the same split as macOS,
+    where the bundle is KubeAstra.app but the binary inside is
+    kubeastra-desktop. Asserting "KubeAstra.exe" failed a build whose MSI had
+    installed perfectly.
+    """
+    run = _step("Install the MSI and prove the installed app runs")["run"]
+
+    assert 'Join-Path $root "KubeAstra.exe"' not in run, (
+        "the launcher name is hardcoded again; Tauri names it after the Cargo "
+        "binary, not productName"
+    )
+    assert "-Filter *.exe" in run, "the launcher should be discovered"

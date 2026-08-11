@@ -377,11 +377,21 @@ jobs:
           $root = "C:\Program Files\KubeAstra"
           if (-not (Test-Path $root)) { throw "nothing installed at $root" }
           Write-Host "--- installed layout ---"
-          Get-ChildItem -Path $root -Recurse -Depth 2 -Directory |
+          Get-ChildItem -Path $root -Recurse -Depth 2 |
             Select-Object -ExpandProperty FullName
 
-          $shell = Join-Path $root "KubeAstra.exe"
-          if (-not (Test-Path $shell)) { throw "no KubeAstra.exe at $shell" }
+          # Discover the shell rather than assume its name. Tauri names the
+          # Windows executable after the Cargo binary — kubeastra-desktop.exe
+          # — not after productName, exactly as on macOS where the bundle is
+          # KubeAstra.app but the binary inside is kubeastra-desktop.
+          # Asserting "KubeAstra.exe" failed against a perfectly good install.
+          $shell = Get-ChildItem -Path $root -Filter *.exe |
+                   Where-Object { $_.Name -ne "kubeastra-backend.exe" } |
+                   Select-Object -First 1
+          if (-not $shell) {
+            throw "no launcher .exe at the install root"
+          }
+          Write-Host "launcher: $($shell.FullName)"
 
           # The failure this exists for: an installer that lays down the shell
           # and not the backend. On macOS that shipped twice — a bundle that
@@ -429,7 +439,8 @@ jobs:
           $u = Start-Process msiexec.exe -Wait -NoNewWindow -PassThru -ArgumentList `
                  "/x", "`"$($msi.FullName)`"", "/quiet", "/norestart"
           if ($u.ExitCode -ne 0) { throw "msiexec uninstall failed with $($u.ExitCode)" }
-          if (Test-Path $shell) { throw "uninstall left $shell behind" }
+          if (Test-Path $shell.FullName) { throw "uninstall left $($shell.FullName) behind" }
+          if (Test-Path $root) { throw "uninstall left $root behind" }
           Write-Host "installed, verified, and uninstalled cleanly"
 
       # The check that matters. Every earlier gate passed on a .app whose
