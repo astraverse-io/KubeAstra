@@ -60,7 +60,14 @@ def resolve(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
         conn = db.get_cluster_connection(session_id)
     except Exception as error:  # a DB hiccup must not silently retarget
         logger.warning("cluster lookup failed for session %s: %s", session_id, error)
-        raise ClusterConnectionUnavailable("unknown", f"lookup failed: {error}") from error
+        # The underlying error is logged above and chained below; it is
+        # deliberately not interpolated into `reason`. Nothing reads .reason —
+        # every handler renders str(exc), which is fixed text — so carrying the
+        # database message here bought nothing and gave CodeQL a real path from
+        # an exception string to an HTTP response (alert 114). The message
+        # never actually reached a response, because __init__ builds a fixed
+        # string, but the shorter answer is not to hold it at all.
+        raise ClusterConnectionUnavailable("unknown", "lookup failed") from error
 
     if not conn or not conn.get("context_name"):
         return None
