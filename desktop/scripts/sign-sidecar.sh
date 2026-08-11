@@ -22,11 +22,25 @@
 # PyInstaller leaves ad-hoc signatures on these files, which is why --force is
 # required: without it codesign refuses to replace what is already there.
 #
-# Runs from tauri.conf.json's beforeBundleCommand, i.e. after the Rust build
-# and before the bundler copies these files into the .app. Signatures live
-# inside the Mach-O, so they survive that copy.
+# Runs from release-desktop.yml, after the sidecar is staged and before
+# tauri-action starts. It is deliberately NOT a Tauri beforeBundleCommand:
+# Tauri imports the signing certificate *after* running that hook, so the
+# signer found no identity and skipped, and the build failed at notarization
+# exactly as if the hook had never existed. The workflow signs first and owns
+# the keychain setup itself.
+#
+# Signatures live inside the Mach-O, so they survive the bundler's copy into
+# Contents/Resources/, and Tauri sealing the .app afterwards records them.
+#
+# Usage:  sign-sidecar.sh [--require-identity]
+#
+#   default             skip with a message when no identity exists
+#   --require-identity  fail instead; for callers that know signing is on
 
 set -euo pipefail
+
+REQUIRE_IDENTITY=0
+[ "${1:-}" = "--require-identity" ] && REQUIRE_IDENTITY=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SIDECAR="$ROOT/desktop/src-tauri/binaries/kubeastra-backend"
@@ -53,6 +67,17 @@ if [ -z "$IDENTITY" ]; then
 fi
 
 if [ -z "$IDENTITY" ]; then
+    if [ "$REQUIRE_IDENTITY" -eq 1 ]; then
+        # The caller imported a certificate and expects it to be usable. A
+        # silent skip here produces an app that builds, bundles, and is then
+        # refused by Apple 90 seconds later with 192 errors — which is exactly
+        # what happened when this path was reached by accident.
+        echo "sign-sidecar: FAIL — signing was required but no Developer ID" >&2
+        echo "              identity is visible. The keychain holding it is" >&2
+        echo "              probably not in this shell's search list:" >&2
+        security list-keychains -d user >&2
+        exit 1
+    fi
     # An unsigned build is a legitimate outcome — it is what the workflow
     # produces when no certificate secret exists. Failing here would break it.
     echo "sign-sidecar: no Developer ID identity available; leaving the sidecar unsigned."

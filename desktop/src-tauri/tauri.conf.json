@@ -4,8 +4,7 @@
   "version": "0.2.0",
   "identifier": "io.astraverse.kubeastra",
   "build": {
-    "frontendDist": "splash",
-    "beforeBundleCommand": "bash -c 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/desktop/scripts/sign-sidecar.sh\" ]; then exec bash \"$d/desktop/scripts/sign-sidecar.sh\"; fi; d=\"$(dirname \"$d\")\"; done; echo \"sign-sidecar.sh not found walking up from $PWD\" >&2; exit 1'"
+    "frontendDist": "splash"
   },
   "app": {
     "windows": [

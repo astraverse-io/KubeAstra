@@ -95,6 +95,52 @@ jobs:
           test -x desktop/src-tauri/binaries/kubeastra-backend/kubeastra-backend
           test -d desktop/src-tauri/binaries/kubeastra-backend/_internal
 
+      # Notarization needs every Mach-O in the bundle signed, and codesign does
+      # not recurse into bundle resources — so Tauri signing the .app leaves
+      # ~130 PyInstaller binaries carrying ad-hoc signatures. Apple refused the
+      # first attempt with 192 errors, every one of them in here.
+      #
+      # This cannot be a Tauri beforeBundleCommand, which was the obvious place
+      # for it: Tauri imports the certificate AFTER running that hook, so the
+      # signer found no identity and skipped. The log ordering is unambiguous —
+      # "no Developer ID identity available" on the line before "1 identity
+      # imported". Signing here, before tauri-action runs at all, means owning
+      # the keychain setup, which is the price of the identity existing.
+      #
+      # Signatures live inside the Mach-O, so they survive the bundler's copy
+      # into Contents/Resources/, and Tauri sealing the .app afterwards records
+      # them rather than replacing them.
+      - name: Sign the sidecar binaries
+        if: env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/sidecar-signing.keychain-db"
+          KEYCHAIN_PWD="$(uuidgen)"
+
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # Without this, codesign blocks on a GUI prompt that never comes and
+          # the job hangs until it times out.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+
+          # Append rather than replace: dropping login.keychain from the search
+          # list breaks tauri-action's own import later in the job.
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+
+          desktop/scripts/sign-sidecar.sh --require-identity
+
       # Must come AFTER staging. `bundle.resources` is a glob that tauri-build
       # resolves in the build script, and it hard-fails when nothing matches:
       #   glob pattern binaries/kubeastra-backend/**/* path not found

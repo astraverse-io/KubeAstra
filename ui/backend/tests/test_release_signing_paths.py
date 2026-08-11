@@ -150,45 +150,59 @@ def _tauri_conf() -> dict:
     return json.loads(TAURI_CONF.read_text())
 
 
-def test_a_bundle_hook_signs_the_sidecar():
-    """Without this hook the bundler copies unsigned binaries into the .app and
-    the failure surfaces only once Apple has looked at it."""
-    hook = _tauri_conf()["build"].get("beforeBundleCommand", "")
-
-    assert "sign-sidecar.sh" in hook, (
-        "beforeBundleCommand no longer runs the sidecar signer; notarization "
-        "will fail with one error per binary in the PyInstaller output"
-    )
+def _step(name: str) -> dict:
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build-desktop"]
+    for s in job["steps"]:
+        if s.get("name") == name:
+            return s
+    raise AssertionError(f"no step named {name!r}")
 
 
-@pytest.mark.parametrize(
-    "cwd",
-    ["", "desktop", "desktop/src-tauri", "desktop/src-tauri/splash", "ui/backend"],
-)
-def test_the_hook_finds_the_signer_from_any_working_directory(cwd: str):
-    """Tauri does not document which directory it runs bundle hooks from, and
-    it is none of the obvious ones.
+def test_the_workflow_signs_the_sidecar():
+    """Without this the bundler copies unsigned binaries into the .app and the
+    failure surfaces only once Apple has looked at it, 90 seconds later."""
+    assert "sign-sidecar.sh" in _step("Sign the sidecar binaries")["run"]
 
-    An earlier version tried three hard-coded relative paths — `scripts/`,
-    `../scripts/`, `desktop/scripts/` — which covered every directory anyone
-    thought to test and still failed in CI with exit 127, after a three-minute
-    Rust build. The hook walks up from $PWD now, so no guess is involved.
+
+def test_the_signing_step_is_not_a_tauri_bundle_hook():
+    """beforeBundleCommand is the obvious home for this and it does not work.
+
+    Tauri imports the signing certificate *after* running that hook, so the
+    signer found no identity, skipped, and the build failed at notarization as
+    though it had never run. The log ordering was unambiguous: "no Developer ID
+    identity available" immediately before "1 identity imported".
+
+    Moving it back would look like a tidy-up and cost another full release
+    cycle to rediscover.
     """
-    import subprocess
+    hook = _tauri_conf().get("build", {}).get("beforeBundleCommand", "")
 
-    hook = _tauri_conf()["build"]["beforeBundleCommand"]
-    result = subprocess.run(
-        ["sh", "-c", hook],
-        cwd=REPO_ROOT / cwd if cwd else REPO_ROOT,
-        capture_output=True,
-        text=True,
+    assert "sign-sidecar" not in hook, (
+        "the sidecar signer is wired as a Tauri bundle hook again. It cannot "
+        "work there — no certificate is imported yet at that point."
     )
 
-    assert "not found" not in result.stderr, (
-        f"the bundle hook cannot locate sign-sidecar.sh from {cwd or '<repo root>'}: "
-        f"{result.stderr.strip()}"
-    )
-    assert result.returncode == 0, result.stderr
+
+def test_the_signing_step_runs_before_the_build_that_bundles_it():
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build-desktop"]
+    names = [str(s.get("name", "")) for s in job["steps"]]
+
+    sign = names.index("Sign the sidecar binaries")
+    builds = [i for i, n in enumerate(names) if n.startswith("Build Tauri App")]
+
+    assert sign < min(builds), "the sidecar is signed after it has been bundled"
+
+
+def test_the_signing_step_only_runs_when_a_certificate_exists():
+    """Unguarded, it would fail every unsigned build at `security import`."""
+    assert _step("Sign the sidecar binaries")["if"] == "env.HAS_APPLE_CERT == 'true'"
+
+
+def test_the_signing_step_demands_an_identity_rather_than_skipping():
+    """The signer's default is to skip when it finds no identity, which is
+    right for a local build and catastrophic here — it is how a release got
+    all the way to Apple with 130 unsigned binaries inside it."""
+    assert "--require-identity" in _step("Sign the sidecar binaries")["run"]
 
 
 def test_the_signer_exists_and_is_executable():
