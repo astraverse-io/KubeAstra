@@ -349,6 +349,89 @@ jobs:
           ./desktop/src-tauri/binaries/kubeastra-backend/kubeastra-backend.exe --help >/dev/null
           echo "staged sidecar executes"
 
+      # The Windows counterpart of the .app check below, and the only way to
+      # learn what an installed layout actually looks like: msiexec puts the
+      # app somewhere the build tree cannot tell us, and resolve_backend_
+      # executable() has to find the sidecar there at runtime.
+      #
+      # pwsh rather than the job's bash default. msiexec is a native Windows
+      # program that needs a Windows path and, launched from bash, returns
+      # before the install finishes — so the checks would race it.
+      - name: Install the MSI and prove the installed app runs
+        if: startsWith(matrix.platform, 'windows')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msi = Get-ChildItem -Path desktop/src-tauri/target -Recurse -Filter *.msi |
+                 Select-Object -First 1
+          if (-not $msi) { throw "no MSI to install" }
+          Write-Host "installing $($msi.FullName)"
+
+          $p = Start-Process msiexec.exe -Wait -NoNewWindow -PassThru -ArgumentList `
+                 "/i", "`"$($msi.FullName)`"", "/quiet", "/norestart", "/l*v", "install.log"
+          if ($p.ExitCode -ne 0) {
+            Get-Content install.log -Tail 40
+            throw "msiexec install failed with $($p.ExitCode)"
+          }
+
+          $root = "C:\Program Files\KubeAstra"
+          if (-not (Test-Path $root)) { throw "nothing installed at $root" }
+          Write-Host "--- installed layout ---"
+          Get-ChildItem -Path $root -Recurse -Depth 2 -Directory |
+            Select-Object -ExpandProperty FullName
+
+          $shell = Join-Path $root "KubeAstra.exe"
+          if (-not (Test-Path $shell)) { throw "no KubeAstra.exe at $shell" }
+
+          # The failure this exists for: an installer that lays down the shell
+          # and not the backend. On macOS that shipped twice — a bundle that
+          # opened to a blank window because the sidecar was missing or its
+          # onedir tree had been flattened.
+          $sidecar = Get-ChildItem -Path $root -Recurse -Filter kubeastra-backend.exe |
+                     Select-Object -First 1
+          if (-not $sidecar) { throw "the installed app has no sidecar" }
+          Write-Host "sidecar installed at $($sidecar.FullName)"
+
+          $internal = Join-Path $sidecar.Directory.FullName "_internal"
+          if (-not (Test-Path $internal)) {
+            throw "_internal/ missing next to the sidecar — the onedir tree was flattened"
+          }
+
+          # Run the INSTALLED sidecar, not the staged one. It prints PORT=,
+          # then READY, once the ASGI app is serving.
+          $proc = Start-Process -FilePath $sidecar.FullName -PassThru -NoNewWindow `
+                    -RedirectStandardOutput sidecar.out -RedirectStandardError sidecar.err
+          try {
+            $ready = $false
+            foreach ($i in 1..60) {
+              Start-Sleep -Seconds 1
+              if (Test-Path sidecar.out) {
+                $out = Get-Content sidecar.out -Raw
+                if ($out -match "READY") { $ready = $true; break }
+              }
+            }
+            if (-not $ready) {
+              Write-Host "--- stdout ---"; Get-Content sidecar.out -ErrorAction SilentlyContinue
+              Write-Host "--- stderr ---"; Get-Content sidecar.err -ErrorAction SilentlyContinue
+              throw "the installed sidecar never reached READY"
+            }
+            $port = ([regex]::Match((Get-Content sidecar.out -Raw), "PORT=(\d+)")).Groups[1].Value
+            $health = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -UseBasicParsing -TimeoutSec 30
+            if ($health.StatusCode -ne 200) { throw "/health returned $($health.StatusCode)" }
+            Write-Host "installed sidecar healthy on port $port"
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+          # Uninstall, so the runner is not left in a state the next step
+          # silently depends on — and so a broken uninstaller is caught here
+          # rather than by whoever tries to remove the app.
+          $u = Start-Process msiexec.exe -Wait -NoNewWindow -PassThru -ArgumentList `
+                 "/x", "`"$($msi.FullName)`"", "/quiet", "/norestart"
+          if ($u.ExitCode -ne 0) { throw "msiexec uninstall failed with $($u.ExitCode)" }
+          if (Test-Path $shell) { throw "uninstall left $shell behind" }
+          Write-Host "installed, verified, and uninstalled cleanly"
+
       # The check that matters. Every earlier gate passed on a .app whose
       # sidecar could not start — bundling had flattened the onedir tree, so
       # PyInstaller failed on "Failed to load Python shared library

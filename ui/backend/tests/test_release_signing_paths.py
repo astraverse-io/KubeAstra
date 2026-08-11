@@ -503,3 +503,37 @@ def test_a_non_tag_run_cannot_publish():
             f"{step['name']} publishes regardless of trigger; a dispatched "
             f"run will upload into whatever release matches the current version"
         )
+
+
+# ── the Windows installer ─────────────────────────────────────────────────
+
+
+def test_the_msi_is_installed_and_exercised_not_just_produced():
+    """"An MSI exists" is the Windows version of "the build exited 0", and
+    this repo has been burned by that twice on macOS — a bundle that opened to
+    a blank window because the sidecar was missing or its onedir tree had been
+    flattened. The only way to know is to install it and run what came out."""
+    run = _step("Install the MSI and prove the installed app runs")["run"]
+
+    assert "msiexec" in run and "/i" in run, "the MSI is never installed"
+    assert "kubeastra-backend.exe" in run, "the installed sidecar is never located"
+    assert "READY" in run and "/health" in run, (
+        "the installed sidecar is never actually run — existence is not proof"
+    )
+
+
+def test_the_installer_step_uses_pwsh():
+    """The job defaults to bash. msiexec is a native Windows program: it needs
+    a Windows path, and launched from bash it returns before the install has
+    finished, so every check after it races the installer."""
+    assert _step("Install the MSI and prove the installed app runs")["shell"] == "pwsh"
+
+
+def test_the_msi_is_uninstalled_afterwards():
+    """Leaving it installed makes later steps depend on state this one created,
+    and a broken uninstaller would first be discovered by a user trying to
+    remove the app."""
+    run = _step("Install the MSI and prove the installed app runs")["run"]
+
+    assert "/x" in run, "the MSI is never uninstalled"
+    assert "uninstall left" in run, "nothing checks the uninstall actually removed it"
