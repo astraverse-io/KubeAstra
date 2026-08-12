@@ -320,3 +320,23 @@ def test_pruning_removes_only_old_rows(clean_db):
 
     assert removed == 1
     assert [r["subject"] for r in audit.query()] == ["recent"]
+
+
+def test_the_failure_log_cannot_be_forged(clean_db, monkeypatch, caplog):
+    """event_type and subject are caller-supplied and reach a log line on the
+    failure path. A newline in either lets the writer append a line that reads
+    like the application produced it — in the one module whose purpose is
+    records that cannot be forged.
+    """
+    monkeypatch.setattr(audit.db, "DB_PATH", "/nonexistent/dir/cannot/exist/x.db")
+
+    with caplog.at_level("ERROR"):
+        audit.emit(
+            "evil\n2026-01-01 00:00:00 ERROR auth: admin login from 10.0.0.1",
+            subject="also\nforged",
+        )
+
+    for record in caplog.records:
+        assert "\n" not in record.getMessage(), (
+            "a caller-supplied value put a newline into the log"
+        )

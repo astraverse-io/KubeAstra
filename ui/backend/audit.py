@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import db
+import log_safety
 from redaction_kv import redact_value
 
 logger = logging.getLogger(__name__)
@@ -201,8 +202,15 @@ def emit(
             con.close()
         return event_id
     except Exception as error:  # noqa: BLE001 — see the docstring
+        # event_type and subject are caller-supplied. A newline in either lets
+        # the writer append a line that reads like the application produced it.
+        # Pointed, in a module whose whole purpose is records that cannot be
+        # forged: the failure path was writing forgeable ones.
         logger.error(
-            "audit: failed to record %s (%s): %s", event_type, subject, error
+            "audit: failed to record %s (%s): %s",
+            log_safety.one_line(event_type),
+            log_safety.one_line(subject),
+            log_safety.one_line(error),
         )
         return ""
 
