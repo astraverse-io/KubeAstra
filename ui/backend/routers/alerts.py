@@ -15,6 +15,7 @@ import alert_silences
 import cluster_execution
 import cluster_routing
 import cluster_session
+import audit
 import db
 import auth
 import db
@@ -458,6 +459,20 @@ async def receive_webhook(
             orchestrate_investigation, alert, investigation_id, repo, route.cluster
         )
     
+    # One row per delivery, not per alert: the counts are the interesting part.
+    # An alert arriving is what starts autonomous work, so this is the row that
+    # explains why an investigation — and any remediation after it — exists.
+    audit.emit(
+        audit.EventType.ALERTMANAGER_WEBHOOK_RECEIVED,
+        actor_type="system",
+        actor_id="alertmanager",
+        subject=f"{len(investigation_ids)} investigation(s)",
+        payload={"investigation_ids": investigation_ids,
+                 "deduplicated": deduped, "resolved": resolved,
+                 "silenced": silenced, "correlated": correlated,
+                 "unroutable": unroutable},
+    )
+
     return AlertWebhookResponse(
         investigation_ids=investigation_ids,
         status="accepted",
