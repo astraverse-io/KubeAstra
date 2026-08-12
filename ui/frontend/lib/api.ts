@@ -885,3 +885,95 @@ export async function fetchClusterTopology(
     `/api/v1/cluster/topology/${encodeURIComponent(sessionId)}?scope=${scope}`,
   );
 }
+
+// ── Audit trail ─────────────────────────────────────────────────────────────
+
+export type AuditEvent = {
+  seq: number;
+  id: string;
+  ts: string;
+  actor_type: string;
+  actor_id: string;
+  session_id: string | null;
+  cluster: string | null;
+  event_type: string;
+  subject: string | null;
+  payload: Record<string, unknown>;
+  severity: string;
+  hash: string;
+  prev_hash: string | null;
+};
+
+export type AuditFilters = {
+  sessionId?: string;
+  actorId?: string;
+  cluster?: string;
+  eventType?: string;
+  severity?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function getAuditEvents(
+  filters: AuditFilters = {},
+): Promise<{ events: AuditEvent[]; count: number }> {
+  const params = new URLSearchParams();
+  if (filters.sessionId) params.set("session_id", filters.sessionId);
+  if (filters.actorId) params.set("actor_id", filters.actorId);
+  if (filters.cluster) params.set("cluster", filters.cluster);
+  if (filters.eventType) params.set("event_type", filters.eventType);
+  if (filters.severity) params.set("severity", filters.severity);
+  params.set("limit", String(filters.limit ?? 200));
+  if (filters.offset) params.set("offset", String(filters.offset));
+
+  const res = await fetch(apiUrl(`/api/v1/audit/events?${params}`), {
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getAuditReplay(
+  sessionId: string,
+): Promise<{ session_id: string; events: AuditEvent[]; count: number }> {
+  const res = await fetch(
+    apiUrl(`/api/v1/audit/replay/${encodeURIComponent(sessionId)}`),
+    { credentials: "include" },
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function verifyAuditChain(): Promise<{
+  ok: boolean;
+  checked: number;
+  broken_at: number | null;
+  reason: string;
+  note?: string;
+}> {
+  const res = await fetch(apiUrl("/api/v1/audit/verify"), {
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getAuditEventTypes(): Promise<string[]> {
+  const res = await fetch(apiUrl("/api/v1/audit/event-types"), {
+    credentials: "include",
+  });
+  if (!res.ok) return [];
+  const body = await res.json();
+  return body.event_types ?? [];
+}
+
+/** Download URL for the JSONL export. A plain link, so the browser streams it
+ *  to disk rather than the page buffering it in memory. */
+export function auditExportUrl(filters: AuditFilters = {}): string {
+  const params = new URLSearchParams();
+  if (filters.sessionId) params.set("session_id", filters.sessionId);
+  if (filters.cluster) params.set("cluster", filters.cluster);
+  if (filters.eventType) params.set("event_type", filters.eventType);
+  params.set("limit", String(filters.limit ?? 1000));
+  return apiUrl(`/api/v1/audit/export?${params}`);
+}

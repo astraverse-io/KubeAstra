@@ -50,6 +50,7 @@ import metrics
 import auth as auth_utils
 import tracing
 from routers import ai_tools, kubectl, recovery, health, chat, sessions, cluster, feedback, models, alerts, alert_silences, clusters, remediation, agent_runs, admin, agent, metrics as metrics_router
+from routers import audit as audit_router
 from routers import cluster_live
 from routers import auth as auth_router
 
@@ -300,6 +301,8 @@ app.include_router(chat.router, prefix="/api", tags=["Chat"])
 app.include_router(sessions.router, prefix="/api", tags=["Sessions"])
 app.include_router(cluster.router, prefix="/api", tags=["Cluster"])
 app.include_router(cluster_live.router, prefix="/api", tags=["Cluster Live"])
+# Prefix is on the router itself (/api/v1/audit), as with the alert routers.
+app.include_router(audit_router.router)
 app.include_router(ai_tools.router, prefix="/api", tags=["AI Analysis"])
 app.include_router(kubectl.router, prefix="/api", tags=["Kubectl"])
 app.include_router(recovery.router, prefix="/api", tags=["Recovery"])

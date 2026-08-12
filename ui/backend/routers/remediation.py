@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import alert_remediation
+import audit
 import auth
 import remediation_executor
 import db
@@ -142,6 +143,19 @@ def decide(request: Request, proposal_id: str, body: Decision) -> dict:
         log_safety.one_line(proposal_id),
         "approved" if body.approve else "rejected",
         log_safety.one_line(decided_by),
+    )
+    # The person who authorised a change to a cluster. A log line is not a
+    # record — it rotates, and nothing detects an edit to it.
+    audit.emit(
+        audit.EventType.APPROVAL_GRANTED if body.approve
+        else audit.EventType.APPROVAL_DENIED,
+        actor_type="user",
+        actor_id=decided_by,
+        cluster=existing.get("cluster_id") or "default",
+        subject=f"{existing.get('action')} {existing.get('arguments')}",
+        severity="warn" if body.approve else "info",
+        payload={"proposal_id": proposal_id, "action": existing.get("action"),
+                 "arguments": existing.get("arguments"), "note": body.note},
     )
     return decided
 

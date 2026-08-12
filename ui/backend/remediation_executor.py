@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 
 import alert_remediation
+import audit
 import cluster_execution
 import db
 
@@ -126,19 +127,52 @@ def execute_proposal(proposal_id: str) -> dict:
         cluster.get("id") if cluster else "default",
     )
 
+    cluster_id = (cluster or {}).get("id") or "default"
+    # Recorded on every exit, including the ones that raise. A trail that only
+    # holds successes answers "what worked", when the question after an
+    # incident is "what was attempted".
+    audit_common = {
+        "actor_type": "agent",
+        "actor_id": proposal.get("approved_by") or "agent",
+        "cluster": cluster_id,
+        "subject": f"{action} {args['namespace']}/{args.get('name', '')}".strip(),
+    }
+
     try:
         with cluster_execution.routed_execution(cluster):
             result = _run(action, args)
-    except cluster_execution.ClusterUnreachable:
+    except cluster_execution.ClusterUnreachable as exc:
         db.record_remediation_result(proposal_id, "failed: cluster unreachable")
+        audit.emit(
+            audit.EventType.MUTATION_EXECUTED, **audit_common, severity="warn",
+            payload={"proposal_id": proposal_id, "action": action,
+                     "arguments": args, "outcome": "cluster unreachable",
+                     "error": str(exc)},
+        )
         raise
     except Exception as exc:
         db.record_remediation_result(proposal_id, f"failed: {exc}")
+        audit.emit(
+            audit.EventType.MUTATION_EXECUTED, **audit_common, severity="critical",
+            payload={"proposal_id": proposal_id, "action": action,
+                     "arguments": args, "outcome": "failed", "error": str(exc)},
+        )
         raise RemediationFailed(str(exc)) from exc
 
     if not result.get("success", True):
         db.record_remediation_result(proposal_id, f"failed: {result.get('error')}")
+        audit.emit(
+            audit.EventType.MUTATION_EXECUTED, **audit_common, severity="critical",
+            payload={"proposal_id": proposal_id, "action": action,
+                     "arguments": args, "outcome": "failed",
+                     "error": str(result.get("error"))},
+        )
         raise RemediationFailed(str(result.get("error") or "action reported failure"))
 
     db.record_remediation_result(proposal_id, "executed")
+    audit.emit(
+        audit.EventType.MUTATION_EXECUTED, **audit_common, severity="warn",
+        payload={"proposal_id": proposal_id, "action": action,
+                 "arguments": args, "outcome": "executed", "result": result},
+    )
     return {"proposal_id": proposal_id, "action": action, "result": result}

@@ -55,6 +55,33 @@ def _conn() -> Generator[sqlite3.Connection, None, None]:
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 _SCHEMA = """
+
+-- Audit trail. Append-only in practice: nothing in the app updates or deletes
+-- a row except the retention prune.
+--
+-- `seq` rather than `ts` orders the hash chain. Two events can share an ISO
+-- timestamp to the microsecond, and ordering a tamper-evidence chain by a
+-- non-unique column makes "which row came first" a matter of opinion.
+CREATE TABLE IF NOT EXISTS audit_events (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           TEXT NOT NULL UNIQUE,
+    ts           TEXT NOT NULL,
+    actor_type   TEXT NOT NULL,
+    actor_id     TEXT NOT NULL,
+    session_id   TEXT,
+    cluster      TEXT,
+    event_type   TEXT NOT NULL,
+    subject      TEXT,
+    payload      TEXT,
+    severity     TEXT NOT NULL DEFAULT 'info',
+    hash         TEXT NOT NULL,
+    prev_hash    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts      ON audit_events (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events (session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_audit_actor   ON audit_events (actor_id, seq);
+CREATE INDEX IF NOT EXISTS idx_audit_cluster ON audit_events (cluster, seq);
+CREATE INDEX IF NOT EXISTS idx_audit_type    ON audit_events (event_type, seq);
 CREATE TABLE IF NOT EXISTS sessions (
     session_id  TEXT PRIMARY KEY,
     user_id     TEXT,

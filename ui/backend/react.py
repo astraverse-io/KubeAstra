@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+import audit
 from agent_run_recorder import fail as _rec_fail
 from agent_run_recorder import finish as _rec_finish
 from agent_run_recorder import record as _rec_step
@@ -450,6 +451,23 @@ def react_loop(
                 res = original_dispatch_fn(tool_name, params)
                 status = "error" if (isinstance(res, dict) and res.get("error")) else "success"
                 tool_span.set_attribute("status", status)
+                # Traces expire and are usually not collected at all in
+                # desktop mode; the audit row is the durable copy. Only the
+                # parameters are recorded, never the result — a tool result
+                # is unbounded and frequently a whole pod log.
+                audit.emit(
+                    audit.EventType.TOOL_CALL_EXECUTED,
+                    actor_type="agent",
+                    actor_id="react",
+                    # react_loop takes no session_id and adding one would
+                    # ripple through every caller; run_recorder already
+                    # carries it. None when no recorder was supplied, which
+                    # is honest — the event is still worth having.
+                    session_id=getattr(run_recorder, "session_id", None),
+                    subject=tool_name,
+                    severity="warn" if status == "error" else "info",
+                    payload={"parameters": params, "status": status},
+                )
                 return res
 
         return _react_loop_inner(
