@@ -126,6 +126,27 @@ export default function AuditPage() {
           {session ? "Session replay" : "Audit trail"}
         </h1>
         <div style={{ display: "flex", gap: "0.5rem" }}>
+          <button
+            type="button"
+            onClick={() => {
+              // `/chat?session=<id>`, never `/chat/<id>` — the path form is a
+              // dynamic route and 404s in the desktop static export. The
+              // alerts page shipped that bug twice this week.
+              let ret: string | null = null;
+              try {
+                ret = sessionStorage.getItem("k8s_chat_return_session");
+              } catch {
+                // Private browsing can refuse sessionStorage; falling back to
+                // the chat index is better than not navigating at all.
+              }
+              window.location.href = ret
+                ? `/chat?session=${encodeURIComponent(ret)}`
+                : "/chat";
+            }}
+            style={buttonStyle}
+          >
+            ← Back to chat
+          </button>
           {session && (
             <button type="button" onClick={closeSession} style={buttonStyle}>
               ← All events
