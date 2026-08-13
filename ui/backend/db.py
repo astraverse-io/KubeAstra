@@ -412,6 +412,39 @@ def init_db() -> None:
             );
             """
         )
+        # GitOps PR proposals. One connected repo per install in practice; the
+        # token is NOT stored here (keychain in desktop, env in server).
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS gitops_repos (
+                id             TEXT PRIMARY KEY,
+                provider       TEXT NOT NULL,
+                owner          TEXT NOT NULL,
+                name           TEXT NOT NULL,
+                default_branch TEXT NOT NULL DEFAULT 'main',
+                config_path    TEXT NOT NULL DEFAULT 'kubeastra.yaml',
+                created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_gitops_repos_owner_name
+                ON gitops_repos (provider, owner, name);
+
+            CREATE TABLE IF NOT EXISTS gitops_prs (
+                id                 TEXT PRIMARY KEY,
+                repo_id            TEXT NOT NULL,
+                session_id         TEXT,
+                investigation_id   TEXT,
+                proposal_id        TEXT,
+                branch             TEXT NOT NULL,
+                provider_pr_number INTEGER,
+                provider_pr_url    TEXT,
+                status             TEXT NOT NULL,
+                files_changed      TEXT NOT NULL,
+                diff_summary       TEXT NOT NULL,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (repo_id) REFERENCES gitops_repos(id)
+            );
+            """
+        )
         con.execute(
             "CREATE INDEX IF NOT EXISTS idx_investigations_incident "
             "ON investigations(incident_id)"
@@ -2544,6 +2577,75 @@ def list_remediation_proposals(
         # the computed status rather than trusting the stored one.
         proposals = [p for p in proposals if p["status"] == "pending"]
     return proposals
+
+
+# ── GitOps PR proposals ───────────────────────────────────────────────────────
+
+def create_gitops_repo(*, repo_id, provider, owner, name, default_branch,
+                       config_path) -> dict:
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO gitops_repos (id, provider, owner, name, default_branch, config_path) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (repo_id, provider, owner, name, default_branch, config_path),
+        )
+    return get_gitops_repo(repo_id)
+
+
+def get_gitops_repo(repo_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute("SELECT * FROM gitops_repos WHERE id = ?", (repo_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_gitops_repos() -> list[dict]:
+    with _conn() as con:
+        rows = con.execute("SELECT * FROM gitops_repos ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_gitops_repo(repo_id: str) -> None:
+    with _conn() as con:
+        con.execute("DELETE FROM gitops_repos WHERE id = ?", (repo_id,))
+
+
+def create_gitops_pr(*, pr_id, repo_id, session_id, investigation_id, proposal_id,
+                     branch, provider_pr_number, provider_pr_url, status,
+                     files_changed, diff_summary) -> dict:
+    # created_at is written explicitly in ISO-8601 (T separator, UTC offset) so
+    # it sorts lexicographically the same way count_recent_gitops_prs()'s
+    # `since` bound does. SQLite's datetime('now') default uses a space
+    # separator, which sorts BEFORE 'T' and would silently drop rows from the
+    # rate-limit window.
+    created_at = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO gitops_prs (id, repo_id, session_id, investigation_id, "
+            " proposal_id, branch, provider_pr_number, provider_pr_url, status, "
+            " files_changed, diff_summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (pr_id, repo_id, session_id, investigation_id, proposal_id, branch,
+             provider_pr_number, provider_pr_url, status,
+             json.dumps(files_changed), diff_summary, created_at),
+        )
+    with _conn() as con:
+        row = con.execute("SELECT * FROM gitops_prs WHERE id = ?", (pr_id,)).fetchone()
+    return dict(row)
+
+
+def list_gitops_prs() -> list[dict]:
+    with _conn() as con:
+        rows = con.execute("SELECT * FROM gitops_prs ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_recent_gitops_prs(repo_id: str, since_iso: str) -> int:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT COUNT(*) AS n FROM gitops_prs WHERE repo_id = ? AND created_at >= ?",
+            (repo_id, since_iso),
+        ).fetchone()
+    return int(row["n"])
 
 
 def decide_remediation_proposal(
