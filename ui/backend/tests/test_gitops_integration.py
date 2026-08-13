@@ -37,14 +37,24 @@ def test_opens_and_closes_a_real_pr():
 
 def _bump_replicas() -> str:
     """Fetch the live base file and bump replicas 2 -> 3 via the real
-    locator/editor, so the test exercises the same code path the router does."""
+    locator/editor, so the test exercises the same code path the router does.
+
+    Uses the authenticated Contents API with `Accept: application/vnd.github.raw`
+    rather than raw.githubusercontent.com — the latter 404s on private repos,
+    and the demo repo may be private."""
     import httpx
     from gitops.locate import find_span
     from gitops.edit import apply_span
 
-    raw = httpx.get(
-        f"https://raw.githubusercontent.com/{_OWNER}/{_REPO}/main/base/api-gateway.yaml",
+    r = httpx.get(
+        f"https://api.github.com/repos/{_OWNER}/{_REPO}/contents/base/api-gateway.yaml",
+        params={"ref": "main"},
+        headers={"Authorization": f"Bearer {TOKEN}",
+                 "Accept": "application/vnd.github.raw",
+                 "User-Agent": "kubeastra"},
         timeout=30.0,
-    ).text
+    )
+    r.raise_for_status()
+    raw = r.text
     span = find_span(raw, 0, ("spec", "replicas"))
     return apply_span(raw, span, 3)
