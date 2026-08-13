@@ -95,6 +95,10 @@ class EventType:
     APPROVAL_DENIED = "approval.denied"
     MUTATION_EXECUTED = "mutation.executed"
     ROLLBACK_TRIGGERED = "rollback.triggered"
+    # Opening a PR mutates no cluster, so it is deliberately NOT
+    # mutation.executed — that event is what an auditor reads to answer "what
+    # changed my cluster", and a PR proposal must not pollute it.
+    GITOPS_PR_OPENED = "gitops.pr_opened"
 
     # System
     ALERTMANAGER_WEBHOOK_RECEIVED = "alertmanager.webhook_received"
