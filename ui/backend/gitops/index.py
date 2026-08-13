@@ -62,13 +62,30 @@ def build_index(files: Iterable[RepoFile]) -> dict[tuple[str, str], list[Resourc
 
 
 def detect_markers(files: Iterable[RepoFile]) -> set[str]:
+    """Flag repos whose live resources are generated (Helm/Argo), so the
+    preview can refuse with a specific message instead of guessing.
+
+    Detection is by parsed kind/apiVersion, not a raw substring scan: a bare
+    `"argoproj.io" in text` both misfires on comments and reads to static
+    analysis as incomplete URL-host validation. The apiVersion group is matched
+    on the `argoproj` prefix — enough to identify Argo, and not a hostname.
+    """
     markers: set[str] = set()
     for f in files:
-        base = f.path.rsplit("/", 1)[-1]
-        if base == "Chart.yaml":
+        if f.path.rsplit("/", 1)[-1] == "Chart.yaml":
             markers.add("helm")
-        if "HelmRelease" in f.text:
-            markers.add("helm")
-        if "kind: Application" in f.text and "argoproj.io" in f.text:
-            markers.add("argo")
+            continue
+        try:
+            docs = list(yaml.safe_load_all(f.text))
+        except yaml.YAMLError:
+            continue  # templated / non-YAML — nothing to classify
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            kind = doc.get("kind")
+            api = str(doc.get("apiVersion", ""))
+            if kind == "HelmRelease":
+                markers.add("helm")
+            if kind == "Application" and api.startswith("argoproj"):
+                markers.add("argo")
     return markers
