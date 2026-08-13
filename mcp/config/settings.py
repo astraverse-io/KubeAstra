@@ -213,6 +213,18 @@ class Settings(BaseSettings):
     # noticing.
     alert_remediation_max_per_hour: int = 5
 
+    # ── GitOps PR proposals ───────────────────────────────────────────────────
+    # Off by default; endpoints 404 until this is flipped on.
+    gitops_enabled: bool = False
+    # Server mode reads the PAT here (env → K8s Secret). Desktop reads it from
+    # the OS keychain instead; this stays empty there.
+    gitops_github_token: str = ""
+    gitops_max_prs_per_hour_per_repo: int = 5
+    # Public base URL for replay/transcript links in PR bodies. Empty or a
+    # loopback host → links are omitted (the desktop backend is always
+    # loopback, and a 127.0.0.1 link is useless to a PR reviewer).
+    app_base_url: str = ""
+
     # ── RAG ingestion (Phase 1.2) ─────────────────────────────────────────────
     # Path to the YAML config consumed by scripts/reindex.py. Only the
     # CronJob honors this; the MCP/backend never reads it directly.
