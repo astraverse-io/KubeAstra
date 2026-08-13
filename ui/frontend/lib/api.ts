@@ -977,3 +977,69 @@ export function auditExportUrl(filters: AuditFilters = {}): string {
   params.set("limit", String(filters.limit ?? 1000));
   return apiUrl(`/api/v1/audit/export?${params}`);
 }
+
+// ── GitOps PR proposals ───────────────────────────────────────────────────────
+
+export type GitopsRepo = {
+  id: string;
+  provider: string;
+  owner: string;
+  name: string;
+  default_branch: string;
+};
+
+export type GitopsPreview = {
+  preview_token: string;
+  diff: string;
+  files: Record<string, string>;
+  branch: string;
+  title: string;
+};
+
+export type GitopsProposeInput = {
+  proposal_id: string;
+  investigation_id?: string;
+  session_id?: string | null;
+  cluster?: string;
+  diagnosis: Record<string, unknown>;
+  change: {
+    kind: string;
+    name: string;
+    namespace: string | null;
+    field_path: (string | number)[];
+    new_value: string | number;
+    reason: string;
+  };
+  target_env?: string | null;
+};
+
+export async function getGitopsRepos(): Promise<{ repos: GitopsRepo[] }> {
+  return fetchJson("/api/gitops/repos");
+}
+
+export async function connectGitopsRepo(body: {
+  provider: string;
+  owner: string;
+  name: string;
+  default_branch?: string;
+}): Promise<GitopsRepo> {
+  return fetchJson("/api/gitops/repos", { method: "POST", body });
+}
+
+export async function deleteGitopsRepo(id: string): Promise<void> {
+  await fetchJson(`/api/gitops/repos/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function previewGitopsPr(body: GitopsProposeInput): Promise<GitopsPreview> {
+  return fetchJson("/api/gitops/preview", { method: "POST", body });
+}
+
+export async function openGitopsPr(
+  preview_token: string,
+): Promise<{ pr_url: string; pr_number: number }> {
+  return fetchJson("/api/gitops/open", { method: "POST", body: { preview_token } });
+}
+
+export async function listGitopsPrs(): Promise<{ prs: Record<string, unknown>[] }> {
+  return fetchJson("/api/gitops/prs");
+}
