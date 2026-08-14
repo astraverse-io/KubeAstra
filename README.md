@@ -96,6 +96,18 @@ When the AI identifies a fix, you get a **Review & Execute** button with the exa
 - Button disappears after execution — no accidental re-runs
 - When no safe automated fix exists (e.g., "update your Helm values"), the card shows **Manual Steps Required** with numbered instructions instead
 
+### 🔀 Propose Fixes as Pull Requests
+
+When your cluster is driven by GitOps (Argo / Flux), applying a fix straight to the live cluster fights your source of truth. Connect a GitHub repo and KubeAstra opens the fix as a **pull request** instead — the same change, reviewed in Git before anything reaches the cluster:
+
+- **You review a real diff, not a promise** — KubeAstra fetches the repo, finds the exact line for the change (`replicas`, an image tag, a resource limit, an env value), edits **only that line** with comments and formatting preserved, and shows you the one-line diff *before* anything is pushed
+- **A human always merges** — it opens the PR, labels it, and writes the diagnosis + evidence into the description; it can **never merge the PR itself** (enforced by a CI test that fails the build if a merge call is ever added)
+- **Refuses rather than guesses** — if it can't find exactly one place to make the change, it stops and says so instead of inventing a diff
+- **Deterministic — no LLM in the write path** — the edit is a surgical text-span replacement, so the diff can't hallucinate; opening a PR is recorded as its own audit event, never as a cluster mutation (a PR changes nothing yet)
+- **Plain YAML + Kustomize repos on GitHub**, via a fine-grained token (no GitHub App to install)
+
+Off by default; enable with `GITOPS_ENABLED=true` and connect a repo in Settings.
+
 ### 👥 Collaborative Sessions
 
 - **Shareable URLs** — click Share to copy a session link (`/chat/:sessionId`). Anyone with the URL sees the full investigation history — including the root-cause card, fix commands, and evidence.
@@ -245,6 +257,7 @@ Match your situation to the feature that solves it:
 | Investigate the same failure modes repeatedly | RAG Runbook Cache (Cached tier) | `RAG_ROUTER_ENABLED=true` + `👍` on great answers |
 | Read 500-line `describe` and 10K-line log outputs | Tool Result Summarization | `ENABLE_LOG_SUMMARIZATION=true` |
 | Perform multi-step fixes with strong safety gates | Multi-Step Remediation Plans | `ENABLE_RECOVERY_OPERATIONS=true` + `REQUIRE_DESTRUCTIVE_CONFIRMATION=true` (default) |
+| Drive your cluster with GitOps and want fixes reviewed in Git, not applied live | Propose Fixes as Pull Requests | `GITOPS_ENABLED=true` + connect a GitHub repo in Settings |
 | Have to repeat "the payments namespace" every prompt | Per-User Conversation Memory | On by default — persists 24 h per session |
 | Want cluster investigation without shipping into the cluster | Remote Diagnostics (SSH + Ansible) | Configure `remoteDiag` block in Helm values |
 | Have a team wiki that everyone should query first | Grounded RAG | Populate `RAG_INGESTION_SOURCES` and let the nightly CronJob index them |

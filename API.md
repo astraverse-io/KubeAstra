@@ -126,6 +126,16 @@ POST /api/v1/alerts/webhook   # Alertmanager webhook ingest (bearer-token auth)
 POST /api/v1/alerts/manual    # /rca slash command — synthetic alert for any pod/workload
 GET  /api/v1/alerts           # List recent investigations (paginated, ?limit=50)
 
+# GitOps PR proposals — open a fix as a pull request instead of applying it.
+# All 404 unless GITOPS_ENABLED=true. Two-phase: preview returns a real diff
+# and a token (nothing pushed); open pushes the branch + PR.
+GET    /api/gitops/repos      # List connected repos
+POST   /api/gitops/repos      # Connect a GitHub repo (owner/name)
+DELETE /api/gitops/repos/{id} # Disconnect
+POST   /api/gitops/preview    # { proposal_id, change, ... } → { preview_token, diff, files }
+POST   /api/gitops/open       # { preview_token } → opens the PR, returns pr_url
+GET    /api/gitops/prs        # List PRs opened by KubeAstra
+
 # Auto-documented
 GET  /docs                # Interactive Swagger UI
 GET  /openapi.json        # OpenAPI 3.0 schema
