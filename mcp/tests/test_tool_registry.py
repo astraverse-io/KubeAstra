@@ -38,6 +38,7 @@ EXPECTED_TOOLS = {
     "get_fix_commands",
     "get_namespaces",
     "get_nodes",
+    "get_persistent_volume_claim",
     "get_plan",
     "get_helm_release",
     "get_investigation_details",
@@ -87,6 +88,7 @@ EXPECTED_CHAT_TOOLS = {
     "get_nodes",
     "get_helm_release",
     "get_investigation_details",
+    "get_persistent_volume_claim",
     "get_pod_logs",
     "get_pods",
     "get_recent_alerts",
@@ -131,6 +133,7 @@ def test_aliases_resolve():
     assert resolve_tool("describe_workload").name == "investigate_workload"
     assert resolve_tool("list_workload_pods").name == "investigate_workload"
     assert resolve_tool("describe_pod_pvcs").name == "list_namespace_resources"
+    assert resolve_tool("get_pvc").name == "get_persistent_volume_claim"
     assert resolve_tool("does_not_exist") is None
 
 

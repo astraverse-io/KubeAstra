@@ -329,6 +329,22 @@ class GetEndpointsInput(BaseModel):
     )
 
 
+class GetPersistentVolumeClaimInput(BaseModel):
+    """Input schema for get_persistent_volume_claim tool."""
+
+    namespace: Optional[str] = Field(
+        default=None,
+        description="Namespace containing the PVC"
+    )
+    claim_name: str = Field(
+        description="Name of the PersistentVolumeClaim"
+    )
+    include_events: bool = Field(
+        default=False,
+        description="Also fetch recent volume-related events for the PVC when available"
+    )
+
+
 class GetRolloutStatusInput(BaseModel):
     """Input schema for get_rollout_status tool."""
     
@@ -823,3 +839,25 @@ class GetRecentChangesInput(BaseModel):
             "name. Omit to see everything that changed in the namespace."
         ),
     )
+
+
+class AnalyzeK8sHealthInput(BaseModel):
+    """Input schema for analyze_k8s_health tool."""
+
+    scope_type: Literal["cluster", "namespace", "pod", "workload", "node"] = Field(
+        default="namespace",
+        description="Scope of analysis: cluster, namespace, pod, workload, or node.",
+    )
+    namespace: Optional[str] = Field(
+        default="default",
+        description="Kubernetes namespace to analyze (or '*' for cluster-wide).",
+    )
+    resource_name: Optional[str] = Field(
+        default=None,
+        description="Optional target pod, workload, or node name when scope is pod, workload, or node.",
+    )
+    resource_kind: Optional[str] = Field(
+        default=None,
+        description="Optional resource kind filter (e.g. Pod, Deployment, Node).",
+    )
+

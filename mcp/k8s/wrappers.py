@@ -2431,6 +2431,59 @@ def get_endpoints(namespace: str, service_name: str, include_slices: bool = True
     return endpoints
 
 
+def get_persistent_volume_claim(
+    namespace: str,
+    claim_name: str,
+    include_events: bool = False,
+) -> Dict[str, Any]:
+    """Fetch a single PVC and its key storage details."""
+    namespace = validate_namespace(namespace)
+    claim_name = validate_resource_name(claim_name, "persistentvolumeclaim")
+
+    result = get_runner().run_json(
+        ["get", "persistentvolumeclaim", claim_name, "-o", "json"],
+        namespace=namespace,
+    )
+    metadata = result.get("metadata", {}) or {}
+    spec = result.get("spec", {}) or {}
+    status = result.get("status", {}) or {}
+    claim = {
+        "name": metadata.get("name", claim_name),
+        "namespace": metadata.get("namespace", namespace),
+        "status": status.get("phase", "Unknown"),
+        "access_modes": spec.get("accessModes", []) or [],
+        "storage_class_name": spec.get("storageClassName", ""),
+        "volume_name": spec.get("volumeName", ""),
+        "volume_mode": spec.get("volumeMode", ""),
+        "requested_capacity": status.get("capacity", {}) or {},
+        "selector": spec.get("selector") or {},
+        "labels": metadata.get("labels", {}) or {},
+        "label_count": len(metadata.get("labels", {}) or {}),
+        "annotations": metadata.get("annotations", {}) or {},
+        "annotation_count": len(metadata.get("annotations", {}) or {}),
+        "creation_timestamp": metadata.get("creationTimestamp", ""),
+    }
+
+    if include_events:
+        try:
+            events = get_runner().run_json(
+                [
+                    "get",
+                    "events",
+                    "--field-selector",
+                    f"involvedObject.kind=PersistentVolumeClaim,involvedObject.name={claim_name}",
+                    "-o",
+                    "json",
+                ],
+                namespace=namespace,
+            )
+            claim["events"] = events.get("items", [])[:10]
+        except Exception as exc:  # pragma: no cover - defensive
+            claim["events"] = {"error": str(exc)}
+
+    return claim
+
+
 def get_rollout_status(namespace: str, deployment_name: str) -> Dict[str, Any]:
     """
     Get rollout status for deployment.

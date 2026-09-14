@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # conservative default. Anthropic (~10%) and OpenAI (~50%) override per-model
 # via the ``cache`` key so cache-hit cost is attributed correctly.
 DEFAULT_CACHE_RATE = 0.25
+CACHE_RATE = DEFAULT_CACHE_RATE
 
 # USD per 1,000 tokens. Update via PR when adding a model. Keys must match the
 # value returned by ``provider.model`` (or whatever the provider tags usage with).

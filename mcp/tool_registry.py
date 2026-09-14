@@ -203,6 +203,26 @@ def _handle_analyze_namespace(params: dict, ctx: DispatchContext) -> dict:
     return analyze_namespace(params.get("namespace") or "default")
 
 
+def _handle_analyze_k8s_health(params: dict, ctx: DispatchContext) -> dict:
+    from k8s.analyzer import run_health_analyzer
+    result = run_health_analyzer(
+        scope_type=params.get("scope_type", "namespace"),
+        namespace=params.get("namespace", "default"),
+        resource_name=params.get("resource_name"),
+        resource_kind=params.get("resource_kind"),
+    )
+    return result.to_dict()
+
+
+def _handle_get_persistent_volume_claim(params: dict, ctx: DispatchContext) -> dict:
+    from k8s.wrappers import get_persistent_volume_claim
+    return get_persistent_volume_claim(
+        params.get("namespace") or "default",
+        params["claim_name"],
+        include_events=bool(params.get("include_events", False)),
+    )
+
+
 # -- Discovery tools --
 
 def _handle_find_workload(params: dict, ctx: DispatchContext) -> dict:
@@ -753,13 +773,14 @@ from mcp_server.schemas import (
     InvestigateHelmReleaseInput,
     DescribePodInput, GetPodLogsInput, GetEventsInput,
     GetDeploymentInput, GetServiceInput, GetEndpointsInput,
-    GetRecentChangesInput,
+    GetPersistentVolumeClaimInput, GetRecentChangesInput,
     GetRolloutStatusInput, K8sgptAnalyzeInput,
     AddKubeconfigContextInput, ListKubeconfigContextsInput,
     SwitchKubeconfigContextInput, GetCurrentContextInput,
     SearchDeploymentRepoInput, GetDeploymentRepoFileInput,
     ListDeploymentRepoPathInput,
     InvestigatePodInput, InvestigateWorkloadInput, AnalyzeNamespaceInput,
+    AnalyzeK8sHealthInput,
     PromQueryInput,
     ExecPodCommandInput, DeletePodInput, RolloutRestartInput,
     ScaleDeploymentInput, ApplyPatchInput,
@@ -819,6 +840,19 @@ _reg(ToolDef(
     handler=_handle_analyze_namespace,
     schema=AnalyzeNamespaceInput,
     description="Holistic health check of an entire namespace: all pods, events, services, issues.",
+    category="investigation",
+    surfaces=_ALL,
+))
+
+_reg(ToolDef(
+    name="analyze_k8s_health",
+    handler=_handle_analyze_k8s_health,
+    schema=AnalyzeK8sHealthInput,
+    description=(
+        "First-party deterministic health analyzer: inspects pods, nodes, services, "
+        "rollouts, and events without LLM calls. Returns structured findings, evidence, "
+        "and recommended diagnostic steps."
+    ),
     category="investigation",
     surfaces=_ALL,
 ))
@@ -888,6 +922,20 @@ _reg(ToolDef(
     category="discovery",
     surfaces=_ALL,
     aliases=("describe_pod_pvcs",),
+))
+
+_reg(ToolDef(
+    name="get_persistent_volume_claim",
+    handler=_handle_get_persistent_volume_claim,
+    schema=GetPersistentVolumeClaimInput,
+    description=(
+        "Inspect a single PersistentVolumeClaim: status, requested and bound capacity, "
+        "storage class, access modes, volume name, labels, and optional recent events. "
+        "Useful for debugging Pending or Unbound PVCs."
+    ),
+    category="discovery",
+    surfaces=_ALL,
+    aliases=("get_pvc", "describe_pvc"),
 ))
 
 _reg(ToolDef(
