@@ -1,0 +1,104 @@
+{
+  "name": "kubeastra-vscode",
+  "displayName": "KubeAstra",
+  "description": "AI-powered Kubernetes investigation assistant, inside your editor.",
+  "publisher": "astraverse-io",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "preview": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/astraverse-io/KubeAstra.git",
+    "directory": "extensions/vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "kubernetes",
+    "k8s",
+    "devops",
+    "sre",
+    "ai"
+  ],
+  "activationEvents": [
+    "onView:kubeastra.chat"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "kubeastra.ask", "title": "KubeAstra: Ask a question" },
+      { "command": "kubeastra.investigateFile", "title": "KubeAstra: Investigate current file" },
+      { "command": "kubeastra.investigateSelection", "title": "KubeAstra: Investigate selection" },
+      { "command": "kubeastra.signIn", "title": "KubeAstra: Sign in" },
+      { "command": "kubeastra.signOut", "title": "KubeAstra: Sign out" },
+      { "command": "kubeastra.connectCluster", "title": "KubeAstra: Connect cluster" }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "kubeastra.investigateSelection",
+          "when": "editorHasSelection",
+          "group": "kubeastra@1"
+        },
+        {
+          "command": "kubeastra.investigateFile",
+          "when": "resourceExtname =~ /\\.(ya?ml|tf|hcl)$/",
+          "group": "kubeastra@2"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kubeastra",
+          "title": "KubeAstra",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "kubeastra": [
+        {
+          "id": "kubeastra.chat",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "KubeAstra",
+      "properties": {
+        "kubeastra.backendUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Base URL of your self-hosted KubeAstra backend (server mode), e.g. `http://localhost:8000`. There is no hosted backend; leave empty to be prompted on first sign-in."
+        },
+        "kubeastra.autoSignIn": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prompt to sign in on first activation when a backend URL is configured."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build && npm run build:webview",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "build:webview": "npm --prefix webview run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0"
+  }
+}
