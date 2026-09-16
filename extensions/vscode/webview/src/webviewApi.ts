@@ -6,6 +6,8 @@
  * slice of the api surface the slim chat needs.
  */
 import type { HostToWebview } from "./types";
+import type { ChatStreamEvent, ChatResponse, ChatMessage } from "@lib/api";
+import { ChatSseParser } from "./sse";
 
 interface VsCodeApi {
   postMessage(msg: unknown): void;
@@ -79,4 +81,26 @@ export function apiStream(
     done,
     abort: () => vscode.postMessage({ type: "api-abort", id }),
   };
+}
+
+/**
+ * Stream a chat turn. Mirrors `ui/frontend/lib/api.ts` `sendChatStream`: posts to
+ * `/api/chat/stream` through the host bridge and parses the raw SSE chunks the
+ * host forwards (frames split on a blank line, one or more `data:` lines each)
+ * into typed `ChatStreamEvent`s. Resolves with the final `ChatResponse` from the
+ * `done` event, or rejects on an `error` event / transport failure.
+ */
+export function sendChatStream(
+  message: string,
+  history: ChatMessage[],
+  onEvent: (event: ChatStreamEvent) => void,
+): { result: Promise<ChatResponse>; abort: () => void } {
+  const parser = new ChatSseParser(onEvent);
+  const { done, abort } = apiStream("/api/chat/stream", { message, history }, (c) => parser.feed(c));
+  const result = done.then(() => {
+    if (parser.errorMessage) throw new Error(parser.errorMessage);
+    if (!parser.finalResult) throw new Error("stream ended without a 'done' event");
+    return parser.finalResult;
+  });
+  return { result, abort };
 }
