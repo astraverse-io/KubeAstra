@@ -57,29 +57,57 @@ export function apiRequest<T = unknown>(
   });
 }
 
-/** Streaming request; `onChunk` receives raw SSE text as it arrives. */
+/** An Error marking a caller-initiated abort, so callers can ignore it quietly. */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
+/**
+ * Streaming request; `onChunk` receives raw SSE text as it arrives.
+ *
+ * The host does not echo a terminal message when it honours an abort (its pump
+ * simply stops), so `abort()` must clean up on the webview side: unsubscribe the
+ * listener and settle `done` itself. Otherwise every aborted stream would leak a
+ * listener and leave `done` pending forever.
+ */
 export function apiStream(
   path: string,
   body: unknown,
   onChunk: (data: string) => void,
 ): { done: Promise<number>; abort: () => void } {
   const id = nextId();
+  let settled = false;
+  let resolveDone!: (status: number) => void;
+  let rejectDone!: (err: Error) => void;
   const done = new Promise<number>((resolve, reject) => {
-    const off = onHostMessage((msg) => {
-      if (msg.type === "api-chunk" && msg.id === id) onChunk(msg.data);
-      else if (msg.type === "api-done" && msg.id === id) {
-        off();
-        resolve(msg.status);
-      } else if (msg.type === "api-error" && msg.id === id) {
-        off();
-        reject(new Error(msg.message));
-      }
-    });
-    vscode.postMessage({ type: "api", id, path, method: "POST", body, stream: true });
+    resolveDone = resolve;
+    rejectDone = reject;
   });
+
+  const off = onHostMessage((msg) => {
+    if (msg.type === "api-chunk" && msg.id === id) onChunk(msg.data);
+    else if (msg.type === "api-done" && msg.id === id) finish(() => resolveDone(msg.status));
+    else if (msg.type === "api-error" && msg.id === id) finish(() => rejectDone(new Error(msg.message)));
+  });
+
+  function finish(settle: () => void): void {
+    if (settled) return;
+    settled = true;
+    off();
+    settle();
+  }
+
+  vscode.postMessage({ type: "api", id, path, method: "POST", body, stream: true });
+
   return {
     done,
-    abort: () => vscode.postMessage({ type: "api-abort", id }),
+    abort: () => {
+      if (settled) return;
+      vscode.postMessage({ type: "api-abort", id });
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      finish(() => rejectDone(err));
+    },
   };
 }
 

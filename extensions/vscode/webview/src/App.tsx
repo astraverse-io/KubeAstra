@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { ChatMessage, ChatStreamEvent } from "@lib/api";
-import { onHostMessage, ready, sendChatStream } from "./webviewApi";
+import { onHostMessage, ready, sendChatStream, isAbortError } from "./webviewApi";
 
 interface AuthState {
   signedIn: boolean;
@@ -83,7 +83,9 @@ export default function App() {
           return m;
         });
       })
-      .catch((err: Error) => appendAssistant(`\n\n⚠️ ${err.message}`))
+      .catch((err: Error) => {
+        if (!isAbortError(err)) appendAssistant(`\n\n⚠️ ${err.message}`);
+      })
       .finally(() => {
         setStreaming(false);
         abortRef.current = null;
