@@ -17,6 +17,11 @@
   "categories": [
     "Other"
   ],
+  "icon": "resources/icon.png",
+  "galleryBanner": {
+    "color": "#0B1220",
+    "theme": "dark"
+  },
   "keywords": [
     "kubernetes",
     "k8s",
@@ -25,7 +30,8 @@
     "ai"
   ],
   "activationEvents": [
-    "onView:kubeastra.chat"
+    "onView:kubeastra.chat",
+    "onLanguage:yaml"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -91,14 +97,19 @@
     "watch": "node esbuild.mjs --watch",
     "build:webview": "npm --prefix webview run build",
     "typecheck": "tsc --noEmit",
+    "package": "vsce package -o kubeastra-vscode.vsix",
+    "pretest": "npm run build && npm run build:webview && tsc -p tsconfig.test.json",
     "test": "vscode-test"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.7",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.24.0",
+    "ovsx": "^0.10.0",
     "typescript": "^5.5.0"
   }
 }

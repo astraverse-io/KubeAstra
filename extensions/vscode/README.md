@@ -38,13 +38,33 @@ npm run build:webview    # bundle the webview
 
 Then press **F5** in VS Code to launch an Extension Development Host.
 
+## Use it
+
+1. Install (once published): search **KubeAstra** in the Extensions view, or on
+   OpenVSX.
+2. Run **KubeAstra: Sign in** from the Command Palette and enter your backend
+   URL + credentials.
+3. Open the **KubeAstra** view in the activity bar to chat, or right-click a
+   YAML/Terraform file → **Investigate with KubeAstra**. Every Kubernetes
+   manifest gets an inline *Investigate* code lens.
+
 ## Settings
 
 - `kubeastra.backendUrl` — base URL of your self-hosted backend (e.g.
   `http://localhost:8000`). No default; you are prompted on first sign-in.
 - `kubeastra.autoSignIn` — prompt to sign in on activation when a backend is set.
 
+## Publishing (maintainers)
+
+Tag `vscode-v<version>` (e.g. `vscode-v0.1.0`) to trigger
+`.github/workflows/vscode-extension.yml`, which packages the `.vsix` and
+publishes to the VS Code Marketplace (`VSCE_PAT`) and OpenVSX (`OVSX_PAT`). See
+the workflow header for the one-time publisher/namespace setup. Locally,
+`npm run package` produces `kubeastra-vscode.vsix`.
+
 ## Status
 
-Built milestone by milestone (see the plan). M1 scaffold: activation, webview,
-CSP, host bridge, cookie sign-in, code lens, status bar.
+Shipped M1–M5: activation (including on any YAML file), the Mission Control chat
+webview reusing `ui/frontend/components`, cookie sign-in, streaming chat, YAML
+code lens / context menu, live cluster status in the header and status bar, and
+Marketplace/OpenVSX publish CI. Published as **Preview**.

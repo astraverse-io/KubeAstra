@@ -13,5 +13,5 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src"],
-  "exclude": ["node_modules", "webview", "out"]
+  "exclude": ["node_modules", "webview", "out", "out-test", "src/test"]
 }
