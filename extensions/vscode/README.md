@@ -44,9 +44,10 @@ Then press **F5** in VS Code to launch an Extension Development Host.
    OpenVSX.
 2. Run **KubeAstra: Sign in** from the Command Palette and enter your backend
    URL + credentials.
-3. Open the **KubeAstra** view in the activity bar to chat, or right-click a
-   YAML/Terraform file → **Investigate with KubeAstra**. Every Kubernetes
-   manifest gets an inline *Investigate* code lens.
+3. Open the **KubeAstra** view in the activity bar to chat. Kubernetes YAML
+   manifests show an inline *Investigate* code lens, and you can right-click any
+   YAML, Terraform, or HCL file → **Investigate with KubeAstra** from the
+   context menu.
 
 ## Settings
 
@@ -56,11 +57,22 @@ Then press **F5** in VS Code to launch an Extension Development Host.
 
 ## Publishing (maintainers)
 
-Tag `vscode-v<version>` (e.g. `vscode-v0.1.0`) to trigger
+Locally, `npm run package` produces `kubeastra-vscode.vsix`. Tag
+`vscode-v<version>` (e.g. `vscode-v0.1.0`) to trigger
 `.github/workflows/vscode-extension.yml`, which packages the `.vsix` and
-publishes to the VS Code Marketplace (`VSCE_PAT`) and OpenVSX (`OVSX_PAT`). See
-the workflow header for the one-time publisher/namespace setup. Locally,
-`npm run package` produces `kubeastra-vscode.vsix`.
+publishes to the VS Code Marketplace (`VSCE_PAT`) and OpenVSX (`OVSX_PAT`).
+
+**Before the first publish:**
+
+- [ ] Create the `astraverse-io` Azure DevOps publisher + a Marketplace PAT →
+      repo secret `VSCE_PAT`.
+- [ ] Create the `astraverse-io` open-vsx.org namespace + a token → repo secret
+      `OVSX_PAT`.
+- [ ] Add both secrets to the `vscode-marketplace` GitHub environment.
+- [ ] Capture 2–3 screenshots (and ideally a short GIF) of the chat, the
+      diagnosis card, and the YAML code lens; add them under `resources/` and
+      reference them here — a UI extension's listing needs them.
+- [ ] Bump `version` in `package.json` to match the `vscode-v<version>` tag.
 
 ## Status
 

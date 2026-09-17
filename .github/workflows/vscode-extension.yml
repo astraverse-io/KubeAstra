@@ -46,15 +46,14 @@ jobs:
           npm ci
           npm ci --prefix webview
 
-      - name: Typecheck + build (host + webview)
-        run: |
-          npm run typecheck
-          npm run build
-          npm run build:webview
+      - name: Typecheck (host)
+        run: npm run typecheck
 
       - name: Webview unit tests (vitest)
         run: npm test --prefix webview
 
+      # `npm test`'s pretest builds the host bundle, the webview, and compiles
+      # the test — so no separate build step is needed here.
       - name: Extension activation test (@vscode/test-electron)
         run: xvfb-run -a npm test
 
