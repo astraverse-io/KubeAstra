@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { AuthManager } from "./auth";
 import { ApiProxy } from "./apiProxy";
+import { ClusterMonitor } from "./cluster";
 import { KubeAstraChatViewProvider } from "./panel";
 import { registerCommands } from "./commands";
 import { KubeAstraCodeLensProvider } from "./codelens";
@@ -9,7 +10,9 @@ import { registerStatusBar } from "./statusBar";
 export function activate(context: vscode.ExtensionContext): void {
   const auth = new AuthManager(context);
   const proxy = new ApiProxy(auth);
-  const chat = new KubeAstraChatViewProvider(context, auth, proxy);
+  const cluster = new ClusterMonitor(auth);
+  context.subscriptions.push(cluster);
+  const chat = new KubeAstraChatViewProvider(context, auth, proxy, cluster);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(KubeAstraChatViewProvider.viewType, chat, {
@@ -18,7 +21,11 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   registerCommands(context, auth, chat);
-  registerStatusBar(context, auth);
+  registerStatusBar(context, auth, cluster);
+
+  // Re-check cluster reachability whenever auth changes, then poll.
+  context.subscriptions.push(auth.onChange(() => void cluster.refresh()));
+  cluster.start();
 
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider(

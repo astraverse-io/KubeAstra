@@ -61,6 +61,18 @@ export interface AuthState {
   authRequired: boolean;
 }
 
+/** Current Kubernetes cluster reachability, derived from /api/cluster/autodetect. */
+export interface ClusterInfo {
+  connected: boolean;
+  name?: string;
+  context?: string;
+}
+
+/** Sent host → webview: the backend's cluster status changed. */
+export interface ClusterState extends ClusterInfo {
+  type: "cluster-state";
+}
+
 /** Sent host → webview: seed the command bar with text (investigate file/selection). */
 export interface Prompt {
   type: "prompt";
@@ -73,6 +85,7 @@ export type HostToWebview =
   | ApiDone
   | ApiError
   | AuthState
+  | ClusterState
   | Prompt;
 
 export type WebviewToHost = ApiRequest | ApiAbort | { type: "ready" };

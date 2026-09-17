@@ -50,6 +50,7 @@ export default function App() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [approval, setApproval] = useState<{ action: ApprovableAction; turnId: number } | null>(null);
+  const [cluster, setCluster] = useState<ClusterStatus>({ connected: false });
   const abortRef = useRef<(() => void) | null>(null);
   const mainRef = useRef<HTMLElement>(null);
   const nextId = useRef(0);
@@ -63,6 +64,8 @@ export default function App() {
     const off = onHostMessage((msg) => {
       if (msg.type === "auth-state") {
         setAuth({ signedIn: msg.signedIn, backendUrl: msg.backendUrl, authRequired: msg.authRequired });
+      } else if (msg.type === "cluster-state") {
+        setCluster({ connected: msg.connected, cluster_name: msg.name, context_name: msg.context });
       } else if (msg.type === "prompt") {
         sendRef.current(msg.text); // investigate-file / investigate-selection run immediately
       }
@@ -76,9 +79,6 @@ export default function App() {
   }, [turns]);
 
   const ready4Chat = !!auth?.backendUrl && (auth.signedIn || !auth.authRequired);
-  // Real Kubernetes cluster status is wired in M4; until then don't claim a
-  // cluster connection just because the user is signed in (auth != cluster).
-  const cluster: ClusterStatus = { connected: false };
 
   function updateLastTurn(fn: (t: Turn) => Turn) {
     setTurns((ts) => (ts.length === 0 ? ts : [...ts.slice(0, -1), fn(ts[ts.length - 1])]));
@@ -197,7 +197,8 @@ export default function App() {
       <CommandBar
         onSend={send}
         busy={streaming}
-        clusterConnected={ready4Chat}
+        clusterConnected={cluster.connected}
+        clusterLabel={cluster.cluster_name}
         placeholder="Ask about your cluster…"
       />
       {streaming && (

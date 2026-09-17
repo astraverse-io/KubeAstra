@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { AuthManager } from "./auth";
 import { ApiProxy } from "./apiProxy";
+import { ClusterMonitor } from "./cluster";
 import type { HostToWebview, WebviewToHost } from "./protocol";
 
 /**
@@ -12,18 +13,23 @@ import type { HostToWebview, WebviewToHost } from "./protocol";
 export class KubeAstraChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "kubeastra.chat";
   private view?: vscode.WebviewView;
+  private ready = false;
+  private pendingPrompt: string | null = null;
 
   constructor(
     private readonly ctx: vscode.ExtensionContext,
     private readonly auth: AuthManager,
     private readonly proxy: ApiProxy,
+    private readonly cluster: ClusterMonitor,
   ) {
-    // Re-broadcast auth changes so the webview refreshes its state.
+    // Re-broadcast auth/cluster changes so the webview refreshes its state.
     ctx.subscriptions.push(auth.onChange(() => void this.broadcastAuthState()));
+    ctx.subscriptions.push(cluster.onChange((info) => this.post({ type: "cluster-state", ...info })));
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
+    this.ready = false;
     view.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.ctx.extensionUri, "webview", "dist")],
@@ -34,19 +40,35 @@ export class KubeAstraChatViewProvider implements vscode.WebviewViewProvider {
     view.onDidDispose(() => {
       this.proxy.abortAll();
       this.view = undefined;
+      this.ready = false;
     });
   }
 
-  /** Reveal the view and seed the command bar with text (investigate commands). */
+  /**
+   * Reveal the view and seed the command bar with text (investigate commands).
+   * If the webview isn't mounted yet (first activation), the prompt is queued
+   * and flushed once it signals `ready`, so the first investigate isn't lost.
+   */
   async seedPrompt(text: string): Promise<void> {
     await vscode.commands.executeCommand("kubeastra.chat.focus");
-    this.post({ type: "prompt", text });
+    if (this.ready) {
+      this.post({ type: "prompt", text });
+    } else {
+      this.pendingPrompt = text;
+    }
   }
 
   private async onMessage(msg: WebviewToHost): Promise<void> {
     switch (msg.type) {
       case "ready":
+        this.ready = true;
         await this.broadcastAuthState();
+        this.post({ type: "cluster-state", ...this.cluster.current });
+        void this.cluster.refresh();
+        if (this.pendingPrompt !== null) {
+          this.post({ type: "prompt", text: this.pendingPrompt });
+          this.pendingPrompt = null;
+        }
         return;
       case "api":
         await this.proxy.handle(msg, (m) => this.post(m));

@@ -9,4 +9,5 @@ export type HostToWebview =
   | { type: "api-done"; id: string; status: number }
   | { type: "api-error"; id: string; message: string }
   | { type: "auth-state"; signedIn: boolean; backendUrl: string | null; authRequired: boolean }
+  | { type: "cluster-state"; connected: boolean; name?: string; context?: string }
   | { type: "prompt"; text: string };
