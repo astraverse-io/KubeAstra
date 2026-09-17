@@ -53,18 +53,22 @@ export default function App() {
   const abortRef = useRef<(() => void) | null>(null);
   const mainRef = useRef<HTMLElement>(null);
   const nextId = useRef(0);
+  // The host-message listener is registered once, so it must call the LATEST
+  // `send` (which closes over the current turns/streaming) rather than the one
+  // captured at mount — otherwise a later investigate-file would run with stale
+  // history and a stale busy guard.
+  const sendRef = useRef<(text: string) => void>(() => {});
 
   useEffect(() => {
     const off = onHostMessage((msg) => {
       if (msg.type === "auth-state") {
         setAuth({ signedIn: msg.signedIn, backendUrl: msg.backendUrl, authRequired: msg.authRequired });
       } else if (msg.type === "prompt") {
-        send(msg.text); // investigate-file / investigate-selection run immediately
+        sendRef.current(msg.text); // investigate-file / investigate-selection run immediately
       }
     });
     ready();
     return off;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -72,7 +76,9 @@ export default function App() {
   }, [turns]);
 
   const ready4Chat = !!auth?.backendUrl && (auth.signedIn || !auth.authRequired);
-  const cluster: ClusterStatus = { connected: ready4Chat };
+  // Real Kubernetes cluster status is wired in M4; until then don't claim a
+  // cluster connection just because the user is signed in (auth != cluster).
+  const cluster: ClusterStatus = { connected: false };
 
   function updateLastTurn(fn: (t: Turn) => Turn) {
     setTurns((ts) => (ts.length === 0 ? ts : [...ts.slice(0, -1), fn(ts[ts.length - 1])]));
@@ -118,6 +124,8 @@ export default function App() {
         abortRef.current = null;
       });
   }
+  // Keep the ref pointed at the current closure for the one-time host listener.
+  sendRef.current = send;
 
   function stop() {
     abortRef.current?.();
