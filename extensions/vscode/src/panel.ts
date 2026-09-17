@@ -95,7 +95,7 @@ export class KubeAstraChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="root"></div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+  <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }

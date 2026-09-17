@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { ChatMessage, ChatStreamEvent } from "@lib/api";
-import { onHostMessage, ready, sendChatStream, isAbortError } from "./webviewApi";
+import ReactMarkdown from "react-markdown";
+import type { ChatMessage, ChatStreamEvent, ChatResponse, ClusterStatus } from "@lib/api";
+import type { ReactStep } from "@components/InvestigationTrail";
+import { MissionControlHeader } from "@components/MissionControlHeader";
+import { MissionControlToolTrail } from "@components/MissionControlToolTrail";
+import { MissionControlDiagnosis } from "@components/MissionControlDiagnosis";
+import { MissionControlApprovalOverlay } from "@components/MissionControlApprovalOverlay";
+import { CommandBar } from "@components/CommandBar";
+import { resultToMissionControlDiagnosis } from "@lib/missionControlAdapters";
+import { onHostMessage, ready, sendChatStream, executeCommand, isAbortError } from "./webviewApi";
 
 interface AuthState {
   signedIn: boolean;
@@ -9,82 +17,101 @@ interface AuthState {
   authRequired: boolean;
 }
 
-interface TrailStep {
-  iteration?: number;
-  thought?: string;
-  action?: string;
+interface Turn {
+  id: number;
+  user: string;
+  steps: ReactStep[];
+  reply: string;
+  result: ChatResponse | null;
+}
+
+type ApprovableAction = NonNullable<ChatResponse["suggested_actions"]>[number];
+
+/** The first suggested action that mutates the cluster, if any. */
+function approvableAction(result: ChatResponse | null): ApprovableAction | null {
+  const actions = result?.suggested_actions ?? [];
+  return (
+    actions.find(
+      (a) => a.requires_approval || a.action_kind === "write_command" || a.action_kind === "apply_yaml",
+    ) ?? null
+  );
 }
 
 /**
- * M2 slim chat: proves the end-to-end streaming pipeline (webview → host proxy →
- * backend SSE → back). Renders a plain thread, a live ReAct step trail, and the
- * streamed answer. M3 swaps these plain elements for the reused Mission Control
- * components (MissionControlHeader / ToolTrail / Diagnosis / CommandBar).
+ * M3: the slim chat, now composed from the real Mission Control components
+ * imported in place from ui/frontend/components (MissionControlHeader,
+ * MissionControlToolTrail, MissionControlDiagnosis, CommandBar,
+ * MissionControlApprovalOverlay) — the same source the Next app renders. The
+ * ReAct step stream feeds the ToolTrail; the final result feeds the Diagnosis
+ * card via the shared resultToMissionControlDiagnosis adapter.
  */
 export default function App() {
   const [auth, setAuth] = useState<AuthState | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [streaming, setStreaming] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [trail, setTrail] = useState<TrailStep[]>([]);
+  const [approval, setApproval] = useState<{ action: ApprovableAction; turnId: number } | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
-  const threadRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+  const nextId = useRef(0);
 
   useEffect(() => {
     const off = onHostMessage((msg) => {
       if (msg.type === "auth-state") {
-        setAuth({
-          signedIn: msg.signedIn,
-          backendUrl: msg.backendUrl,
-          authRequired: msg.authRequired,
-        });
+        setAuth({ signedIn: msg.signedIn, backendUrl: msg.backendUrl, authRequired: msg.authRequired });
       } else if (msg.type === "prompt") {
-        setDraft(msg.text);
+        send(msg.text); // investigate-file / investigate-selection run immediately
       }
     });
     ready();
     return off;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
-  }, [messages, trail]);
+    mainRef.current?.scrollTo({ top: mainRef.current.scrollHeight });
+  }, [turns]);
 
-  const canSend = draft.trim().length > 0 && !streaming;
-  const ready4Chat = auth?.backendUrl && (auth.signedIn || !auth.authRequired);
+  const ready4Chat = !!auth?.backendUrl && (auth.signedIn || !auth.authRequired);
+  const cluster: ClusterStatus = { connected: ready4Chat };
 
-  function send() {
-    const text = draft.trim();
-    if (!text || streaming) return;
-    const history = messages;
-    setMessages([...history, { role: "user", content: text }, { role: "assistant", content: "" }]);
-    setDraft("");
-    setTrail([]);
+  function updateLastTurn(fn: (t: Turn) => Turn) {
+    setTurns((ts) => (ts.length === 0 ? ts : [...ts.slice(0, -1), fn(ts[ts.length - 1])]));
+  }
+
+  function send(text: string) {
+    const message = text.trim();
+    if (!message || streaming) return;
+    const history: ChatMessage[] = turns.flatMap((t) => [
+      { role: "user", content: t.user },
+      { role: "assistant", content: t.reply },
+    ]);
+    setTurns((ts) => [...ts, { id: nextId.current++, user: message, steps: [], reply: "", result: null }]);
     setStreaming(true);
 
     const onEvent = (evt: ChatStreamEvent) => {
-      if (evt.type === "iteration_planned" || evt.type === "step_complete") {
-        setTrail((t) => [...t, { iteration: evt.iteration, thought: evt.thought, action: evt.action }]);
+      if (evt.type === "iteration_planned") {
+        updateLastTurn((t) => ({
+          ...t,
+          steps: [...t.steps, { action: evt.action ?? "step", thought: evt.thought, params: evt.params }],
+        }));
+      } else if (evt.type === "step_complete") {
+        updateLastTurn((t) => {
+          if (t.steps.length === 0) return t;
+          const steps = [...t.steps];
+          steps[steps.length - 1] = { ...steps[steps.length - 1], duration_ms: evt.duration_ms };
+          return { ...t, steps };
+        });
       } else if (evt.type === "token" && evt.text) {
-        appendAssistant(evt.text);
+        updateLastTurn((t) => ({ ...t, reply: t.reply + evt.text }));
       }
     };
 
-    const { result, abort } = sendChatStream(text, history, onEvent);
+    const { result, abort } = sendChatStream(message, history, onEvent);
     abortRef.current = abort;
     result
-      .then((res) => {
-        // If no tokens streamed, fall back to the final reply.
-        setMessages((m) => {
-          const last = m[m.length - 1];
-          if (last && last.role === "assistant" && last.content === "") {
-            return [...m.slice(0, -1), { role: "assistant", content: res.reply }];
-          }
-          return m;
-        });
-      })
+      .then((res) => updateLastTurn((t) => ({ ...t, result: res, reply: t.reply || res.reply })))
       .catch((err: Error) => {
-        if (!isAbortError(err)) appendAssistant(`\n\n⚠️ ${err.message}`);
+        if (!isAbortError(err)) updateLastTurn((t) => ({ ...t, reply: `${t.reply}\n\n⚠️ ${err.message}` }));
       })
       .finally(() => {
         setStreaming(false);
@@ -92,139 +119,149 @@ export default function App() {
       });
   }
 
-  function appendAssistant(text: string) {
-    setMessages((m) => {
-      const last = m[m.length - 1];
-      if (!last || last.role !== "assistant") return m;
-      return [...m.slice(0, -1), { role: "assistant", content: last.content + text }];
-    });
-  }
-
   function stop() {
     abortRef.current?.();
-    abortRef.current = null;
-    setStreaming(false);
   }
 
-  return (
-    <div style={styles.root}>
-      <header style={styles.header}>
-        <strong>KubeAstra</strong>
-        <span style={styles.status}>
-          {!auth
-            ? "Connecting…"
-            : !auth.backendUrl
-              ? "No backend — run “KubeAstra: Sign in”"
-              : ready4Chat
-                ? auth.backendUrl
-                : "Sign-in required"}
-        </span>
-      </header>
+  async function confirmApproval() {
+    if (!approval?.action.command) {
+      setApproval(null);
+      return;
+    }
+    const { action, turnId } = approval;
+    setApproval(null);
+    try {
+      const res = await executeCommand(action.command!, true);
+      const note = res.success ? `✅ Ran \`${action.command}\`` : `⚠️ ${res.error || "command failed"}`;
+      appendToTurn(turnId, `\n\n${note}`);
+    } catch (err) {
+      appendToTurn(turnId, `\n\n⚠️ ${(err as Error).message}`);
+    }
+  }
 
-      {!ready4Chat ? (
+  function appendToTurn(turnId: number, text: string) {
+    setTurns((ts) => ts.map((t) => (t.id === turnId ? { ...t, reply: t.reply + text } : t)));
+  }
+
+  if (!ready4Chat) {
+    return (
+      <div style={styles.root}>
         <div style={styles.notice}>
           {auth && !auth.backendUrl
             ? "Set a backend URL and sign in from the Command Palette (“KubeAstra: Sign in”) to start."
             : "Sign in from the Command Palette (“KubeAstra: Sign in”) to start."}
         </div>
-      ) : (
-        <>
-          <div ref={threadRef} style={styles.thread}>
-            {messages.map((m, i) => (
-              <div key={i} style={m.role === "user" ? styles.userMsg : styles.asstMsg}>
-                {m.content || (streaming && i === messages.length - 1 ? "…" : "")}
-              </div>
-            ))}
-            {streaming && trail.length > 0 && (
-              <div style={styles.trail}>
-                {trail.map((s, i) => (
-                  <div key={i} style={styles.trailStep}>
-                    {s.action ? `▸ ${s.action}` : s.thought ? `• ${s.thought}` : "…"}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+      </div>
+    );
+  }
 
-          <div style={styles.composer}>
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              placeholder="Ask about your cluster…  (⌘/Ctrl+Enter to send)"
-              rows={3}
-              style={styles.textarea}
-            />
-            {streaming ? (
-              <button onClick={stop} style={styles.button}>
-                Stop
-              </button>
-            ) : (
-              <button onClick={send} disabled={!canSend} style={styles.button}>
-                Send
-              </button>
-            )}
-          </div>
-        </>
+  return (
+    <div style={styles.root}>
+      <MissionControlHeader clusterStatus={cluster} busy={streaming} />
+
+      <main ref={mainRef} style={styles.main}>
+        {turns.map((turn, i) => {
+          const last = i === turns.length - 1;
+          const diagnosis = resultToMissionControlDiagnosis(turn.result?.result);
+          const action = approvableAction(turn.result);
+          return (
+            <div key={turn.id} style={styles.turn}>
+              <UserQueryBubble text={turn.user} />
+              <MissionControlToolTrail steps={turn.steps} thinking={streaming && last && !turn.result} />
+              {diagnosis ? (
+                <MissionControlDiagnosis
+                  {...diagnosis}
+                  onAuthorize={action ? () => setApproval({ action, turnId: turn.id }) : undefined}
+                  authorizeLabel={action?.label}
+                />
+              ) : (
+                turn.reply && (
+                  <div style={styles.reply}>
+                    <ReactMarkdown>{turn.reply}</ReactMarkdown>
+                  </div>
+                )
+              )}
+            </div>
+          );
+        })}
+      </main>
+
+      <CommandBar
+        onSend={send}
+        busy={streaming}
+        clusterConnected={ready4Chat}
+        placeholder="Ask about your cluster…"
+      />
+      {streaming && (
+        <button onClick={stop} style={styles.stop}>
+          Stop
+        </button>
+      )}
+
+      {approval && (
+        <MissionControlApprovalOverlay
+          title={approval.action.label}
+          executionCommand={approval.action.command}
+          onClose={() => setApproval(null)}
+          onConfirm={confirmApproval}
+        />
       )}
     </div>
   );
 }
 
+function UserQueryBubble({ text }: { text: string }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+      <div style={styles.userBubble}>
+        <span aria-hidden="true" style={{ color: "var(--cyan, var(--brand))", marginRight: 6 }}>
+          you›
+        </span>
+        {text}
+      </div>
+    </div>
+  );
+}
+
 const styles: Record<string, CSSProperties> = {
-  root: { display: "flex", flexDirection: "column", height: "100%" },
-  header: {
+  root: {
     display: "flex",
-    alignItems: "baseline",
-    justifyContent: "space-between",
-    gap: 8,
-    padding: "8px 12px",
-    borderBottom: "1px solid var(--vscode-panel-border)",
+    flexDirection: "column",
+    height: "100%",
+    background: "var(--bg-0, var(--paper))",
+    color: "var(--ink, var(--fg-0))",
   },
-  status: { fontSize: 11, opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis" },
-  notice: { padding: 16, opacity: 0.8, lineHeight: 1.5 },
-  thread: { flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 },
-  userMsg: {
-    alignSelf: "flex-end",
-    maxWidth: "90%",
-    background: "var(--vscode-textBlockQuote-background)",
-    borderRadius: 8,
-    padding: "6px 10px",
+  main: { flex: 1, overflowY: "auto", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 20 },
+  turn: { display: "flex", flexDirection: "column", gap: 12 },
+  reply: {
+    fontFamily: "var(--sans)",
+    fontSize: 13,
+    lineHeight: 1.6,
+    color: "var(--ink-2, var(--fg-1))",
+  },
+  userBubble: {
+    display: "inline-flex",
+    maxWidth: "80%",
+    padding: "8px 12px",
+    background: "var(--cyan-bg, var(--brand-bg))",
+    border: "1px solid var(--cyan-bd, var(--brand-bd))",
+    borderRadius: 6,
+    fontFamily: "var(--mono)",
+    fontSize: 12,
+    color: "var(--ink, var(--fg-0))",
+    lineHeight: 1.5,
     whiteSpace: "pre-wrap",
   },
-  asstMsg: { alignSelf: "flex-start", maxWidth: "100%", whiteSpace: "pre-wrap", lineHeight: 1.5 },
-  trail: {
-    borderLeft: "2px solid var(--vscode-panel-border)",
-    paddingLeft: 8,
-    marginTop: 4,
-    fontSize: 11,
-    opacity: 0.7,
-  },
-  trailStep: { padding: "1px 0" },
-  composer: { display: "flex", gap: 8, padding: 12, borderTop: "1px solid var(--vscode-panel-border)" },
-  textarea: {
-    flex: 1,
-    resize: "none",
-    background: "var(--vscode-input-background)",
-    color: "var(--vscode-input-foreground)",
-    border: "1px solid var(--vscode-input-border, var(--vscode-panel-border))",
+  notice: { padding: 16, opacity: 0.8, lineHeight: 1.5 },
+  stop: {
+    position: "absolute",
+    bottom: 60,
+    right: 16,
+    background: "var(--vscode-button-secondaryBackground, var(--red-bg))",
+    color: "var(--vscode-button-secondaryForeground, var(--red))",
+    border: "1px solid var(--red-bd)",
     borderRadius: 6,
-    padding: 8,
-    fontFamily: "inherit",
-    fontSize: 13,
-  },
-  button: {
-    alignSelf: "flex-end",
-    background: "var(--vscode-button-background)",
-    color: "var(--vscode-button-foreground)",
-    border: "none",
-    borderRadius: 6,
-    padding: "6px 14px",
+    padding: "4px 12px",
     cursor: "pointer",
   },
 };

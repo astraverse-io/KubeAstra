@@ -6,7 +6,7 @@
  * slice of the api surface the slim chat needs.
  */
 import type { HostToWebview } from "./types";
-import type { ChatStreamEvent, ChatResponse, ChatMessage } from "@lib/api";
+import type { ChatStreamEvent, ChatResponse, ChatMessage, ExecuteResponse } from "@lib/api";
 import { ChatSseParser } from "./sse";
 
 interface VsCodeApi {
@@ -131,4 +131,13 @@ export function sendChatStream(
     return parser.finalResult;
   });
   return { result, abort };
+}
+
+/** Execute a command (the approval-overlay confirm path). `confirm` gates writes. */
+export async function executeCommand(command: string, confirm = false): Promise<ExecuteResponse> {
+  const { body } = await apiRequest<ExecuteResponse>("/api/execute", {
+    method: "POST",
+    body: { command, confirm },
+  });
+  return body;
 }
