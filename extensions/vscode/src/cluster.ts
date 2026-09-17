@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { AuthManager } from "./auth";
+import { authedFetch } from "./http";
 import type { ClusterInfo } from "./protocol";
 
 const POLL_MS = 30_000; // matches the web app's cluster poll cadence
@@ -41,11 +42,8 @@ export class ClusterMonitor {
       this.set({ connected: false });
       return;
     }
-    const cookie = await this.auth.getCookie();
     try {
-      const res = await fetch(`${base}/api/cluster/autodetect`, {
-        headers: cookie ? { cookie } : {},
-      });
+      const res = await authedFetch(base, "/api/cluster/autodetect", await this.auth.getCookie());
       if (!res.ok) {
         this.set({ connected: false });
         return;

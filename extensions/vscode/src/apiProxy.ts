@@ -1,4 +1,5 @@
 import type { AuthManager } from "./auth";
+import { authedFetch } from "./http";
 import type { ApiRequest, HostToWebview } from "./protocol";
 
 type Post = (msg: HostToWebview) => void;
@@ -35,15 +36,13 @@ export class ApiProxy {
     const controller = new AbortController();
     this.inflight.set(req.id, controller);
 
-    const cookie = await this.auth.getCookie();
     const headers: Record<string, string> = {};
-    if (cookie) headers.cookie = cookie;
     if (req.body !== undefined) headers["content-type"] = "application/json";
     if (req.stream) headers.accept = "text/event-stream";
 
     let res: Response;
     try {
-      res = await fetch(`${base}${req.path}`, {
+      res = await authedFetch(base, req.path, await this.auth.getCookie(), {
         method: req.method ?? (req.body !== undefined ? "POST" : "GET"),
         headers,
         body: req.body !== undefined ? JSON.stringify(req.body) : undefined,

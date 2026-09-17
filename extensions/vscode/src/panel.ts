@@ -81,12 +81,13 @@ export class KubeAstraChatViewProvider implements vscode.WebviewViewProvider {
 
   private async broadcastAuthState(): Promise<void> {
     const base = this.auth.backendUrl();
-    const signedIn = await this.auth.isSignedIn();
+    // One probe: signedIn is just "have a backend and it doesn't demand auth".
+    const authRequired = base ? await this.auth.isAuthRequired(base) : false;
     this.post({
       type: "auth-state",
-      signedIn,
+      signedIn: !!base && !authRequired,
       backendUrl: base,
-      authRequired: base ? await this.auth.isAuthRequired(base) : false,
+      authRequired,
     });
   }
 

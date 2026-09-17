@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { authedFetch } from "./http";
 
 const COOKIE_KEY = "kubeastra.cookie";
 
@@ -41,11 +42,8 @@ export class AuthManager {
    * cookie.
    */
   async isAuthRequired(base: string): Promise<boolean> {
-    const cookie = await this.getCookie();
     try {
-      const res = await fetch(`${base}/api/auth/me`, {
-        headers: cookie ? { cookie } : {},
-      });
+      const res = await authedFetch(base, "/api/auth/me", await this.getCookie());
       return res.status === 401;
     } catch {
       // Unreachable backend: treat as auth-required so the user is prompted.
@@ -144,10 +142,7 @@ export class AuthManager {
     const cookie = await this.getCookie();
     if (base && cookie) {
       try {
-        await fetch(`${base}/api/auth/logout`, {
-          method: "POST",
-          headers: { cookie },
-        });
+        await authedFetch(base, "/api/auth/logout", cookie, { method: "POST" });
       } catch {
         // Best-effort; clearing the local secret is what matters.
       }
