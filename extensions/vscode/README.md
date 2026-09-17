@@ -60,15 +60,25 @@ Then press **F5** in VS Code to launch an Extension Development Host.
 Locally, `npm run package` produces `kubeastra-vscode.vsix`. Tag
 `vscode-v<version>` (e.g. `vscode-v0.1.0`) to trigger
 `.github/workflows/vscode-extension.yml`, which packages the `.vsix` and
-publishes to the VS Code Marketplace (`VSCE_PAT`) and OpenVSX (`OVSX_PAT`).
+publishes to the VS Code Marketplace and OpenVSX.
+
+Marketplace auth uses **Microsoft Entra ID via GitHub OIDC**, not an Azure
+DevOps PAT (Azure DevOps retires global PATs on 2026-12-01), so no Marketplace
+token is ever stored. OpenVSX still uses its own token.
 
 **Before the first publish:**
 
-- [ ] Create the `astraverse-io` Azure DevOps publisher + a Marketplace PAT →
-      repo secret `VSCE_PAT`.
+- [ ] Create the `astraverse-io` publisher at
+      https://marketplace.visualstudio.com/manage
+- [ ] Create an Entra app registration with a GitHub federated credential
+      (subject `repo:astraverse-io/KubeAstra:environment:vscode-marketplace`);
+      record its Client ID / Tenant ID → repo secrets `AZURE_CLIENT_ID` /
+      `AZURE_TENANT_ID`.
+- [ ] Add that app's service principal as a **Contributor** member of the
+      Marketplace publisher.
 - [ ] Create the `astraverse-io` open-vsx.org namespace + a token → repo secret
       `OVSX_PAT`.
-- [ ] Add both secrets to the `vscode-marketplace` GitHub environment.
+- [ ] Add the three secrets to the `vscode-marketplace` GitHub environment.
 - [ ] Capture 2–3 screenshots (and ideally a short GIF) of the chat, the
       diagnosis card, and the YAML code lens; add them under `resources/` and
       reference them here — a UI extension's listing needs them.

@@ -4,14 +4,23 @@ name: VS Code Extension
 # branch and on PRs that touch it, and publishes to the VS Code Marketplace and
 # OpenVSX when a vscode-v* tag is pushed (e.g. vscode-v0.1.0).
 #
+# Marketplace publishing uses Microsoft Entra ID via GitHub OIDC, NOT an Azure
+# DevOps PAT — Azure DevOps retires global PATs on 2026-12-01, so we never store
+# a Marketplace token. OpenVSX is unaffected and still uses its own token.
+#
 # One-time setup required before the first publish:
-#   1. Create an Azure DevOps publisher named "astraverse-io" and generate a
-#      Marketplace PAT; store it as the repo secret VSCE_PAT.
-#      https://code.visualstudio.com/api/working-with-extensions/publishing-extension
-#   2. Create an open-vsx.org namespace "astraverse-io" and an access token;
-#      store it as the repo secret OVSX_PAT.
-#   3. Add both secrets to the "vscode-marketplace" environment below.
-# Until those exist the build-test job still runs; only publish is gated.
+#   1. Create the "astraverse-io" publisher at
+#      https://marketplace.visualstudio.com/manage
+#   2. Create a Microsoft Entra app registration; add a GitHub federated
+#      credential (issuer https://token.actions.githubusercontent.com, subject
+#      repo:astraverse-io/KubeAstra:environment:vscode-marketplace). Record its
+#      Client ID and Tenant ID → repo secrets AZURE_CLIENT_ID / AZURE_TENANT_ID.
+#   3. In the Marketplace publisher, add that app's service principal as a
+#      member with the Contributor role (authorizes it to publish).
+#   4. Create an open-vsx.org namespace "astraverse-io" + access token → repo
+#      secret OVSX_PAT.
+#   5. Add the three secrets to the "vscode-marketplace" environment below.
+# Until these exist the build-test job still runs; only publish is gated.
 
 on:
   push:
@@ -63,6 +72,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/vscode-v')
     runs-on: ubuntu-latest
     environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC → Entra ID federation (no stored Marketplace token)
     steps:
       - uses: actions/checkout@v4
 
@@ -78,10 +90,17 @@ jobs:
       - name: Package .vsix
         run: npm run package # vsce package runs the vscode:prepublish build
 
-      - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish --packagePath kubeastra-vscode.vsix --pat "$VSCE_PAT"
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      # Exchange the run-scoped GitHub OIDC token for an Entra ID access token.
+      # No subscription is needed to publish to the Marketplace.
+      - name: Azure login (Entra ID, OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Publish to VS Code Marketplace (Entra ID)
+        run: npx @vscode/vsce publish --packagePath kubeastra-vscode.vsix --azure-credential
 
       - name: Publish to OpenVSX
         run: npx ovsx publish kubeastra-vscode.vsix --pat "$OVSX_PAT"
