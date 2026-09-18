@@ -55,6 +55,13 @@ jobs:
           npm ci
           npm ci --prefix webview
 
+      # The webview build typechecks the Mission Control components in place from
+      # ui/frontend. Point ui/frontend's node_modules at the webview's own copy
+      # (which already carries React and every dep those components use) so they
+      # resolve without installing the whole Next app in CI.
+      - name: Link frontend deps for the reused components
+        run: ln -sfn "$GITHUB_WORKSPACE/extensions/vscode/webview/node_modules" "$GITHUB_WORKSPACE/ui/frontend/node_modules"
+
       - name: Typecheck (host)
         run: npm run typecheck
 
@@ -86,6 +93,10 @@ jobs:
         run: |
           npm ci
           npm ci --prefix webview
+
+      # See build-test: the reused components typecheck against the webview's deps.
+      - name: Link frontend deps for the reused components
+        run: ln -sfn "$GITHUB_WORKSPACE/extensions/vscode/webview/node_modules" "$GITHUB_WORKSPACE/ui/frontend/node_modules"
 
       - name: Package .vsix
         run: npm run package # vsce package runs the vscode:prepublish build
