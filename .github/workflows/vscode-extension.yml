@@ -1,0 +1,125 @@
+name: VS Code Extension
+
+# Builds and tests the KubeAstra VS Code extension on every push to the feature
+# branch and on PRs that touch it, and publishes to the VS Code Marketplace and
+# OpenVSX when a vscode-v* tag is pushed (e.g. vscode-v0.1.0).
+#
+# Marketplace publishing uses Microsoft Entra ID via GitHub OIDC, NOT an Azure
+# DevOps PAT — Azure DevOps retires global PATs on 2026-12-01, so we never store
+# a Marketplace token. OpenVSX is unaffected and still uses its own token.
+#
+# One-time setup required before the first publish:
+#   1. Create the "astraverse-io" publisher at
+#      https://marketplace.visualstudio.com/manage
+#   2. Create a Microsoft Entra app registration; add a GitHub federated
+#      credential (issuer https://token.actions.githubusercontent.com, subject
+#      repo:astraverse-io/KubeAstra:environment:vscode-marketplace). Record its
+#      Client ID and Tenant ID → repo secrets AZURE_CLIENT_ID / AZURE_TENANT_ID.
+#   3. In the Marketplace publisher, add that app's service principal as a
+#      member with the Contributor role (authorizes it to publish).
+#   4. Create an open-vsx.org namespace "astraverse-io" + access token → repo
+#      secret OVSX_PAT.
+#   5. Add the three secrets to the "vscode-marketplace" environment below.
+# Until these exist the build-test job still runs; only publish is gated.
+
+on:
+  push:
+    branches: [feat/vscode]
+    tags: ["vscode-v*"]
+  pull_request:
+    paths:
+      - "extensions/vscode/**"
+      - ".github/workflows/vscode-extension.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: extensions/vscode
+
+jobs:
+  build-test:
+    name: Build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix webview
+
+      # The webview build typechecks the Mission Control components in place from
+      # ui/frontend. Point ui/frontend's node_modules at the webview's own copy
+      # (which already carries React and every dep those components use) so they
+      # resolve without installing the whole Next app in CI.
+      - name: Link frontend deps for the reused components
+        run: ln -sfn "$GITHUB_WORKSPACE/extensions/vscode/webview/node_modules" "$GITHUB_WORKSPACE/ui/frontend/node_modules"
+
+      - name: Typecheck (host)
+        run: npm run typecheck
+
+      - name: Webview unit tests (vitest)
+        run: npm test --prefix webview
+
+      # `npm test`'s pretest builds the host bundle, the webview, and compiles
+      # the test — so no separate build step is needed here.
+      - name: Extension activation test (@vscode/test-electron)
+        run: xvfb-run -a npm test
+
+  publish:
+    name: Publish to Marketplace + OpenVSX
+    needs: build-test
+    if: startsWith(github.ref, 'refs/tags/vscode-v')
+    runs-on: ubuntu-latest
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC → Entra ID federation (no stored Marketplace token)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix webview
+
+      # See build-test: the reused components typecheck against the webview's deps.
+      - name: Link frontend deps for the reused components
+        run: ln -sfn "$GITHUB_WORKSPACE/extensions/vscode/webview/node_modules" "$GITHUB_WORKSPACE/ui/frontend/node_modules"
+
+      - name: Package .vsix
+        run: npm run package # vsce package runs the vscode:prepublish build
+
+      # Exchange the run-scoped GitHub OIDC token for an Entra ID access token.
+      # No subscription is needed to publish to the Marketplace.
+      - name: Azure login (Entra ID, OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Publish to VS Code Marketplace (Entra ID)
+        run: npx @vscode/vsce publish --packagePath kubeastra-vscode.vsix --azure-credential
+
+      - name: Publish to OpenVSX
+        run: npx ovsx publish kubeastra-vscode.vsix --pat "$OVSX_PAT"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubeastra-vscode-vsix
+          path: extensions/vscode/kubeastra-vscode.vsix
