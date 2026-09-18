@@ -25,7 +25,10 @@ name: VS Code Extension
 on:
   push:
     branches: [feat/vscode]
-    tags: ["vscode-v*"]
+    # vscode-v* publishes a release; register-identity runs the one-off Azure
+    # DevOps profile registration (workflow_dispatch needs the workflow on the
+    # default branch, which it isn't yet, so a tag is how we trigger it now).
+    tags: ["vscode-v*", "register-identity"]
   pull_request:
     paths:
       - "extensions/vscode/**"
@@ -42,6 +45,8 @@ defaults:
 jobs:
   build-test:
     name: Build + test
+    # The register-identity tag is not a code change; skip the build for it.
+    if: github.ref != 'refs/tags/register-identity'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -123,3 +128,37 @@ jobs:
         with:
           name: kubeastra-vscode-vsix
           path: extensions/vscode/kubeastra-vscode.vsix
+
+  # One-off manual job: run this ONCE from the Actions tab (Run workflow) before
+  # the first publish. The VS Code Marketplace is Azure-DevOps-backed and a brand
+  # new Entra service principal has no Azure DevOps profile yet, so it can't be
+  # added to the publisher ("not found"). Logging in as the identity and hitting
+  # the profiles/me endpoint creates that profile. Afterwards, add the app as a
+  # Contributor member of the astraverse-io publisher. Safe to re-run.
+  register-devops-identity:
+    name: Register publisher identity in Azure DevOps (one-off)
+    # Trigger by pushing the register-identity tag (works on feat/vscode today);
+    # workflow_dispatch also works once this workflow lands on the default branch.
+    if: github.ref == 'refs/tags/register-identity' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # Checkout so the workflow-level default working-directory resolves.
+      - uses: actions/checkout@v4
+
+      - name: Azure login (Entra ID, OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      # 499b84ac-...975798 is Azure DevOps's well-known resource app ID.
+      - name: Create the Azure DevOps profile for this identity
+        run: |
+          az rest \
+            --url https://app.vssps.visualstudio.com/_apis/profile/profiles/me \
+            --resource 499b84ac-1321-427f-aa17-267ca6975798
