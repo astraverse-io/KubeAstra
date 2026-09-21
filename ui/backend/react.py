@@ -588,12 +588,12 @@ def _react_loop_inner(
     resume_iteration = None
     resume_step_id = None
 
-    if resume_run_id and approved_token:
+    if resume_run_id:
         try:
             prior_steps = db.get_agent_steps(resume_run_id)
             if prior_steps:
                 last_step_db = prior_steps[-1]
-                if last_step_db["status"] == "pending_approval":
+                if last_step_db["status"] == "pending_approval" and approved_token:
                     resume_action = last_step_db["action"]
                     params_val = last_step_db["params_json"]
                     if isinstance(params_val, str):
@@ -612,6 +612,22 @@ def _react_loop_inner(
                         
                     prior_steps = prior_steps[:-1]
                     
+                elif last_step_db["status"] == "pending_folder_grant":
+                    # The human granted the folder; the grant now exists, so retry
+                    # the same tool call. The grant IS the durable approval — unlike
+                    # a destructive op, no confirmation token is threaded.
+                    resume_action = last_step_db["action"]
+                    params_val = last_step_db["params_json"]
+                    if isinstance(params_val, str):
+                        resume_params = json.loads(params_val) if params_val else {}
+                    elif isinstance(params_val, dict):
+                        resume_params = params_val
+                    else:
+                        resume_params = {}
+                    resume_iteration = last_step_db["iteration"]
+                    resume_step_id = last_step_db["id"]
+                    prior_steps = prior_steps[:-1]
+
                 for s in prior_steps:
                     action_name = s["action"]
                     params_dict = s["params_json"]
@@ -1153,6 +1169,62 @@ def _react_loop_inner(
                             time.sleep(1.5)
                             continue
                     break
+
+                # Local-folder tool needs a grant the user hasn't given yet:
+                # suspend the run, prompt the UI (access_required), and resume by
+                # retrying the same call once the grant exists. The grant IS the
+                # durable approval, so — unlike a destructive op — no token is
+                # threaded. Fires for any tool (folder tools are read, not mutating),
+                # so this check sits outside the is_mutating branch below.
+                _na = None
+                if isinstance(result, dict):
+                    _na = result.get("needs_access") or (result.get("payload") or {}).get("needs_access")
+                if _na:
+                    run_id = run_recorder.run_id if run_recorder else str(uuid.uuid4())
+                    db.suspend_agent_run(run_id)
+                    obs_id = str(uuid.uuid4())
+                    _preview = f"needs {_na.get('mode')} access: {_na.get('path')}"
+                    step_id = _rec_step(
+                        run_recorder,
+                        iteration=iteration,
+                        action=action,
+                        status="pending_folder_grant",
+                        step_kind="tool",
+                        thought=thought,
+                        params=params,
+                        observation_preview=_preview,
+                        observation_ref=obs_id,
+                        duration_ms=round((time.perf_counter() - step_start) * 1000),
+                    )
+                    _emit({
+                        "type": "access_required",
+                        "run_id": run_id,
+                        "step_id": step_id,
+                        "action": action,
+                        "params": params,
+                        "path": _na.get("path"),
+                        "mode": _na.get("mode"),
+                        "reason": _na.get("reason", ""),
+                    })
+                    steps.append(ReActStep(
+                        iteration=iteration,
+                        thought=thought,
+                        action=action,
+                        action_params=params,
+                        observation=_preview,
+                        duration_ms=(time.perf_counter() - step_start) * 1000,
+                        envelope=envelope_obj,
+                    ))
+                    res_obj = ReActResult(
+                        answer=f"[Access to {_na.get('path')} required — awaiting folder grant]",
+                        tool_used=action,
+                        result=result,
+                        steps=steps,
+                        total_iterations=iteration,
+                        total_duration_ms=(time.perf_counter() - loop_start) * 1000,
+                        error="PendingFolderGrant",
+                    )
+                    return _record_metrics_and_return(res_obj, run_recorder)
 
                 # If it was a dry_run and returned a confirmation token, suspend the run!
                 if is_mutating and not is_confirming:
