@@ -24,6 +24,7 @@ import HeaderLiveCounters from "../../components/HeaderLiveCounters";
 import { MissionControlLeftRail } from "../../components/MissionControlLeftRail";
 import { MissionControlDiagnosis } from "../../components/MissionControlDiagnosis";
 import { MissionControlApprovalOverlay } from "../../components/MissionControlApprovalOverlay";
+import { FolderAccessPrompt, type FolderAccessRequest } from "../../components/FolderAccessPrompt";
 import { MissionControlToolTrail } from "../../components/MissionControlToolTrail";
 import { CommandBar } from "../../components/CommandBar";
 import { DesktopBridge } from "../../components/DesktopBridge";
@@ -31,6 +32,7 @@ import { resultToMissionControlDiagnosis } from "../../lib/missionControlAdapter
 import {
   sendChat,
   sendChatStream,
+  resumeFolderGrant,
   sendFeedback,
   getAuthStatus,
   login,
@@ -638,6 +640,8 @@ export default function ChatPage() {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<{ messageId: string; action: SuggestedAction } | null>(null);
+  // Desktop local-folder consent: set when the agent emits `access_required`.
+  const [pendingFolderAccess, setPendingFolderAccess] = useState<FolderAccessRequest | null>(null);
   // Read the theme synchronously from the DOM on first render. The inline
   // script in layout.tsx sets data-theme from localStorage before hydration,
   // so this returns the correct value on the client. On the server document
@@ -1110,6 +1114,16 @@ export default function ChatPage() {
             m.id === thinkingMsg.id ? { ...m, loading: false, text: streamedText } : m,
           ),
         );
+      } else if (evt.type === "access_required") {
+        // The agent needs a local folder it hasn't been granted. Surface the
+        // consent prompt; the suspended run resumes after the grant (below).
+        setPendingFolderAccess({
+          path: evt.path ?? "",
+          mode: (evt.mode as "read" | "write") ?? "read",
+          reason: evt.reason,
+          runId: evt.run_id,
+          stepId: evt.step_id,
+        });
       }
       // start / answer_end / done / error are handled below or ignored.
     };
@@ -1339,6 +1353,27 @@ export default function ChatPage() {
     setPendingApproval(null);
     await runApprovedAction(messageId, action, true);
   }, [pendingApproval, runApprovedAction]);
+
+  // After the user grants the folder, resume the suspended run (no token — the
+  // grant is the approval) and append its final answer as a new message.
+  const handleFolderGranted = useCallback(async () => {
+    const req = pendingFolderAccess;
+    setPendingFolderAccess(null);
+    if (!req?.runId || req.stepId == null) return;
+    const msgId = uid();
+    setMessages((prev) => [...prev, { id: msgId, role: "assistant", text: "…", loading: true }]);
+    try {
+      const res = await resumeFolderGrant(req.runId, req.stepId, () => {});
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, loading: false, text: res.reply ?? "" } : m)),
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, loading: false, text: `Resume failed: ${msg}` } : m)),
+      );
+    }
+  }, [pendingFolderAccess]);
 
   const handleNewChat = useCallback(async () => {
     resetSharedViewState();
@@ -1668,6 +1703,14 @@ export default function ChatPage() {
         />
       )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        {pendingFolderAccess && (
+          <FolderAccessPrompt
+            request={pendingFolderAccess}
+            onDeny={() => setPendingFolderAccess(null)}
+            onGrant={() => { void handleFolderGranted(); }}
+          />
+        )}
+
         {isOwnedSession && pendingApproval && (
           isMissionControl ? (
             <MissionControlApprovalOverlay
