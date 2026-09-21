@@ -214,6 +214,39 @@ def is_forbidden_root(root) -> bool:
     return bool(set(Path(root).resolve().parts) & DENY_DIR_SEGMENTS)
 
 
+class InvalidGrantRoot(Exception):
+    """A folder POST /grant refuses: outside the grant base, missing, or sensitive."""
+
+
+def grant_base() -> Path:
+    """The trusted tree a grant root must sit within — the user's home directory by
+    default. Confining a user-supplied path to a non-tainted base is what makes the
+    grant endpoint safe against a spoofed/hostile path (and is the canonical
+    path-injection remediation). Injectable so tests can point it at a tmp dir; a
+    future setting can widen it if users keep repos outside home."""
+    return Path.home().resolve()
+
+
+def validate_grant_root(raw: str) -> Path:
+    """Resolve a user-picked folder and confine it to ``grant_base()``. Returns the
+    validated, resolved directory or raises ``InvalidGrantRoot``.
+
+    The containment check (``commonpath`` against the trusted base) both hardens the
+    endpoint and sanitizes the user path before it reaches any filesystem use."""
+    if not raw or "\x00" in raw:
+        raise InvalidGrantRoot("invalid root path")
+    base = os.path.realpath(str(grant_base()))
+    target = os.path.realpath(os.path.expanduser(raw))
+    if target != base and os.path.commonpath([base, target]) != base:
+        raise InvalidGrantRoot("folder must be inside your home directory")
+    resolved = Path(target)
+    if not resolved.is_dir():
+        raise InvalidGrantRoot("root is not an existing directory")
+    if is_forbidden_root(resolved):
+        raise InvalidGrantRoot("refusing to grant a sensitive system folder")
+    return resolved
+
+
 def add_grant(root, mode: str) -> dict:
     """Persist a grant for ``root`` (stored symlink-resolved). Idempotent: if a
     grant of a satisfying mode already contains ``root``, return that grant instead

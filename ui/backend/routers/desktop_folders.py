@@ -15,8 +15,6 @@ stays side-effect-free so it can be unit-tested without a database.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -41,14 +39,13 @@ def list_grants() -> dict:
 def create_grant(body: GrantRequest) -> dict:
     if body.mode not in ("read", "write"):
         raise HTTPException(status_code=400, detail="mode must be 'read' or 'write'")
+    # The user-picked path is resolved and confined to the grant base (home tree)
+    # inside the boundary module; anything outside it, missing, or sensitive is
+    # rejected before it reaches the filesystem or the grant store.
     try:
-        resolved = Path(body.root).expanduser().resolve()
-    except (OSError, RuntimeError):
-        raise HTTPException(status_code=400, detail="invalid root path")
-    if not resolved.is_dir():
-        raise HTTPException(status_code=400, detail="root is not an existing directory")
-    if folders.is_forbidden_root(resolved):
-        raise HTTPException(status_code=400, detail="refusing to grant a sensitive system folder")
+        resolved = folders.validate_grant_root(body.root)
+    except folders.InvalidGrantRoot as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     grant = folders.add_grant(str(resolved), body.mode)
     audit.emit(

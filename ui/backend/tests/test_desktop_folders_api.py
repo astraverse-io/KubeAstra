@@ -34,7 +34,11 @@ def audit_events(monkeypatch):
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     import desktop_paths
+    import desktop_folders as folders
     monkeypatch.setattr(desktop_paths, "config_path", lambda: tmp_path / "desktop_config.json")
+    # Grants are confined to grant_base() (home in prod); point it at the tmp tree
+    # so the test's folders are grantable.
+    monkeypatch.setattr(folders, "grant_base", lambda: tmp_path.resolve())
     app = FastAPI()
     app.include_router(folders_router.router, prefix="/api")
     return TestClient(app)
@@ -81,6 +85,18 @@ def test_sensitive_root_refused(client, tmp_path, audit_events):
     r = client.post("/api/desktop/folders/grant", json={"root": str(ssh), "mode": "read"})
     assert r.status_code == 400
     assert "sensitive" in r.json()["detail"].lower()
+
+
+def test_root_outside_base_refused(client, tmp_path, audit_events):
+    # grant_base is the tmp tree; a real directory outside it must be refused.
+    outside = tmp_path.parent / f"outside-{tmp_path.name}"
+    outside.mkdir()
+    try:
+        r = client.post("/api/desktop/folders/grant", json={"root": str(outside), "mode": "read"})
+        assert r.status_code == 400
+        assert "home" in r.json()["detail"].lower()
+    finally:
+        outside.rmdir()
 
 
 def test_revoke_missing_is_false(client, audit_events):
