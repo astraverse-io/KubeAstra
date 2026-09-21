@@ -136,3 +136,21 @@ class TestSearchFiles:
     def test_ungranted_raises(self, tmp_path, tmp_config, audit_spy):
         with pytest.raises(df.NeedsAccess):
             df.search_files_contained(str(tmp_path / "nope"), "x")
+
+    def test_does_not_follow_symlink_escaping_grant(self, tmp_path, tmp_config, audit_spy):
+        # A file-symlink inside a granted folder that points OUTSIDE must not be
+        # read by search — same containment guarantee read_file_contained gives.
+        root = (tmp_path / "infra").resolve()
+        root.mkdir()
+        outside = (tmp_path / "outside").resolve()
+        outside.mkdir()
+        (outside / "leak.yaml").write_text("outside-only-content-zzz\n")
+        (root / "link.yaml").symlink_to(outside / "leak.yaml")
+        (root / "real.yaml").write_text("kind: Service\n")
+        df.add_grant(str(root), "read")
+
+        # the symlinked-out content must not surface
+        assert df.search_files_contained(str(root), "outside-only-content-zzz") == []
+        # a real in-grant file is still searchable
+        assert any(m["file"] == "real.yaml"
+                   for m in df.search_files_contained(str(root), "Service"))

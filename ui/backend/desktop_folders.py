@@ -377,6 +377,8 @@ def search_files_contained(root, pattern: str) -> list[dict]:
             break
         if not p.is_file() or is_denied(p, groot):
             continue
+        if not _contained(p.resolve(), groot):
+            continue                            # symlink escaping the grant — never read it
         try:
             within_caps(p)                      # skip oversized/binary quietly
         except AccessDenied:
@@ -423,6 +425,8 @@ def _local_repo_files(root: Path):
             continue
         if is_denied(p, root):
             continue
+        if not _contained(p.resolve(), root):
+            continue                            # symlink escaping the grant — never index it
         try:
             out.append(RepoFile(path=str(p.relative_to(root)), text=p.read_text(errors="replace")))
         except OSError:

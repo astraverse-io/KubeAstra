@@ -109,6 +109,21 @@ class TestFindSourceForWorkload:
         assert out["success"] is True
         assert out["candidates"] == []  # only prod defines it
 
+    def test_ignores_symlink_escaping_grant(self, tmp_path, tmp_config, audit_spy):
+        # A yaml-named symlink inside the grant pointing OUTSIDE must not be
+        # indexed — the bridge must honour the same containment as read_file.
+        root = (tmp_path / "infra").resolve()
+        root.mkdir()
+        outside = (tmp_path / "outside").resolve()
+        outside.mkdir()
+        (outside / "sneaky.yaml").write_text("kind: Deployment\nmetadata:\n  name: exfil\n")
+        (root / "sneaky.yaml").symlink_to(outside / "sneaky.yaml")
+        df.add_grant(str(root), "read")
+
+        out = df._handle_find_source_for_workload({"kind": "Deployment", "name": "exfil"})
+        assert out["success"] is True
+        assert out["candidates"] == []
+
 
 class TestDesktopToolRegistration:
     def test_registers_four_desktop_tools(self):
