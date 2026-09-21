@@ -206,6 +206,14 @@ def grant_for(path, mode: str = "read") -> Optional[dict]:
     return None
 
 
+def is_forbidden_root(root) -> bool:
+    """A root the server refuses to grant even if the user picked it — a sensitive
+    system directory (``.ssh``/``.aws``/``.kube``/``.git`` anywhere in the path).
+    The native picker makes the user choose the root, but this is a server-side
+    backstop against a bad or spoofed path reaching POST /grant."""
+    return bool(set(Path(root).resolve().parts) & DENY_DIR_SEGMENTS)
+
+
 def add_grant(root, mode: str) -> dict:
     """Persist a grant for ``root`` (stored symlink-resolved). Idempotent: if a
     grant of a satisfying mode already contains ``root``, return that grant instead

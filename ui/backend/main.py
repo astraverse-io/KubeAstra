@@ -368,6 +368,16 @@ if DESKTOP_MODE:
 
     app.include_router(desktop_router.router, prefix="/api", tags=["Desktop"])
 
+    # Desktop-agent local-folder access (read). Endpoints + tools exist only in
+    # desktop mode: the tools need a human to consent to a folder and there is no
+    # local FS to reach in server mode. register_desktop_tools() adds the four
+    # read tools to the shared registry so the ReAct loop can see them.
+    from routers import desktop_folders as desktop_folders_router
+    import desktop_folders as _desktop_folders
+
+    app.include_router(desktop_folders_router.router, prefix="/api", tags=["Desktop"])
+    _desktop_folders.register_desktop_tools()
+
     def _resolve_frontend_dist() -> Path:
         override = os.environ.get("KUBEASTRA_FRONTEND_DIST")
         if override:
