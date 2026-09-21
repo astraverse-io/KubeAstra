@@ -16,7 +16,7 @@ for p in (BACKEND_DIR, MCP_DIR):
         sys.path.insert(0, str(p))
 
 import db  # noqa: E402
-from react import react_loop  # noqa: E402
+from react import react_loop, ReActResult  # noqa: E402
 from agent_run_recorder import AgentRunRecorder  # noqa: E402
 
 
@@ -128,3 +128,58 @@ def test_folder_grant_resume_reruns_tool_without_token(monkeypatch, tmp_path):
     assert dispatched[0] == ("read_file", {"path": "/infra/api.yaml", "reason": "inspect api-gateway"})
     assert "api-gateway" in result.answer
     assert db.get_agent_run(run_id)["status"] == "complete"
+
+
+def test_approve_endpoint_resumes_folder_grant_without_token(monkeypatch, tmp_path):
+    """The existing approve endpoint drives the folder-grant resume too — with an
+    empty token, since the grant is the approval."""
+    _init_temp_db(monkeypatch, tmp_path)
+    uid, sid = _seed()
+    db.save_message(sid, "user", "read the manifest")
+
+    run_id = db.create_agent_run(session_id=sid, user_id=uid, route="react")
+    db.suspend_agent_run(run_id)
+    step_id = db.record_agent_step(
+        run_id=run_id, iteration=1, action="read_file",
+        status="pending_folder_grant", params={"path": "/infra/api.yaml"},
+    )
+
+    called = []
+
+    def mock_react_loop(**kwargs):
+        called.append(kwargs)
+        return ReActResult(answer="resumed after grant", tool_used="read_file",
+                           result={"success": True}, steps=[], total_iterations=1,
+                           total_duration_ms=10.0)
+
+    monkeypatch.setattr("react.react_loop", mock_react_loop)
+
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    # no token in the body — allowed for a pending_folder_grant step
+    resp = client.post(f"/api/agent-runs/{run_id}/steps/{step_id}/approve", json={})
+    assert resp.status_code == 200
+    assert "resumed after grant" in resp.text
+    assert len(called) == 1
+    assert called[0]["resume_run_id"] == run_id
+    assert called[0]["approved_token"] is None
+
+
+def test_approve_endpoint_still_requires_token_for_destructive(monkeypatch, tmp_path):
+    """A pending_approval (destructive) step still requires a token."""
+    _init_temp_db(monkeypatch, tmp_path)
+    uid, sid = _seed()
+    run_id = db.create_agent_run(session_id=sid, user_id=uid, route="react")
+    db.suspend_agent_run(run_id)
+    step_id = db.record_agent_step(
+        run_id=run_id, iteration=1, action="delete_pod",
+        status="pending_approval", params={"namespace": "default", "pod_name": "nginx"},
+    )
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+    resp = client.post(f"/api/agent-runs/{run_id}/steps/{step_id}/approve", json={})
+    assert resp.status_code == 400
+    assert "Token is required" in resp.text

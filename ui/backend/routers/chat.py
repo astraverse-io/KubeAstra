@@ -2978,7 +2978,9 @@ def execute_command(req: ExecuteRequest, request: Request):
 # ── Phase 3: Approval Endpoints ──────────────────────────────────────────────
 
 class ApproveRequest(BaseModel):
-    token: str
+    # Empty for a pending_folder_grant resume — the folder grant is the approval,
+    # so no confirmation token is threaded. Required for destructive-op approvals.
+    token: str = ""
     ssh: Optional[SSHCredentials] = None
 
 
@@ -2996,9 +2998,10 @@ async def approve_step(run_id: str, step_id: int, req: ApproveRequest, request: 
     from fastapi import HTTPException
     from opentelemetry.context import get_current
     current_context = get_current()
-    
-    if not req.token:
-        raise HTTPException(status_code=400, detail="Token is required")
+
+    # Token requirement is checked after the step is loaded: a destructive-op
+    # approval needs a confirmation token, but a pending_folder_grant resume is
+    # token-less (the grant itself is the approval).
 
     run_data = db.get_agent_run(run_id)
     if not run_data:
@@ -3033,6 +3036,11 @@ async def approve_step(run_id: str, step_id: int, req: ApproveRequest, request: 
     if not step:
         raise HTTPException(status_code=404, detail="Step not found")
     pending_action = step.get("action", "")
+
+    # A destructive-op approval requires the confirmation token; a folder-grant
+    # resume does not (the grant is the durable approval).
+    if not req.token and step.get("status") != "pending_folder_grant":
+        raise HTTPException(status_code=400, detail="Token is required")
 
     if auth_utils.auth_enabled() and not is_owner and is_admin:
         logger.warning(
@@ -3146,7 +3154,7 @@ async def approve_step(run_id: str, step_id: int, req: ApproveRequest, request: 
                 run_recorder=recorder,
                 tool_scope=tool_scope_set,
                 resume_run_id=run_id,
-                approved_token=req.token,
+                approved_token=(req.token or None),
                 approver_user_id=user_id,
             )
 
