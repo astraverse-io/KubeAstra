@@ -1226,6 +1226,28 @@ def _react_loop_inner(
                     )
                     return _record_metrics_and_return(res_obj, run_recorder)
 
+                # propose_file_edit parked a validated edit for the human. Surface
+                # it to the UI as an approval card and keep going: unlike a folder
+                # grant the agent doesn't need the outcome to finish its answer,
+                # and the write happens only via POST /api/desktop/files/apply.
+                # The diff here is the sanitized one; the card fetches the real
+                # diff from the local endpoint before the user approves.
+                _pw = None
+                if isinstance(result, dict):
+                    _pw = result.get("pending_write") or (result.get("payload") or {}).get("pending_write")
+                if isinstance(_pw, dict) and _pw.get("token"):
+                    _emit({
+                        "type": "write_proposed",
+                        "token": _pw.get("token"),
+                        "path": _pw.get("path"),
+                        "root": _pw.get("root"),
+                        "created": bool(_pw.get("created")),
+                        "reason": _pw.get("reason", ""),
+                        "diff": _pw.get("diff", ""),
+                        "validation": _pw.get("validation") or {},
+                        "expires_at": _pw.get("expires_at"),
+                    })
+
                 # If it was a dry_run and returned a confirmation token, suspend the run!
                 if is_mutating and not is_confirming:
                     if isinstance(result, dict) and result.get("confirmation_token"):
