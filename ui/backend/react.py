@@ -3457,6 +3457,22 @@ def _truncate_observation(result: dict, tool: str) -> str:
     Every return path passes through ``sanitize_observation`` so secrets cannot
     leak into the next ReAct prompt or the persisted observation preview.
     """
+    # Desktop local-folder tools: the file text IS the evidence the model needs
+    # (and, for edits, the exact anchor it must copy). The generic envelope below
+    # would cut it to ~2 KB of JSON-escaped text, so render these from the raw
+    # payload instead — plain, bounded, and still sanitized by the renderer.
+    # These tools are registered only in desktop mode.
+    if isinstance(result, dict):
+        try:
+            import desktop_folders
+            if tool in desktop_folders.LOCAL_FOLDER_TOOLS:
+                raw = result.get("payload") if isinstance(result.get("payload"), dict) else result
+                rendered = desktop_folders.render_observation(tool, raw)
+                if rendered is not None:
+                    return rendered
+        except ImportError:
+            pass
+
     # `payload` carries the full original tool result for the UI to render.
     # It must never reach the model: the envelope exists precisely to put a
     # summary in front of the LLM instead of the raw dump, and serialising the

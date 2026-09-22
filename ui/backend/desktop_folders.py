@@ -495,6 +495,75 @@ def find_source_for_workload(kind: str, name: str, namespace: Optional[str] = No
     return candidates
 
 
+# ── what the model sees ─────────────────────────────────────────────────────────
+#
+# Through the react surface a tool result is wrapped in a generic envelope whose
+# JSON excerpt is cut to 2 KB, then to MAX_OBSERVATION_CHARS. For file tools that
+# hid most of a normal manifest from the model, JSON-escaped. react.py routes
+# these tools here instead: plain text (copyable edit anchors), a bounded budget,
+# and still scrubbed by sanitize_observation.
+
+LOCAL_FOLDER_TOOLS = frozenset({
+    "read_file", "list_folder", "search_files", "find_source_for_workload",
+})
+READ_WINDOW_CHARS = 16_000          # file text per read_file call
+_OBS_CAP_READ = READ_WINDOW_CHARS + 1_000
+_OBS_CAP = 8_000
+
+
+def render_observation(tool: str, result) -> Optional[str]:
+    """Model-facing text for a local-folder tool result, or None to fall back to
+    the generic formatting."""
+    if not isinstance(result, dict):
+        return None
+    from observation_sanitizer import sanitize_observation
+
+    if "needs_access" in result:
+        na = result["needs_access"] or {}
+        text = (f"needs {na.get('mode')} access to {na.get('path')} — "
+                f"the user is being asked to grant it.")
+        return sanitize_observation(text, _OBS_CAP)
+
+    if result.get("success") is False:
+        text = f"{tool} failed: {result.get('error')}"
+        if result.get("path"):
+            text += f" ({result['path']})"
+        return sanitize_observation(text, _OBS_CAP)
+
+    if tool == "read_file" and "content" in result:
+        start, end, total = result.get("start_line", 1), result.get("end_line"), result.get("total_lines")
+        head = f"{result.get('path')} (lines {start}-{end} of {total})"
+        text = head + "\n" + result["content"]
+        if isinstance(end, int) and isinstance(total, int) and end < total:
+            text += (f"\n[{total - end} more lines — call read_file with "
+                     f"start_line={end + 1} to continue]")
+        return sanitize_observation(text, _OBS_CAP_READ)
+
+    if tool == "list_folder" and "entries" in result:
+        where = "/".join(p for p in (result.get("root"), result.get("path")) if p) + "/"
+        lines = [where] + [
+            f"  {e['name']}{'/' if e.get('type') == 'dir' else ''}" for e in result["entries"]
+        ]
+        return sanitize_observation("\n".join(lines), _OBS_CAP)
+
+    if tool == "search_files" and "matches" in result:
+        ms = result["matches"]
+        lines = [f"{len(ms)} match(es)"] + [f"{m['file']}:{m['line']}: {m['text']}" for m in ms]
+        return sanitize_observation("\n".join(lines), _OBS_CAP)
+
+    if tool == "find_source_for_workload" and "candidates" in result:
+        cs = result["candidates"]
+        if not cs:
+            return "no local manifest defines that resource in any granted folder"
+        lines = [f"{len(cs)} candidate(s)"] + [
+            f"{c['root']}/{c['file']} (document #{c['doc_index']}, namespace {c.get('namespace') or '-'})"
+            for c in cs
+        ]
+        return sanitize_observation("\n".join(lines), _OBS_CAP)
+
+    return None
+
+
 # ── tools (desktop-only ToolDefs) ────────────────────────────────────────────────
 #
 # Handlers are (params, ctx) -> dict, matching the registry contract. They turn
@@ -505,6 +574,11 @@ def find_source_for_workload(kind: str, name: str, namespace: Optional[str] = No
 class ReadFileInput(BaseModel):
     path: str = Field(..., description="Absolute path to a file inside a granted folder.")
     reason: Optional[str] = Field(None, description="Why the file is needed (shown to the user on a consent prompt).")
+    start_line: Optional[int] = Field(
+        None, ge=1,
+        description="1-based line to start from. Large files come back in windows; the result "
+                    "says which lines were returned and where to continue.",
+    )
 
 
 class ListFolderInput(BaseModel):
@@ -526,10 +600,34 @@ def _needs(exc: "NeedsAccess", fallback_reason: str) -> dict:
     return {"needs_access": {"path": exc.path, "mode": exc.mode, "reason": exc.reason or fallback_reason}}
 
 
+def _line_window(text: str, start_line: int, budget: int) -> tuple[str, int, int, int]:
+    """Lines [start_line, end_line] of ``text`` that fit ``budget`` chars, cut at a
+    line boundary (a single over-long line is cut to the budget). Returns
+    (content, start_line, end_line, total_lines); end < start means past the end."""
+    lines = text.splitlines(keepends=True)
+    total = len(lines)
+    start = max(1, start_line)
+    out: list[str] = []
+    size = 0
+    end = start - 1
+    for i in range(start - 1, total):
+        line = lines[i]
+        if out and size + len(line) > budget:
+            break
+        if not out and len(line) > budget:
+            line = line[:budget]
+        out.append(line)
+        size += len(line)
+        end = i + 1
+    return "".join(out), start, end, total
+
+
 def _handle_read_file(params: dict, ctx=None) -> dict:
     try:
-        content = read_file_contained(params["path"])
-        return {"success": True, "content": content}
+        text = read_file_contained(params["path"])
+        content, start, end, total = _line_window(text, params.get("start_line") or 1, READ_WINDOW_CHARS)
+        return {"success": True, "path": params["path"], "content": content,
+                "start_line": start, "end_line": end, "total_lines": total}
     except NeedsAccess as na:
         na.reason = na.reason or params.get("reason", "")
         return _needs(na, "read a file to continue the investigation")
