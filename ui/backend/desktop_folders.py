@@ -142,7 +142,10 @@ def is_denied(resolved: Path, granted_root: Path) -> bool:
     root_len = len(Path(granted_root).parts)
     rel_parts = resolved.parts[root_len:]
     for part in rel_parts:
-        if part in DENY_DIR_SEGMENTS:
+        # Case-insensitive: on macOS's default FS `.AWS` IS `.aws`, and
+        # resolve() keeps the typed case. Stricter-than-needed on a
+        # case-sensitive FS, which is harmless.
+        if part.lower() in DENY_DIR_SEGMENTS:
             return True
     name = resolved.name.lower()
     return any(fnmatch.fnmatch(name, pat) for pat in DENY_GLOBS)
@@ -211,7 +214,7 @@ def is_forbidden_root(root) -> bool:
     system directory (``.ssh``/``.aws``/``.kube``/``.git`` anywhere in the path).
     The native picker makes the user choose the root, but this is a server-side
     backstop against a bad or spoofed path reaching POST /grant."""
-    return bool(set(Path(root).resolve().parts) & DENY_DIR_SEGMENTS)
+    return bool({p.lower() for p in Path(root).resolve().parts} & DENY_DIR_SEGMENTS)
 
 
 class InvalidGrantRoot(Exception):

@@ -348,7 +348,7 @@ def _copy_tree(src_root: Path, dest: Path) -> tuple[bool, str]:
     deny-listed files and heavy dirs excluded, capped. (False, reason) if too big."""
     files = total = 0
     for dirpath, dirnames, filenames in os.walk(src_root, followlinks=False):
-        dirnames[:] = [n for n in dirnames if n not in _PRUNE_DIRS]
+        dirnames[:] = [n for n in dirnames if n.lower() not in _PRUNE_DIRS]
         here = Path(dirpath)
         rel = here.parts[len(src_root.parts):]
         (dest.joinpath(*rel)).mkdir(parents=True, exist_ok=True)

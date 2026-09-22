@@ -142,6 +142,14 @@ class TestResolveTarget:
             dw.resolve_write_target(str(target), g)
         assert ei.value.reason == "deny_list"
 
+    @pytest.mark.parametrize("seg", [".KUBE", ".Git", ".SSH", ".aws"])
+    def test_case_variant_sensitive_dir_refused(self, write_repo, seg):
+        (write_repo / seg).mkdir()
+        g = df.grant_for(str(write_repo), "write")
+        with pytest.raises(dw.WriteRefused) as ei:
+            dw.resolve_write_target(str(write_repo / seg / "extra.yaml"), g)
+        assert ei.value.reason == "deny_list"
+
     def test_git_hook_refused(self, write_repo):
         hooks = write_repo / ".git" / "hooks"
         hooks.mkdir(parents=True)

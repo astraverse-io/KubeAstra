@@ -135,6 +135,35 @@ class TestDenyList:
         p.write_text("x")
         assert df.is_denied(p.resolve(), root) is True
 
+    @pytest.mark.parametrize("rel", [".GIT/config", ".Ssh/known_hosts", ".AWS/credentials", ".KUBE/config"])
+    def test_denies_case_variants_of_sensitive_dirs(self, tmp_path, rel):
+        # macOS's default FS is case-insensitive and resolve() keeps the typed
+        # case, so `.AWS/credentials` IS `.aws/credentials`. The segment check
+        # must ignore case (harmless extra strictness on a case-sensitive FS).
+        root = (tmp_path / "grant").resolve()
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x")
+        assert df.is_denied(p.resolve(), root) is True
+
+    @pytest.mark.parametrize("seg", [".SSH", ".Aws", ".KUBE", ".Git"])
+    def test_forbidden_root_ignores_case(self, tmp_path, seg):
+        assert df.is_forbidden_root(tmp_path / seg) is True
+
+    @pytest.mark.skipif(not df._fs_case_insensitive(), reason="needs a case-insensitive filesystem")
+    def test_case_variant_read_is_refused_end_to_end(self, tmp_path, monkeypatch):
+        import audit
+        import desktop_paths
+        monkeypatch.setattr(desktop_paths, "config_path", lambda: tmp_path / "cfg.json")
+        monkeypatch.setattr(audit, "emit", lambda *a, **k: "evt")
+        home = (tmp_path / "home").resolve()
+        (home / ".aws").mkdir(parents=True)
+        (home / ".aws" / "credentials").write_text("[default]\nnote = marker\n")
+        df.add_grant(str(home), "read")
+        with pytest.raises(df.AccessDenied) as ei:
+            df.read_file_contained(str(home / ".AWS" / "credentials"))
+        assert ei.value.reason == "deny_list"
+
     @pytest.mark.parametrize("name", ["api.yaml", "values.yaml", "kustomization.yaml", "README.md"])
     def test_allows_normal_manifests(self, tmp_path, name):
         root = (tmp_path / "grant").resolve()
