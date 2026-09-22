@@ -299,11 +299,20 @@ class TestAtomicWrite:
         assert [p.name for p in tmp_path.iterdir()] == ["a.yaml"]
 
     def test_preserves_mode(self, tmp_path):
+        # 0o700 differs from the temp file's 0o600, so this proves the edited
+        # file keeps its own mode (exec bit included) rather than the temp's.
         f = tmp_path / "a.yaml"
         f.write_text("a: 1\n")
-        os.chmod(f, 0o640)
+        os.chmod(f, 0o700)
         dw.atomic_write(f, "a: 2\n", expected_sha=dw.sha256_text("a: 1\n"))
-        assert stat.S_IMODE(f.stat().st_mode) == 0o640
+        assert stat.S_IMODE(f.stat().st_mode) == 0o700
+
+    def test_new_file_is_owner_only(self, tmp_path):
+        # Least privilege: an agent-created file isn't readable by other local
+        # users. git records only the exec bit, so the repo is unaffected.
+        f = tmp_path / "new.yaml"
+        dw.atomic_write(f, "n: 1\n", expected_sha=None)
+        assert stat.S_IMODE(f.stat().st_mode) == 0o600
 
     def test_file_changed_since_preview_refused(self, tmp_path):
         f = tmp_path / "a.yaml"

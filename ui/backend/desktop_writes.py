@@ -44,7 +44,6 @@ import desktop_folders as df
 
 PENDING_WRITE_TTL_SECONDS = 900          # 15 min, matching GitOps previews
 WRITABLE_SUFFIXES = (".yaml", ".yml")
-_NEW_FILE_MODE = 0o644
 
 # Markers the read path can leave in what the model saw (redaction_kv,
 # redaction_entropy, truncation). Their presence in an edit means the model is
@@ -263,7 +262,9 @@ def atomic_write(target: Path, text: str, *, expected_sha: Optional[str]) -> Non
     if expected_sha is None:
         if os.path.lexists(target):
             raise WriteRefused("file_exists", str(target))
-        mode = _NEW_FILE_MODE
+        # A new file keeps mkstemp's owner-only 0o600: least privilege for an
+        # agent-created file, and git records only the exec bit anyway.
+        mode = None
     else:
         if not target.is_file():
             raise WriteRefused("file_changed", "file no longer exists")
@@ -279,7 +280,8 @@ def atomic_write(target: Path, text: str, *, expected_sha: Optional[str]) -> Non
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.chmod(tmp, mode)
+        if mode is not None:
+            os.chmod(tmp, mode)          # an edited file keeps its own mode
         if expected_sha is None:
             # No-clobber create: link() fails if the name appeared meanwhile.
             try:
