@@ -209,12 +209,15 @@ def grant_for(path, mode: str = "read") -> Optional[dict]:
     return None
 
 
-def is_forbidden_root(root) -> bool:
+def is_forbidden_root(resolved_root) -> bool:
     """A root the server refuses to grant even if the user picked it — a sensitive
     system directory (``.ssh``/``.aws``/``.kube``/``.git`` anywhere in the path).
     The native picker makes the user choose the root, but this is a server-side
-    backstop against a bad or spoofed path reaching POST /grant."""
-    return bool({p.lower() for p in Path(root).resolve().parts} & DENY_DIR_SEGMENTS)
+    backstop against a bad or spoofed path reaching POST /grant.
+
+    A pure check on path components: pass an ALREADY-RESOLVED path (as
+    validate_grant_root does), so a symlink to ``.ssh`` has become ``.ssh``."""
+    return bool({p.lower() for p in Path(resolved_root).parts} & DENY_DIR_SEGMENTS)
 
 
 class InvalidGrantRoot(Exception):

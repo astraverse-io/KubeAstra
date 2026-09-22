@@ -150,6 +150,16 @@ class TestDenyList:
     def test_forbidden_root_ignores_case(self, tmp_path, seg):
         assert df.is_forbidden_root(tmp_path / seg) is True
 
+    def test_grant_refuses_symlink_to_sensitive_dir(self, tmp_path, monkeypatch):
+        # is_forbidden_root checks components only; the symlink is resolved by
+        # validate_grant_root before it asks. An innocently named link to .ssh
+        # must still be refused.
+        monkeypatch.setattr(df, "grant_base", lambda: tmp_path.resolve())
+        (tmp_path / ".ssh").mkdir()
+        (tmp_path / "innocent").symlink_to(tmp_path / ".ssh", target_is_directory=True)
+        with pytest.raises(df.InvalidGrantRoot):
+            df.validate_grant_root(str(tmp_path / "innocent"))
+
     @pytest.mark.skipif(not df._fs_case_insensitive(), reason="needs a case-insensitive filesystem")
     def test_case_variant_read_is_refused_end_to_end(self, tmp_path, monkeypatch):
         import audit
