@@ -27,6 +27,7 @@ See internal_docs/features/DESKTOP_AGENT_PHASE2_SPEC.md §1–2 (PR 1).
 from __future__ import annotations
 
 import difflib
+import fnmatch
 import hashlib
 import os
 import re
@@ -53,6 +54,78 @@ _REDACTION_MARKERS = (
     "<REDACTED:",
     "… [truncated,",
 )
+
+
+# ── Kubernetes-shaped files only ──────────────────────────────────────────────
+#
+# ".yaml" is not "Kubernetes": CI workflows, pre-commit configs, compose files
+# and tool configs are YAML too, and each runs code. The agent may only write
+# manifests (every document has a Kubernetes-style apiVersion and a kind),
+# kustomization files, and Helm values files / chart templates.
+
+_K8S_BUILTIN_GROUPS = frozenset({"apps", "batch", "autoscaling", "policy", "extensions"})
+_K8S_VERSION_RE = re.compile(r"^v\d+((alpha|beta)\d+)?$")
+
+# Backstop for tools that tolerate extra keys (pre-commit only warns about a
+# stray apiVersion/kind): paths whose YAML is executed by CI or local tooling
+# are never agent-writable, whatever their content. Case-insensitive.
+WRITE_DENY_DIR_SEGMENTS = frozenset({
+    ".github", ".gitlab", ".circleci", ".buildkite", ".gitea", ".forgejo",
+    ".husky", ".devcontainer", ".vscode", ".config",
+})
+WRITE_DENY_GLOBS = (
+    ".pre-commit-config.y*ml", ".pre-commit-hooks.y*ml", ".gitlab-ci.y*ml",
+    "azure-pipelines*.y*ml", "bitbucket-pipelines.y*ml", ".travis.y*ml", ".drone.y*ml",
+    "appveyor.y*ml", "buildspec*.y*ml", "cloudbuild*.y*ml", "taskfile*.y*ml",
+    "docker-compose*.y*ml", "compose*.y*ml", "skaffold*.y*ml", ".goreleaser*.y*ml",
+    "mkdocs*.y*ml", "devfile*.y*ml",
+)
+
+
+def _k8s_api_version(v) -> bool:
+    """`v1`, a built-in group (`apps/v1`), or a dotted API group (`cert-manager.io/v1`,
+    CRDs, kustomize) with a Kubernetes-style version. Rejects tool configs such as
+    `skaffold/v4beta6` and Helm's Chart.yaml (`v2`)."""
+    if not isinstance(v, str):
+        return False
+    if v == "v1":
+        return True
+    group, sep, version = v.partition("/")
+    if not sep or not _K8S_VERSION_RE.match(version):
+        return False
+    return group in _K8S_BUILTIN_GROUPS or "." in group
+
+
+def k8s_file_kind(target: Path, root: Path, text: str) -> Optional[str]:
+    """``helm_template`` | ``helm_values`` | ``kustomization`` | ``manifest``, or
+    None when the file isn't a Kubernetes file the agent may write. ``target``
+    and ``root`` are resolved."""
+    from desktop_validators import _KUSTOMIZATION_NAMES, _chart_dir, _is_under, _parse
+    target, root = Path(target), Path(root)
+    chart = _chart_dir(target, root)
+    if chart is not None:
+        if _is_under(target, chart / "templates"):
+            return "helm_template"
+        if target.parent == chart and target.name.lower().startswith("values"):
+            return "helm_values"
+    if target.name in _KUSTOMIZATION_NAMES:
+        return "kustomization"
+    ok, docs, _ = _parse(text)
+    if not ok or not docs:
+        return None
+    for d in docs:
+        if not (isinstance(d, dict) and _k8s_api_version(d.get("apiVersion"))
+                and isinstance(d.get("kind"), str) and d["kind"]):
+            return None
+    return "manifest"
+
+
+def _write_denied(resolved: Path, root: Path) -> bool:
+    rel_parts = resolved.parts[len(Path(root).parts):]
+    if any(p.lower() in WRITE_DENY_DIR_SEGMENTS for p in rel_parts):
+        return True
+    name = resolved.name.lower()
+    return any(fnmatch.fnmatch(name, g) for g in WRITE_DENY_GLOBS)
 
 
 class WriteRefused(Exception):
@@ -108,7 +181,7 @@ def resolve_write_target(path, grant: dict) -> tuple[Path, bool]:
             raise WriteRefused("parent_missing", str(parent))
         resolved = df.contain_path(parent, root) / lexical.name
 
-    if df.is_denied(resolved, root):
+    if df.is_denied(resolved, root) or _write_denied(resolved, root):
         raise WriteRefused("deny_list", str(path))
     if resolved.suffix.lower() not in WRITABLE_SUFFIXES:
         raise WriteRefused("unsupported_type", resolved.suffix or resolved.name)
@@ -370,7 +443,7 @@ _HIDDEN_REASON = "touches_redacted_line"
 # don't count — retrying them can't succeed.
 _COUNTED_REASONS = frozenset({
     "edit_not_found", "edit_ambiguous", "no_change", "redaction_marker",
-    "use_edits", "file_missing",
+    "use_edits", "file_missing", "not_k8s_content",
 })
 
 _HINTS = {
@@ -387,6 +460,12 @@ _HINTS = {
     "file_missing": "The file doesn't exist: create it with `content`, or check the path "
                     "(find_source_for_workload / list_folder).",
     "unsupported_type": "Only .yaml / .yml files can be edited.",
+    "not_k8s": "Only Kubernetes files can be edited: manifests (Kubernetes apiVersion + kind), "
+               "kustomization files, and Helm values files / chart templates. Suggest this change "
+               "to the user instead.",
+    "not_k8s_content": "The result must be a Kubernetes file: every document needs a Kubernetes "
+                       "apiVersion (v1, apps/v1, or a dotted API group like cert-manager.io/v1) "
+                       "and a kind.",
     "deny_list": "That file is protected and can't be edited by the agent.",
     "symlink_target": "Symlinks can't be edited; edit the file they point to.",
     "parent_missing": "The folder for the new file doesn't exist.",
@@ -406,7 +485,8 @@ class FileEdit(BaseModel):
 
 
 class ProposeFileEditInput(BaseModel):
-    path: str = Field(..., description="Absolute path of a .yaml/.yml file inside a granted folder.")
+    path: str = Field(..., description="Absolute path of a Kubernetes .yaml/.yml file (manifest, "
+                                       "kustomization, or Helm values/template) inside a granted folder.")
     reason: str = Field(..., description="Why this change fixes the problem (shown to the user).")
     edits: list[FileEdit] = Field(default_factory=list,
                                   description="Exact search/replace edits for an existing file, applied in order.")
@@ -507,6 +587,8 @@ def _handle_propose_file_edit(params: dict, ctx=None) -> dict:
             if content is not None and not edits:
                 raise WriteRefused("use_edits")
             before: Optional[str] = read_text_exact(target)
+            if k8s_file_kind(target, root, before) is None:
+                raise WriteRefused("not_k8s")
             # Found / ambiguous / unchanged are decided against the redacted
             # view the model read, so no answer depends on bytes it never saw
             # (else a prefix of a secret would answer differently from a wrong
@@ -529,6 +611,11 @@ def _handle_propose_file_edit(params: dict, ctx=None) -> dict:
             before, after = None, content
         if len(after.encode("utf-8")) > df.MAX_FILE_BYTES:
             raise WriteRefused("too_large")
+        # The result must still be a Kubernetes file. If it doesn't even parse,
+        # let the validators say so (yaml_parse) — that's the clearer feedback.
+        from desktop_validators import _parse
+        if _parse(after)[0] and k8s_file_kind(target, root, after) is None:
+            raise WriteRefused("not_k8s_content")
     except WriteRefused as wr:
         return _refusal(wr.reason, wr.detail, rel, key)
 
@@ -615,8 +702,10 @@ def propose_file_edit_tooldef():
     import tool_registry as tr
     return tr.ToolDef(
         name="propose_file_edit", handler=_handle_propose_file_edit, schema=ProposeFileEditInput,
-        description=("Propose a change to a .yaml/.yml file in a folder the user granted write access "
-                     "to. Does NOT write: the change is validated (YAML, schema, policy, kustomize/helm "
+        description=("Propose a change to a Kubernetes file — a manifest (Kubernetes apiVersion + kind), "
+                     "a kustomization, or a Helm values file / chart template — in a folder the user "
+                     "granted write access to. Other YAML (CI workflows, tool configs) can't be edited. "
+                     "Does NOT write: the change is validated (YAML, schema, policy, kustomize/helm "
                      "render) and shown to the user as a diff to approve. For an existing file pass "
                      "`edits` — exact search/replace pairs where `old` is copied verbatim from read_file "
                      "and matches once; pass `content` only to create a new file. Never use redacted "

@@ -172,7 +172,8 @@ class TestApplyRechecksTheBoundary:
         assert _types(events)[-1] == audit.EventType.FOLDER_WRITE_DENIED
 
     def test_new_file_that_now_exists_is_409(self, client, repo):
-        token = _propose(repo / "extra.yaml", content="a: 1\n")
+        token = _propose(repo / "extra.yaml",
+                         content="apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n")
         (repo / "extra.yaml").write_text("someone: else\n")
         assert client.post("/api/desktop/files/apply", json={"token": token}).status_code == 409
         assert (repo / "extra.yaml").read_text() == "someone: else\n"
