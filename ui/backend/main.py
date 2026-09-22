@@ -378,6 +378,13 @@ if DESKTOP_MODE:
     app.include_router(desktop_folders_router.router, prefix="/api", tags=["Desktop"])
     _desktop_folders.register_desktop_tools()
 
+    # Desktop-agent writes (Phase 2): review / apply / discard a pending write
+    # that propose_file_edit parked. Apply is the only path that writes a user's
+    # file, and only after the human approves the exact diff.
+    from routers import desktop_files as desktop_files_router
+
+    app.include_router(desktop_files_router.router, prefix="/api", tags=["Desktop"])
+
     def _resolve_frontend_dist() -> Path:
         override = os.environ.get("KUBEASTRA_FRONTEND_DIST")
         if override:
