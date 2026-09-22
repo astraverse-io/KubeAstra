@@ -69,6 +69,15 @@ class TestReadFile:
             df.read_file_contained(str(tmp_path / "not-granted" / "x.yaml"))
         assert ei.value.mode == "read"
 
+    def test_needs_access_reports_normalized_path(self, granted_repo, audit_spy):
+        # `infra/../.ssh/id_rsa` must be shown to the user as where it really
+        # lands, not spelled to look like it's inside the granted folder.
+        sneaky = str(granted_repo / ".." / ".ssh" / "id_rsa")
+        with pytest.raises(df.NeedsAccess) as ei:
+            df.read_file_contained(sneaky)
+        assert ".." not in ei.value.path
+        assert ei.value.path.endswith("/.ssh/id_rsa")
+
     def test_deny_listed_file_refused(self, granted_repo, audit_spy):
         with pytest.raises(df.AccessDenied) as ei:
             df.read_file_contained(str(granted_repo / "id_rsa"))

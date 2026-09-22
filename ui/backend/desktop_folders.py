@@ -351,7 +351,9 @@ def _require_read_grant(path) -> dict:
         return grant
     if _lexically_in_any_grant(path, "read"):
         raise AccessDenied(str(path), "outside_grant")
-    raise NeedsAccess(str(path), "read")
+    # Normalized, so the consent prompt shows the real destination rather than
+    # a misleading spelling like `~/infra/../.ssh/...`.
+    raise NeedsAccess(os.path.abspath(path), "read")
 
 
 def read_file_contained(path) -> str:
