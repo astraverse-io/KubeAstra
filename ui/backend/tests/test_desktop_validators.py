@@ -271,6 +271,18 @@ class TestKustomizeRemoteGuard:
         assert k.status == "fail" and "outside" in k.detail
         assert calls == []
 
+    @pytest.mark.parametrize("key", ["generators", "transformers", "validators"])
+    @pytest.mark.parametrize("ref", ["../../../../../../../../etc", "https://attacker.example/x"])
+    def test_plugin_config_keys_are_guarded_too(self, kustomize_repo, monkeypatch, key, ref):
+        # These keys can also name directories (kustomization roots) or URLs.
+        calls = []
+        monkeypatch.setattr(dv, "_run", lambda *a, **k: calls.append(a) or (0, "", ""))
+        t = kustomize_repo / "overlays/prod/kustomization.yaml"
+        evil = OVERLAY_KUST + f"{key}:\n  - {ref}\n"
+        res = dv.validate_edit(t, OVERLAY_KUST, evil, root=kustomize_repo)
+        assert _by_name(res)["kustomize_build"].status == "fail"
+        assert calls == []
+
     @pytest.mark.parametrize("ref", [
         "github.com/acme/infra//base?ref=v1", "git@github.com:acme/infra.git", "ssh://git.example/x",
     ])

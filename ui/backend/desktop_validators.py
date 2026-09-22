@@ -50,7 +50,11 @@ RC_TIMEOUT = 124
 RC_NOT_FOUND = 127
 
 _KUSTOMIZATION_NAMES = ("kustomization.yaml", "kustomization.yml", "Kustomization")
-_KUST_REF_KEYS = ("resources", "bases", "components", "crds")
+# Keys whose list entries kustomize resolves as paths or URLs. generators /
+# transformers / validators can name whole kustomization directories (or
+# remote URLs), just like resources.
+_KUST_REF_KEYS = ("resources", "bases", "components", "crds",
+                  "generators", "transformers", "validators")
 _PRUNE_DIRS = frozenset({
     ".git", "node_modules", ".terraform", "vendor", "__pycache__", ".venv", "venv",
     ".ssh", ".aws", ".kube",
