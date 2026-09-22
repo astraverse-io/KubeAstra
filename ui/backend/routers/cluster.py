@@ -375,9 +375,19 @@ def upload_kubeconfig(body: KubeconfigBody, request: Request):
     }
 
 
+# kubectl context names are DNS/label-ish (GKE `gke_..`, EKS `arn:aws:eks:..`,
+# `kind-kind`, …). Confine to a safe allowlist whose first character is
+# alphanumeric — so a value can never be read as a kubectl flag (argument
+# injection) when it is passed as `--context <name>` to the subprocess in
+# _connectivity_check.
+_CONTEXT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:/-]{0,252}$")
+
+
 @router.post("/cluster/connect/context")
 def connect_context(body: ContextSelectBody, request: Request):
     auth.require_owned_session(request, body.session_id)
+    if not _CONTEXT_NAME_RE.match(body.context_name or ""):
+        return {"connected": False, "error": "Invalid context name."}
     if body.mode == "autodetect" and not body.kubeconfig_path:
         kubeconfig_path = _get_local_kubeconfig_path()
     else:
