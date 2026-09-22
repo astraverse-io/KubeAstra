@@ -142,6 +142,18 @@ class TestSearchFiles:
             assert "ghp_0123456789abcdef0123456789abcdef0123" not in m["text"]
         assert all("id_rsa" not in m["file"] for m in matches)
 
+    @pytest.mark.parametrize("probe", ["ghp_0123", "hunter2", "hunter2prime"])
+    def test_search_cannot_probe_redacted_values(self, granted_repo, audit_spy, probe):
+        # Matching on raw bytes would make "does it match?" an oracle that
+        # reveals a redacted secret one prefix at a time, even though the
+        # snippet is scrubbed. Search runs over the redacted view instead.
+        assert df.search_files_contained(str(granted_repo), probe) == []
+
+    def test_search_line_numbers_match_the_read_view(self, granted_repo, audit_spy):
+        m = df.search_files_contained(str(granted_repo), "annotations")
+        view = df.read_file_contained(str(granted_repo / "app.yaml")).splitlines()
+        assert view[m[0]["line"] - 1].strip().startswith("annotations")
+
     def test_ungranted_raises(self, tmp_path, tmp_config, audit_spy):
         with pytest.raises(df.NeedsAccess):
             df.search_files_contained(str(tmp_path / "nope"), "x")

@@ -423,10 +423,15 @@ def search_files_contained(root, pattern: str) -> list[dict]:
             continue
         scanned += 1
         try:
-            text = p.read_text(errors="replace")
+            raw = p.read_text(errors="replace")
         except OSError:
             continue
-        for i, line in enumerate(text.splitlines(), start=1):
+        # Match against the redacted view read_file shows, never the raw bytes:
+        # otherwise "does this pattern match?" is an oracle that reveals a
+        # redacted secret one prefix at a time, even with scrubbed snippets.
+        # Line numbers then agree with read_file's numbering too.
+        view = sanitize_observation(raw, MAX_FILE_BYTES)
+        for i, line in enumerate(view.splitlines(), start=1):
             if needle in line.lower():
                 matches.append({
                     "file": _rel(p, groot),

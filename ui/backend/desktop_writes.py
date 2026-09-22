@@ -355,17 +355,22 @@ def _touches_hidden_lines(before: str, after: str) -> bool:
 # sanitized views; the real diff is served only to the local approval UI.
 
 MAX_INVALID_ATTEMPTS = 3
+# Edits that hit a line the model only saw redacted. Each such answer can leak a
+# bit about hidden content, so they have their own cap that a successful
+# proposal does NOT reset (otherwise valid edits could launder unlimited probes).
+MAX_HIDDEN_PROBES = 3
 _ATTEMPT_KEYS_CAP = 1000
 _invalid_attempts: dict[tuple, int] = {}
 _attempts_lock = threading.Lock()
 _DIFF_CAP = 20_000
 
+_HIDDEN_REASON = "touches_redacted_line"
 # Refusals that are the model's mistake and count toward the self-correct cap.
 # Security refusals (deny_list, symlink_target, outside_grant …) are final and
 # don't count — retrying them can't succeed.
 _COUNTED_REASONS = frozenset({
     "edit_not_found", "edit_ambiguous", "no_change", "redaction_marker",
-    "use_edits", "file_missing", "touches_redacted_line",
+    "use_edits", "file_missing",
 })
 
 _HINTS = {
@@ -390,8 +395,8 @@ _HINTS = {
     "too_large": "The resulting file would be too large.",
 }
 
-_STOP_MESSAGE = ("Stop proposing edits to this file: {n} attempts failed. Report the failures to "
-                 "the user and suggest the fix in your answer instead of retrying.")
+_STOP_MESSAGE = ("Stop proposing edits to this file: too many attempts failed. Report the problem "
+                 "to the user and suggest the fix in your answer instead of retrying.")
 
 
 class FileEdit(BaseModel):
@@ -433,22 +438,41 @@ def _scrub(text: Optional[str], cap: int = 400) -> Optional[str]:
     return sanitize_observation(text, cap)
 
 
-def _failed_attempt(key: tuple, result: dict, failures: list[dict]) -> dict:
-    """Count a failed proposal; past the cap, turn it into a stop."""
-    n = _bump_attempts(key)
-    if n > MAX_INVALID_ATTEMPTS:
-        return {"success": False, "stop": True, "failures": failures,
-                "path": result.get("path"),
-                "message": _STOP_MESSAGE.format(n=MAX_INVALID_ATTEMPTS)}
-    result["attempts_remaining"] = MAX_INVALID_ATTEMPTS - n
+def _hidden_key(key: tuple) -> tuple:
+    return ("hidden",) + key
+
+
+def _is_stopped(key: tuple) -> bool:
+    with _attempts_lock:
+        return (_invalid_attempts.get(key, 0) > MAX_INVALID_ATTEMPTS
+                or _invalid_attempts.get(_hidden_key(key), 0) > MAX_HIDDEN_PROBES)
+
+
+def _stop(path, failures: list[dict]) -> dict:
+    return {"success": False, "stop": True, "failures": failures, "path": path,
+            "message": _STOP_MESSAGE}
+
+
+def _failed_attempt(key: tuple, result: dict, failures: list[dict], *, hidden: bool = False) -> dict:
+    """Count a failed proposal; past the cap, turn it into a stop. A stop is
+    terminal for this (session, file): later proposals aren't evaluated."""
+    cap = MAX_HIDDEN_PROBES if hidden else MAX_INVALID_ATTEMPTS
+    n = _bump_attempts(_hidden_key(key) if hidden else key)
+    if n > cap:
+        return _stop(result.get("path"), failures)
+    result["attempts_remaining"] = cap - n
     return result
 
 
 def _refusal(reason: str, detail: str, path, key: Optional[tuple]) -> dict:
     out = {"success": False, "error": f"refused: {reason}", "path": str(path),
            "detail": _scrub(detail), "hint": _HINTS.get(reason, "")}
+    # A refusal-driven stop carries no reason: past the cap the answer must not
+    # keep describing what the last probe hit.
+    if key is not None and reason == _HIDDEN_REASON:
+        return _failed_attempt(key, out, [], hidden=True)
     if key is not None and reason in _COUNTED_REASONS:
-        return _failed_attempt(key, out, [{"name": reason, "status": "fail", "detail": out["hint"]}])
+        return _failed_attempt(key, out, [])
     return out
 
 
@@ -473,15 +497,28 @@ def _handle_propose_file_edit(params: dict, ctx=None) -> dict:
     root = Path(grant["root"])
     rel = df._rel(target, root)
     key = _attempt_key(session_id, target)
+    if _is_stopped(key):
+        return _stop(rel, [])            # terminal: evaluate nothing, reveal nothing
+
+    from observation_sanitizer import sanitize_observation
 
     try:
         if exists:
             if content is not None and not edits:
                 raise WriteRefused("use_edits")
             before: Optional[str] = read_text_exact(target)
-            after = apply_edits(before, edits)
+            # Found / ambiguous / unchanged are decided against the redacted
+            # view the model read, so no answer depends on bytes it never saw
+            # (else a prefix of a secret would answer differently from a wrong
+            # guess). Anywhere the real bytes then disagree with the view, the
+            # edit is touching hidden content: one uniform answer for all of it.
+            apply_edits(sanitize_observation(before, df.MAX_FILE_BYTES), edits)
+            try:
+                after = apply_edits(before, edits)
+            except WriteRefused:
+                raise WriteRefused(_HIDDEN_REASON)
             if _touches_hidden_lines(before, after):
-                raise WriteRefused("touches_redacted_line")
+                raise WriteRefused(_HIDDEN_REASON)
         else:
             if edits:
                 raise WriteRefused("file_missing")
@@ -497,7 +534,6 @@ def _handle_propose_file_edit(params: dict, ctx=None) -> dict:
 
     from desktop_validators import validate_edit
     from gitops.edit import unified_diff
-    from observation_sanitizer import sanitize_observation
 
     validation = validate_edit(target, before, after, root=root).to_dict()
     validation["unvalidated_reason"] = _scrub(validation["unvalidated_reason"])

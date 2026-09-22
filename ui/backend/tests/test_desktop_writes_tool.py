@@ -144,19 +144,19 @@ class TestContract:
         assert dw.pending_write_store._items == {}
 
     def test_private_key_block_lines_are_off_limits(self, write_repo):
-        # read_file redacts a private-key PEM block whole, so every line in it —
-        # including an insertion inside it — is off limits.
+        # read_file redacts a private-key PEM block whole, so the model can't
+        # anchor inside it: to the model the text isn't there at all.
         pem = ("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: tls\ndata:\n  key: |\n"
                "    -----BEGIN RSA PRIVATE KEY-----\n    MIIEowIBAAKCAQEAabc\n"
                "    -----END RSA PRIVATE KEY-----\n  other: x\n")
         (write_repo / "prod" / "tls.yaml").write_text(pem)
         out = propose(write_repo / "prod" / "tls.yaml",
                       edits=[{"old": "MIIEowIBAAKCAQEAabc", "new": "MIIEowIBAAKCAQEAxyz"}])
-        assert out["error"] == "refused: touches_redacted_line"
+        assert out["error"] == "refused: edit_not_found"
         inserted = propose(write_repo / "prod" / "tls.yaml",
                            edits=[{"old": "    MIIEowIBAAKCAQEAabc\n",
                                    "new": "    MIIEowIBAAKCAQEAabc\n    extra\n"}])
-        assert inserted["error"] == "refused: touches_redacted_line"
+        assert inserted["error"] == "refused: edit_not_found"
         # Lines outside the block are still editable.
         ok = propose(write_repo / "prod" / "tls.yaml", edits=[{"old": "other: x", "new": "other: y"}])
         assert "pending_write" in ok
@@ -204,6 +204,57 @@ class TestRefusals:
         for _ in range(5):
             out = propose(write_repo / ".env", content="A=1\n")
         assert "stop" not in out
+
+
+class TestNoSecretOracle:
+    """Every answer must depend only on the redacted view the model read, or a
+    compromised model could learn a secret from which error it gets back."""
+
+    SECRET = "ghp_0123456789abcdef0123456789abcdef0123"
+
+    def test_a_prefix_of_the_secret_looks_like_any_wrong_guess(self, write_repo):
+        target = write_repo / "prod" / "api.yaml"
+        right = propose(target, edits=[{"old": "deploy-token: ghp_01", "new": "x"}], session="a")
+        wrong = propose(target, edits=[{"old": "deploy-token: zzzzzz", "new": "x"}], session="b")
+        for k in ("error", "hint", "attempts_remaining"):
+            assert right[k] == wrong[k]
+        assert right["error"] == "refused: edit_not_found"
+
+    def test_anchor_that_also_occurs_inside_a_secret_is_not_reported_ambiguous(self, write_repo):
+        # "0123456789abcdef" is visible once (note:) and also hidden inside the
+        # token. Answering "ambiguous" would reveal it's part of the secret.
+        target = write_repo / "prod" / "api.yaml"
+        text = target.read_text().replace("spec:\n", "  labels: {note: 0123456789abcdef}\nspec:\n", 1)
+        target.write_text(text)
+        out = propose(target, edits=[{"old": "0123456789abcdef", "new": "fedcba9876543210"}])
+        assert out["error"] == "refused: touches_redacted_line"
+        assert self.SECRET not in str(out)
+
+    def test_hidden_line_probes_are_capped_and_valid_edits_do_not_reset_it(self, write_repo):
+        target = write_repo / "prod" / "api.yaml"
+        probe = [{"old": "deploy-token: ", "new": "deploy-token: x"}]
+        outs = []
+        for _ in range(3):
+            outs.append(propose(target, edits=probe))
+            assert "pending_write" in propose(target, edits=REPLICAS)   # a valid edit in between
+        assert all(o["error"] == "refused: touches_redacted_line" for o in outs)
+        assert propose(target, edits=probe)["stop"] is True
+
+    def test_once_stopped_nothing_is_evaluated(self, write_repo):
+        target = write_repo / "prod" / "api.yaml"
+        for _ in range(4):
+            propose(target, edits=PRIVILEGED)
+        after_stop = propose(target, edits=REPLICAS)         # would be valid
+        assert after_stop["stop"] is True
+        assert "pending_write" not in after_stop
+
+    def test_stop_carries_no_reason(self, write_repo):
+        target = write_repo / "prod" / "api.yaml"
+        for _ in range(3):
+            propose(target, edits=[{"old": "deploy-token: ", "new": "deploy-token: x"}])
+        stop = propose(target, edits=[{"old": "deploy-token: ", "new": "deploy-token: y"}])
+        assert stop["stop"] is True and stop["failures"] == []
+        assert "touches_redacted_line" not in str(stop)
 
 
 class TestSelfCorrectCap:
