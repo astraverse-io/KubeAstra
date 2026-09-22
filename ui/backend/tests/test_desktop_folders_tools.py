@@ -126,14 +126,19 @@ class TestFindSourceForWorkload:
 
 
 class TestDesktopToolRegistration:
-    def test_registers_four_desktop_tools(self):
+    def test_registers_desktop_tools(self):
         mcp_dir = BACKEND_DIR.parent.parent / "mcp"
         if str(mcp_dir) not in sys.path:
             sys.path.insert(0, str(mcp_dir))
         import tool_registry as tr
 
-        names = ("read_file", "list_folder", "search_files", "find_source_for_workload")
-        saved = {n: tr.TOOLS.get(n) for n in names}
+        # propose_file_edit (Phase 2) never writes itself — the human-approved
+        # apply endpoint does — so like the read tools it is not a write_op.
+        names = ("read_file", "list_folder", "search_files", "find_source_for_workload",
+                 "propose_file_edit")
+        # Snapshot the whole registry: server-mode assertions elsewhere (the
+        # documented tool count) must not see desktop tools leak out of here.
+        saved = dict(tr.TOOLS)
         try:
             df.register_desktop_tools()
             for n in names:
@@ -141,9 +146,7 @@ class TestDesktopToolRegistration:
                 assert tr.TOOLS[n].surfaces == frozenset({"react", "chat"})
                 assert tr.TOOLS[n].write_op is False
                 assert tr.resolve_tool(n) is not None
+            assert set(tr.TOOLS) - set(saved) <= set(names)
         finally:
-            for n, tool in saved.items():
-                if tool is None:
-                    tr.TOOLS.pop(n, None)
-                else:
-                    tr.TOOLS[n] = tool
+            tr.TOOLS.clear()
+            tr.TOOLS.update(saved)

@@ -504,7 +504,7 @@ def find_source_for_workload(kind: str, name: str, namespace: Optional[str] = No
 # and still scrubbed by sanitize_observation.
 
 LOCAL_FOLDER_TOOLS = frozenset({
-    "read_file", "list_folder", "search_files", "find_source_for_workload",
+    "read_file", "list_folder", "search_files", "find_source_for_workload", "propose_file_edit",
 })
 READ_WINDOW_CHARS = 16_000          # file text per read_file call
 _OBS_CAP_READ = READ_WINDOW_CHARS + 1_000
@@ -523,6 +523,12 @@ def render_observation(tool: str, result) -> Optional[str]:
         text = (f"needs {na.get('mode')} access to {na.get('path')} — "
                 f"the user is being asked to grant it.")
         return sanitize_observation(text, _OBS_CAP)
+
+    if tool == "propose_file_edit":
+        import desktop_writes
+        text = desktop_writes.render_propose_observation(result)
+        # Bigger budget: the diff is what the model must reason about.
+        return None if text is None else sanitize_observation(text, _OBS_CAP_READ)
 
     if result.get("success") is False:
         text = f"{tool} failed: {result.get('error')}"
@@ -694,5 +700,9 @@ def register_desktop_tools() -> None:
             category="local_folder", surfaces=surfaces,
         ),
     ]
+    # Phase 2: the one write-direction tool. It never writes — it parks a
+    # validated, human-approvable pending write (desktop_writes.py).
+    import desktop_writes
+    defs.append(desktop_writes.propose_file_edit_tooldef())
     for d in defs:
         tr.register_tool(d)
