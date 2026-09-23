@@ -2431,6 +2431,339 @@ def get_endpoints(namespace: str, service_name: str, include_slices: bool = True
     return endpoints
 
 
+def get_persistent_volume_claim(
+    namespace: str,
+    claim_name: str,
+    include_events: bool = False,
+) -> Dict[str, Any]:
+    """Fetch a single PVC and its key storage details."""
+    namespace = validate_namespace(namespace)
+    claim_name = validate_resource_name(claim_name, "persistentvolumeclaim")
+
+    result = get_runner().run_json(
+        ["get", "persistentvolumeclaim", claim_name, "-o", "json"],
+        namespace=namespace,
+    )
+    metadata = result.get("metadata", {}) or {}
+    spec = result.get("spec", {}) or {}
+    status = result.get("status", {}) or {}
+    claim = {
+        "name": metadata.get("name", claim_name),
+        "namespace": metadata.get("namespace", namespace),
+        "status": status.get("phase", "Unknown"),
+        "access_modes": spec.get("accessModes", []) or [],
+        "storage_class_name": spec.get("storageClassName", ""),
+        "volume_name": spec.get("volumeName", ""),
+        "volume_mode": spec.get("volumeMode", ""),
+        "requested_capacity": status.get("capacity", {}) or {},
+        "selector": spec.get("selector") or {},
+        "labels": metadata.get("labels", {}) or {},
+        "label_count": len(metadata.get("labels", {}) or {}),
+        "annotations": metadata.get("annotations", {}) or {},
+        "annotation_count": len(metadata.get("annotations", {}) or {}),
+        "creation_timestamp": metadata.get("creationTimestamp", ""),
+    }
+
+    if include_events:
+        try:
+            events = get_runner().run_json(
+                [
+                    "get",
+                    "events",
+                    "--field-selector",
+                    f"involvedObject.kind=PersistentVolumeClaim,involvedObject.name={claim_name}",
+                    "-o",
+                    "json",
+                ],
+                namespace=namespace,
+            )
+            claim["events"] = events.get("items", [])[:10]
+        except Exception as exc:  # pragma: no cover - defensive
+            claim["events"] = {"error": str(exc)}
+
+    return claim
+
+
+def parse_ingress(raw_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse raw Kubernetes Ingress JSON object into safe structured dict."""
+    metadata = raw_dict.get("metadata", {}) or {}
+    spec = raw_dict.get("spec", {}) or {}
+    status = raw_dict.get("status", {}) or {}
+
+    labels = metadata.get("labels", {}) or {}
+    annotations = metadata.get("annotations", {}) or {}
+    safe_annotations = {}
+    for k, v in annotations.items():
+        if any(secret_kw in k.lower() for secret_kw in ("secret", "token", "password", "key", "cert")):
+            safe_annotations[k] = "<redacted>"
+        else:
+            safe_annotations[k] = v
+
+    ingress_class = spec.get("ingressClassName") or safe_annotations.get("kubernetes.io/ingress.class", "")
+
+    rules = []
+    backends = []
+    for r in spec.get("rules", []) or []:
+        host = r.get("host", "*")
+        http_spec = r.get("http", {}) or {}
+        paths = []
+        for p in http_spec.get("paths", []) or []:
+            path_str = p.get("path", "/")
+            path_type = p.get("pathType", "ImplementationSpecific")
+            backend_spec = p.get("backend", {}) or {}
+
+            svc_name = ""
+            svc_port = None
+            if "service" in backend_spec:
+                svc_obj = backend_spec.get("service", {}) or {}
+                svc_name = svc_obj.get("name", "")
+                port_obj = svc_obj.get("port", {}) or {}
+                svc_port = port_obj.get("number") or port_obj.get("name")
+            elif "serviceName" in backend_spec:
+                svc_name = backend_spec.get("serviceName", "")
+                svc_port = backend_spec.get("servicePort")
+
+            path_entry = {
+                "path": path_str,
+                "path_type": path_type,
+                "service_name": svc_name,
+                "service_port": svc_port,
+            }
+            paths.append(path_entry)
+            if svc_name:
+                backends.append({"host": host, "path": path_str, "service_name": svc_name, "service_port": svc_port})
+
+        rules.append({"host": host, "paths": paths})
+
+    default_backend = None
+    def_b = spec.get("defaultBackend") or spec.get("backend")
+    if def_b:
+        if "service" in def_b:
+            s_obj = def_b.get("service", {}) or {}
+            default_backend = {
+                "service_name": s_obj.get("name", ""),
+                "service_port": (s_obj.get("port", {}) or {}).get("number") or (s_obj.get("port", {}) or {}).get("name"),
+            }
+        elif "serviceName" in def_b:
+            default_backend = {
+                "service_name": def_b.get("serviceName", ""),
+                "service_port": def_b.get("servicePort"),
+            }
+        if default_backend and default_backend.get("service_name"):
+            backends.append({
+                "host": "*",
+                "path": "(default)",
+                "service_name": default_backend["service_name"],
+                "service_port": default_backend.get("service_port"),
+            })
+
+    tls_list = []
+    for t in spec.get("tls", []) or []:
+        tls_list.append({
+            "hosts": t.get("hosts", []) or [],
+            "secret_name": t.get("secretName", ""),
+        })
+
+    lb_ingress = (status.get("loadBalancer", {}) or {}).get("ingress", []) or []
+
+    return {
+        "name": metadata.get("name", ""),
+        "namespace": metadata.get("namespace", ""),
+        "ingress_class": ingress_class,
+        "rules": rules,
+        "default_backend": default_backend,
+        "backends": backends,
+        "tls": tls_list,
+        "load_balancer": lb_ingress,
+        "labels": labels,
+        "label_count": len(labels),
+        "annotations": safe_annotations,
+        "annotation_count": len(safe_annotations),
+        "creation_timestamp": metadata.get("creationTimestamp", ""),
+    }
+
+
+def get_ingress(
+    namespace: str,
+    ingress_name: str,
+    rules_only: bool = False,
+    tls_only: bool = False,
+    backends_only: bool = False,
+    include_events: bool = False,
+) -> Dict[str, Any]:
+    """Fetch an Ingress resource and its routing/TLS configuration."""
+    namespace = validate_namespace(namespace)
+    ingress_name = validate_resource_name(ingress_name, "ingress")
+
+    result = get_runner().run_json(
+        ["get", "ingress", ingress_name, "-o", "json"],
+        namespace=namespace,
+    )
+
+    parsed = parse_ingress(result)
+
+    focused_modes = {
+        "rules": rules_only,
+        "tls": tls_only,
+        "backends": backends_only,
+    }
+    active_modes = [k for k, v in focused_modes.items() if v]
+
+    base = {
+        "name": parsed["name"] or ingress_name,
+        "namespace": parsed["namespace"] or namespace,
+        "ingress_class": parsed["ingress_class"],
+        "focused_modes": active_modes,
+    }
+
+    if rules_only:
+        return {**base, "rules": parsed["rules"], "default_backend": parsed["default_backend"]}
+    if tls_only:
+        return {**base, "tls": parsed["tls"]}
+    if backends_only:
+        return {**base, "backends": parsed["backends"]}
+
+    if include_events:
+        try:
+            events = get_runner().run_json(
+                [
+                    "get",
+                    "events",
+                    "--field-selector",
+                    f"involvedObject.kind=Ingress,involvedObject.name={ingress_name}",
+                    "-o",
+                    "json",
+                ],
+                namespace=namespace,
+            )
+            parsed["events"] = events.get("items", [])[:10]
+        except Exception as exc:  # pragma: no cover
+            parsed["events"] = {"error": str(exc)}
+
+    parsed["focused_modes"] = active_modes
+    return parsed
+
+
+def investigate_ingress(namespace: str, ingress_name: str) -> Dict[str, Any]:
+    """Deterministically analyze an Ingress: verify backend Services exist, check endpoint readiness, and check TLS secrets."""
+    namespace = validate_namespace(namespace)
+    ingress_name = validate_resource_name(ingress_name, "ingress")
+
+    try:
+        ing_data = get_ingress(namespace, ingress_name)
+    except Exception as exc:
+        return {
+            "name": ingress_name,
+            "namespace": namespace,
+            "status": "CRITICAL",
+            "findings": [{
+                "severity": "CRITICAL",
+                "category": "ingress_not_found",
+                "message": f"Ingress '{ingress_name}' not found or unreadable in namespace '{namespace}'",
+                "error": str(exc),
+            }],
+            "recommendations": ["Verify the ingress name and namespace."],
+        }
+
+    findings = []
+    checked_services = {}
+    verified_backends = []
+
+    for b in ing_data.get("backends", []):
+        svc_name = b.get("service_name")
+        if not svc_name:
+            continue
+        if svc_name not in checked_services:
+            try:
+                svc_info = get_service(namespace, svc_name)
+                ep_info = get_endpoints(namespace, svc_name)
+                ready_count = ep_info.get("ready_count", 0)
+                not_ready_count = ep_info.get("not_ready_count", 0)
+                checked_services[svc_name] = {
+                    "exists": True,
+                    "service": svc_info,
+                    "ready_endpoints": ready_count,
+                    "not_ready_endpoints": not_ready_count,
+                }
+                if ready_count == 0:
+                    findings.append({
+                        "severity": "CRITICAL",
+                        "category": "no_ready_endpoints",
+                        "service_name": svc_name,
+                        "message": f"Backend Service '{svc_name}' has 0 ready endpoints/pods serving traffic.",
+                    })
+            except Exception as exc:
+                checked_services[svc_name] = {"exists": False, "error": str(exc)}
+                findings.append({
+                    "severity": "CRITICAL",
+                    "category": "missing_backend_service",
+                    "service_name": svc_name,
+                    "message": f"Backend Service '{svc_name}' mapped in ingress rules does not exist in namespace '{namespace}'.",
+                })
+
+        b_status = checked_services[svc_name]
+        verified_backends.append({
+            **b,
+            "service_exists": b_status.get("exists", False),
+            "ready_endpoints": b_status.get("ready_endpoints", 0) if b_status.get("exists") else 0,
+        })
+
+    checked_secrets = []
+    for t in ing_data.get("tls", []):
+        sec_name = t.get("secret_name")
+        if sec_name:
+            try:
+                get_runner().run_json(["get", "secret", sec_name, "-o", "json"], namespace=namespace)
+                checked_secrets.append({"secret_name": sec_name, "exists": True})
+            except Exception as exc:
+                checked_secrets.append({"secret_name": sec_name, "exists": False})
+                findings.append({
+                    "severity": "WARNING",
+                    "category": "missing_tls_secret",
+                    "secret_name": sec_name,
+                    "message": f"TLS Secret '{sec_name}' referenced in Ingress TLS config was not found in namespace '{namespace}'.",
+                })
+
+    critical_count = sum(1 for f in findings if f["severity"] == "CRITICAL")
+    warning_count = sum(1 for f in findings if f["severity"] == "WARNING")
+
+    if critical_count > 0:
+        overall_status = "CRITICAL"
+    elif warning_count > 0:
+        overall_status = "DEGRADED"
+    else:
+        overall_status = "HEALTHY"
+
+    recommendations = []
+    for f in findings:
+        cat = f.get("category")
+        svc = f.get("service_name")
+        sec = f.get("secret_name")
+        if cat == "missing_backend_service":
+            recommendations.append(f"Create missing backend Service '{svc}' or update the Ingress rule serviceName.")
+        elif cat == "no_ready_endpoints":
+            recommendations.append(f"Inspect target pods for Service '{svc}' using `investigate_pod` or check deployment replica health.")
+        elif cat == "missing_tls_secret":
+            recommendations.append(f"Provision missing TLS Secret '{sec}' in namespace '{namespace}' (e.g. via cert-manager or manual kubectl create secret tls).")
+
+    if not recommendations:
+        recommendations.append("All ingress backend services are active with ready endpoints, and TLS secrets exist.")
+
+    return {
+        "name": ing_data.get("name", ingress_name),
+        "namespace": ing_data.get("namespace", namespace),
+        "status": overall_status,
+        "ingress_class": ing_data.get("ingress_class", ""),
+        "rules": ing_data.get("rules", []),
+        "verified_backends": verified_backends,
+        "checked_secrets": checked_secrets,
+        "load_balancer": ing_data.get("load_balancer", []),
+        "findings": findings,
+        "recommendations": recommendations,
+    }
+
+
+
 def get_rollout_status(namespace: str, deployment_name: str) -> Dict[str, Any]:
     """
     Get rollout status for deployment.

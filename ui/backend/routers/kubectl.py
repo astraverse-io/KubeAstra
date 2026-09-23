@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from k8s.wrappers import (
     investigate_pod, get_pods, describe_pod, get_pod_logs,
     get_events, get_deployment, get_service, get_endpoints,
+    get_ingress, investigate_ingress,
     get_rollout_status, find_workload, list_kubeconfig_contexts,
     get_current_context, switch_kubeconfig_context, add_kubeconfig_context,
 )
@@ -78,6 +79,20 @@ class ServiceRequest(BaseModel):
 class EndpointsRequest(BaseModel):
     namespace: str
     service_name: str
+
+
+class IngressRequest(BaseModel):
+    namespace: str
+    ingress_name: str
+    rules_only: bool = False
+    tls_only: bool = False
+    backends_only: bool = False
+    include_events: bool = False
+
+
+class InvestigateIngressRequest(BaseModel):
+    namespace: str
+    ingress_name: str
 
 
 class FindWorkloadRequest(BaseModel):
@@ -143,6 +158,16 @@ def api_get_service(req: ServiceRequest):
 @router.post("/endpoints")
 def api_get_endpoints(req: EndpointsRequest):
     return _wrap(get_endpoints, req.namespace, req.service_name)
+
+
+@router.post("/ingress")
+def api_get_ingress(req: IngressRequest):
+    return _wrap(get_ingress, req.namespace, req.ingress_name, req.rules_only, req.tls_only, req.backends_only, req.include_events)
+
+
+@router.post("/investigate-ingress")
+def api_investigate_ingress(req: InvestigateIngressRequest):
+    return _wrap(investigate_ingress, req.namespace, req.ingress_name)
 
 
 @router.post("/rollout-status")
