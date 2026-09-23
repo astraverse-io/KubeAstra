@@ -44,6 +44,12 @@ DEFAULTS: Dict[str, Any] = {
     # nothing chosen, and background investigations refuse to run.
     "default_cluster_context": "",
     "default_cluster_kubeconfig": "",
+    # Desktop-agent local-folder grants (Phase 1). Each entry:
+    #   {id, root (abspath, symlink-resolved), mode: "read"|"write",
+    #    granted_at, last_used}. These are config, not credentials — the
+    #    keychain (`desktop_secrets`) stays for API keys. Managed by
+    #    `desktop_folders.py`; only reachable in desktop mode.
+    "folder_grants": [],
 }
 
 

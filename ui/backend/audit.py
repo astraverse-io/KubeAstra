@@ -100,6 +100,16 @@ class EventType:
     # changed my cluster", and a PR proposal must not pollute it.
     GITOPS_PR_OPENED = "gitops.pr_opened"
 
+    # Desktop-agent local-folder access (desktop mode only). A grant/revoke is a
+    # human action; a read is the agent touching a file inside a granted root.
+    # folder.read payloads carry {root, rel_path, bytes} — never file content.
+    # folder.write / folder.write_denied are reserved for Phase 2 (updating).
+    FOLDER_GRANT = "folder.grant"
+    FOLDER_REVOKE = "folder.revoke"
+    FOLDER_READ = "folder.read"
+    FOLDER_WRITE = "folder.write"
+    FOLDER_WRITE_DENIED = "folder.write_denied"
+
     # System
     ALERTMANAGER_WEBHOOK_RECEIVED = "alertmanager.webhook_received"
     PLAYBOOK_MATCHED = "playbook.matched"

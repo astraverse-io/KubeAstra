@@ -25,8 +25,11 @@ import {
   setupDesktopEmbeddings,
   testAlertmanager,
   updateDesktopSettings,
+  listFolderGrants,
+  revokeFolderGrant,
   type DesktopSettingsState,
   type DesktopSetupState,
+  type FolderGrant,
 } from "../lib/api";
 
 interface DesktopSettingsProps {
@@ -382,6 +385,8 @@ export function DesktopSettings({ onClose, onCredentialCleared }: DesktopSetting
                 onChange={(next) => save({ remote_diagnostics_enabled: next })}
               />
             </Section>
+
+            <FolderAccessSection />
           </>
         )}
       </div>
@@ -535,6 +540,91 @@ function Banner({ tone, children }: { tone: "error" | "warn" | "ok"; children: R
     >
       {children}
     </p>
+  );
+}
+
+function FolderAccessSection() {
+  const [grants, setGrants] = useState<FolderGrant[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setGrants(await listFolderGrants());
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const revoke = useCallback(
+    async (id: string) => {
+      setBusyId(id);
+      try {
+        await revokeFolderGrant(id);
+        await load();
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load],
+  );
+
+  return (
+    <Section
+      title="Folder access"
+      hint="Local folders the agent may read. It can reach only a folder you granted — revoke any time."
+    >
+      {err && <Banner tone="error">{err}</Banner>}
+      {grants === null ? (
+        <p style={hintText}>Loading…</p>
+      ) : grants.length === 0 ? (
+        <p style={hintText}>No folders granted yet. The agent will ask when it needs one.</p>
+      ) : (
+        grants.map((g) => (
+          <div
+            key={g.id}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "1rem",
+              padding: "0.375rem 0",
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  color: "var(--fg-0)",
+                  fontFamily: "var(--mono, monospace)",
+                  fontSize: "0.8125rem",
+                  wordBreak: "break-all",
+                }}
+              >
+                {g.root}
+              </div>
+              <div style={{ color: "var(--fg-2)", fontSize: "0.75rem" }}>
+                {g.mode} · last used {g.last_used}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => revoke(g.id)}
+              disabled={busyId === g.id}
+              style={dangerButton}
+            >
+              {busyId === g.id ? "Revoking…" : "Revoke"}
+            </button>
+          </div>
+        ))
+      )}
+    </Section>
   );
 }
 

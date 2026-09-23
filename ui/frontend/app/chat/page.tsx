@@ -24,6 +24,8 @@ import HeaderLiveCounters from "../../components/HeaderLiveCounters";
 import { MissionControlLeftRail } from "../../components/MissionControlLeftRail";
 import { MissionControlDiagnosis } from "../../components/MissionControlDiagnosis";
 import { MissionControlApprovalOverlay } from "../../components/MissionControlApprovalOverlay";
+import { FolderAccessPrompt, type FolderAccessRequest } from "../../components/FolderAccessPrompt";
+import WriteApprovalCard from "../../components/WriteApprovalCard";
 import { MissionControlToolTrail } from "../../components/MissionControlToolTrail";
 import { CommandBar } from "../../components/CommandBar";
 import { DesktopBridge } from "../../components/DesktopBridge";
@@ -31,6 +33,7 @@ import { resultToMissionControlDiagnosis } from "../../lib/missionControlAdapter
 import {
   sendChat,
   sendChatStream,
+  resumeFolderGrant,
   sendFeedback,
   getAuthStatus,
   login,
@@ -63,11 +66,32 @@ import {
   appendSessionMessages,
   fetchDesktopSetup,
   type DesktopSetupState,
+  type ProposedWrite,
 } from "../../lib/api";
 import FirstRunWizard from "../../components/FirstRunWizard";
 import DesktopSettings from "../../components/DesktopSettings";
 
 /* ── types ───────────────────────────────────────────────────── */
+
+// Desktop agent: a `write_proposed` stream event → the approval card's input.
+function proposedWriteFromEvent(evt: ChatStreamEvent): ProposedWrite | null {
+  if (evt.type !== "write_proposed" || !evt.token) return null;
+  return {
+    token: evt.token,
+    path: evt.path ?? "",
+    root: evt.root ?? "",
+    created: Boolean(evt.created),
+    reason: evt.reason ?? "",
+    diff: evt.diff ?? "",
+    validation: evt.validation ?? { ok: true, validated: false, unvalidated_reason: null, checks: [] },
+    expires_at: evt.expires_at ?? 0,
+  };
+}
+
+function withProposedWrite(m: Message, pw: ProposedWrite): Message {
+  if ((m.pendingWrites ?? []).some((w) => w.token === pw.token)) return m;
+  return { ...m, pendingWrites: [...(m.pendingWrites ?? []), pw] };
+}
 
 interface Message {
   id: string;
@@ -86,6 +110,9 @@ interface Message {
   captureId?: string;
   feedbackSent?: "up" | "down" | null;
   runId?: string | null;
+  // Desktop agent: local file edits proposed during this turn, each awaiting
+  // the user's approval (write_proposed events).
+  pendingWrites?: ProposedWrite[];
   costSummary?: {
     total_cost_usd: number;
     total_tokens_in: number;
@@ -638,6 +665,8 @@ export default function ChatPage() {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<{ messageId: string; action: SuggestedAction } | null>(null);
+  // Desktop local-folder consent: set when the agent emits `access_required`.
+  const [pendingFolderAccess, setPendingFolderAccess] = useState<FolderAccessRequest | null>(null);
   // Read the theme synchronously from the DOM on first render. The inline
   // script in layout.tsx sets data-theme from localStorage before hydration,
   // so this returns the correct value on the client. On the server document
@@ -1110,6 +1139,23 @@ export default function ChatPage() {
             m.id === thinkingMsg.id ? { ...m, loading: false, text: streamedText } : m,
           ),
         );
+      } else if (evt.type === "write_proposed") {
+        // The agent proposed a local file edit. Attach an approval card to this
+        // turn; the run keeps going. Nothing is written until the user approves.
+        const pw = proposedWriteFromEvent(evt);
+        if (pw) {
+          setMessages((prev) => prev.map((m) => (m.id === thinkingMsg.id ? withProposedWrite(m, pw) : m)));
+        }
+      } else if (evt.type === "access_required") {
+        // The agent needs a local folder it hasn't been granted. Surface the
+        // consent prompt; the suspended run resumes after the grant (below).
+        setPendingFolderAccess({
+          path: evt.path ?? "",
+          mode: (evt.mode as "read" | "write") ?? "read",
+          reason: evt.reason,
+          runId: evt.run_id,
+          stepId: evt.step_id,
+        });
       }
       // start / answer_end / done / error are handled below or ignored.
     };
@@ -1339,6 +1385,43 @@ export default function ChatPage() {
     setPendingApproval(null);
     await runApprovedAction(messageId, action, true);
   }, [pendingApproval, runApprovedAction]);
+
+  // After the user grants the folder, resume the suspended run (no token — the
+  // grant is the approval) and append its final answer as a new message.
+  const handleFolderGranted = useCallback(async () => {
+    const req = pendingFolderAccess;
+    setPendingFolderAccess(null);
+    if (!req?.runId || req.stepId == null) return;
+    const msgId = uid();
+    setMessages((prev) => [...prev, { id: msgId, role: "assistant", text: "…", loading: true }]);
+    try {
+      // The resumed run is often where the edit gets proposed (the first edit
+      // in a folder needs a write grant first), and it may ask for another
+      // grant (read, then write). Handle both instead of dropping the events.
+      const res = await resumeFolderGrant(req.runId, req.stepId, (evt) => {
+        const pw = proposedWriteFromEvent(evt);
+        if (pw) {
+          setMessages((prev) => prev.map((m) => (m.id === msgId ? withProposedWrite(m, pw) : m)));
+        } else if (evt.type === "access_required") {
+          setPendingFolderAccess({
+            path: evt.path ?? "",
+            mode: (evt.mode as "read" | "write") ?? "read",
+            reason: evt.reason,
+            runId: evt.run_id,
+            stepId: evt.step_id,
+          });
+        }
+      });
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, loading: false, text: res.reply ?? "" } : m)),
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, loading: false, text: `Resume failed: ${msg}` } : m)),
+      );
+    }
+  }, [pendingFolderAccess]);
 
   const handleNewChat = useCallback(async () => {
     resetSharedViewState();
@@ -1668,6 +1751,14 @@ export default function ChatPage() {
         />
       )}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        {pendingFolderAccess && (
+          <FolderAccessPrompt
+            request={pendingFolderAccess}
+            onDeny={() => setPendingFolderAccess(null)}
+            onGrant={() => { void handleFolderGranted(); }}
+          />
+        )}
+
         {isOwnedSession && pendingApproval && (
           isMissionControl ? (
             <MissionControlApprovalOverlay
@@ -2310,6 +2401,10 @@ export default function ChatPage() {
                     onFollowUp={(prompt) => submit(prompt)}
                   />
                 )}
+
+                {isOwnedSession && m.role === "assistant" && (m.pendingWrites ?? []).map((pw) => (
+                  <WriteApprovalCard key={pw.token} proposal={pw} />
+                ))}
 
                 {m.executionResult && (
                   <div
