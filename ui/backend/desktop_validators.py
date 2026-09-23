@@ -153,13 +153,28 @@ def _first_line(*texts: str) -> str:
     return ""
 
 
+def _error_detail(err: str, out: str = "", *, paths: Optional[dict] = None) -> str:
+    """A tool's error as one actionable line. kustomize/helm/kubectl often put
+    the useful part after the first line, so join them all; and replace
+    temp-copy paths (in both /var and macOS's /private/var spelling) with the
+    file's real path, so the model and the user see `app/x.yaml`, not a temp dir."""
+    text = "\n".join(t for t in (err, out) if t and t.strip())
+    for tmp, repl in sorted((paths or {}).items(), key=lambda kv: -len(kv[0])):
+        variants = {tmp, os.path.realpath(tmp)}
+        if tmp.startswith("/var/"):
+            variants.add("/private" + tmp)
+        for v in sorted(variants, key=len, reverse=True):
+            text = text.replace(v + "/", f"{repl}/" if repl else "").replace(v, repl)
+    return " ".join(text.split())[:_DETAIL_CAP]
+
+
 def _parse(text: Optional[str]) -> tuple[bool, list, str]:
     if text is None:
         return True, [], ""
     try:
         return True, [d for d in yaml.safe_load_all(text) if d is not None], ""
     except yaml.YAMLError as exc:
-        return False, [], _first_line(str(exc))
+        return False, [], _error_detail(str(exc))
 
 
 def _is_under(p: Path, d: Path) -> bool:
@@ -394,7 +409,7 @@ def _build_check(name: str, cmd_for, *, copy_root: Path, rel: tuple,
         return Check(name, "skipped", _first_line(err, out) or "could not run")
     if rc == 0:
         return Check(name, "pass")
-    after_err = _first_line(err, out)
+    after_err = _error_detail(err, out, paths={str(copy_root): ""})
     _place(copy_root, rel, before)
     rc_b, out_b, err_b = _run(cmd_for(), env=_offline_env())
     if rc_b not in (0, RC_TIMEOUT, RC_NOT_FOUND):
@@ -460,7 +475,7 @@ def _check_helm(chart: Path, target: Path, before: Optional[str], after: str) ->
                             copy_root=copy_root, rel=rel, before=before, after=after)
 
 
-def _check_kubeconform(before: Optional[str], after: str) -> Check:
+def _check_kubeconform(before: Optional[str], after: str, label: str = "") -> Check:
     name = "kubeconform"
     kc = _found("kubeconform")
     if not kc:
@@ -476,7 +491,7 @@ def _check_kubeconform(before: Optional[str], after: str) -> Check:
             return Check(name, "skipped", _first_line(err, out) or "could not run")
         if rc == 0:
             return Check(name, "pass")
-        detail = _first_line(out, err)
+        detail = _error_detail(out, err, paths={str(Path(td) / "manifest.yaml"): label})
         if before is not None:
             rc_b, _, _ = run(before)
             if rc_b not in (0, RC_TIMEOUT, RC_NOT_FOUND):
@@ -528,7 +543,8 @@ def _dry_run_environment_problem(text: str) -> Optional[str]:
     return None
 
 
-def _check_server_dry_run(before: Optional[str], after: str, cluster: Optional[dict]) -> Check:
+def _check_server_dry_run(before: Optional[str], after: str, cluster: Optional[dict],
+                          label: str = "") -> Check:
     name = "server_dry_run"
     if cluster is None:
         return Check(name, "skipped", "no cluster connected to this chat")
@@ -556,7 +572,7 @@ def _check_server_dry_run(before: Optional[str], after: str, cluster: Optional[d
         problem = _dry_run_environment_problem(f"{err}\n{out}")
         if problem:
             return Check(name, "skipped", problem)
-        detail = _first_line(err, out)
+        detail = _error_detail(err, out, paths={str(Path(td) / "manifest.yaml"): label})
         if before is not None:
             rc_b, out_b, err_b = run(before)
             if rc_b not in (0, RC_TIMEOUT, RC_NOT_FOUND) and not _dry_run_environment_problem(f"{err_b}\n{out_b}"):
@@ -607,16 +623,19 @@ def validate_edit(target, before: Optional[str], after: str, *, root, cluster=_U
 
     checks.append(_check_diff_budget(before or "", after))
 
-    if chart is not None and (in_templates or is_values):
+    helm_source = chart is not None and (in_templates or is_values)
+    kdir = None if helm_source else _kustomize_dir(target, root)
+    if helm_source:
         checks.append(_check_helm(chart, target, before, after))
-    else:
-        kdir = _kustomize_dir(target, root)
-        if kdir is not None:
-            checks.append(_check_kustomize(kdir, target, before, after, root))
+    elif kdir is not None:
+        checks.append(_check_kustomize(kdir, target, before, after, root))
 
+    label = "/".join(target.parts[len(root.parts):])
     if manifests_after:
-        checks.append(_check_kubeconform(before, after))
-        if cluster is not _UNSET:
-            checks.append(_check_server_dry_run(before, after, cluster))
+        checks.append(_check_kubeconform(before, after, label))
+        # A file in a kustomize tree is a source (often a partial patch), not
+        # an object to apply on its own; the kustomize build validates it.
+        if cluster is not _UNSET and kdir is None:
+            checks.append(_check_server_dry_run(before, after, cluster, label))
 
     return _result(checks)

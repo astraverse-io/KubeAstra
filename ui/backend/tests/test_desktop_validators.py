@@ -499,3 +499,44 @@ class TestServerDryRun:
         t = _write(tmp_path, "config.yaml", "log_level: info\n")
         res = dv.validate_edit(t, "log_level: info\n", "log_level: debug\n", root=tmp_path, cluster=self.CLUSTER)
         assert "server_dry_run" not in _by_name(res) and calls == []
+
+
+# ── findings from the real-cluster end-to-end run ─────────────────────────────
+
+class TestErrorDetail:
+    def test_multi_line_errors_are_joined_and_temp_paths_stripped(self):
+        tmp = "/var/folders/xy/T/kubeastra-validate-abc/repo"
+        err = ("error: trouble configuring builtin PatchTransformer with config: `\n"
+               "path: missing.yaml\n"
+               f"`: failed to get the patch file from path(missing.yaml): lstat /private{tmp}/ov/missing.yaml: no such file\n")
+        d = dv._error_detail(err, "", paths={tmp: ""})
+        assert "path: missing.yaml" in d and "failed to get the patch file" in d
+        assert "kubeastra-validate" not in d and "\n" not in d
+
+    def test_temp_manifest_path_becomes_the_real_file(self):
+        tmp = "/var/folders/xy/T/kubeastra-validate-q1/manifest.yaml"
+        err = f'error: resource mapping not found for name: "typo" from "{tmp}": no matches for kind "X"'
+        d = dv._error_detail(err, "", paths={tmp: "app/typo.yaml"})
+        assert 'from "app/typo.yaml"' in d and "kubeastra-validate" not in d
+
+
+@pytest.mark.skipif(not HAS_KUBECTL, reason="kubectl not installed")
+def test_kustomize_failure_detail_is_actionable(kustomize_repo):
+    t = kustomize_repo / "overlays/prod/kustomization.yaml"
+    broken = OVERLAY_KUST + "  - path: does-not-exist.yaml\n"
+    k = _by_name(dv.validate_edit(t, OVERLAY_KUST, broken, root=kustomize_repo))["kustomize_build"]
+    assert k.status == "fail"
+    assert "does-not-exist.yaml" in k.detail and "kubeastra-validate" not in k.detail
+
+
+def test_kustomize_sources_are_not_dry_run_one_by_one(kustomize_repo, monkeypatch):
+    # A patch in an overlay isn't a complete object; dry-running it alone is
+    # noise. The kustomize build validates it instead.
+    calls = []
+    real_run = dv._run
+    monkeypatch.setattr(dv, "_run", lambda cmd, **k: calls.append(cmd) or real_run(cmd, **k))
+    t = kustomize_repo / "overlays/prod/replicas.yaml"
+    res = dv.validate_edit(t, PATCH.format(n=3), PATCH.format(n=4), root=kustomize_repo,
+                           cluster={"context_name": "kind-dev", "kubeconfig_path": None})
+    assert "server_dry_run" not in _by_name(res)
+    assert not any("--dry-run=server" in c for c in calls)
