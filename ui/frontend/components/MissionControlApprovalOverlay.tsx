@@ -20,6 +20,11 @@ type MissionControlApprovalOverlayProps = {
   executionCommand?: string;
   onClose: () => void;
   onConfirm: () => void;
+  // When a GitOps repo is connected and the action is expressible as a file
+  // change, the parent supplies this. The overlay then offers a second, softer
+  // path — propose a pull request instead of applying to the cluster. Absent,
+  // nothing changes and only the hold-to-apply control renders.
+  onProposePR?: () => void;
 };
 
 export function MissionControlApprovalOverlay({
@@ -35,6 +40,7 @@ export function MissionControlApprovalOverlay({
   executionCommand,
   onClose,
   onConfirm,
+  onProposePR,
 }: MissionControlApprovalOverlayProps) {
   const [executing, setExecuting] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -360,7 +366,30 @@ export function MissionControlApprovalOverlay({
           )}
 
           {!executing ? (
-            <HoldToAuthorize onConfirm={handle} />
+            <>
+              <HoldToAuthorize onConfirm={handle} />
+              {onProposePR && (
+                <button
+                  type="button"
+                  onClick={onProposePR}
+                  style={{
+                    marginTop: 12,
+                    width: "100%",
+                    padding: "10px 14px",
+                    fontFamily: "var(--mono)",
+                    fontSize: 12,
+                    letterSpacing: "0.08em",
+                    color: "var(--ink-2)",
+                    background: "transparent",
+                    border: "1px solid var(--rule)",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                  }}
+                >
+                  PROPOSE VIA PULL REQUEST →
+                </button>
+              )}
+            </>
           ) : (
             <div
               role="status"

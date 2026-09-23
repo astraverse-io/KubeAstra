@@ -1468,6 +1468,22 @@ export default function ChatPage() {
     </button>
   );
 
+  const auditButton = !isDeniedSharedSession && (
+    <button
+      onClick={() => {
+        if (typeof window !== "undefined") {
+          sessionStorage.setItem("k8s_chat_return_session", sessionId);
+        }
+        window.location.href = "/audit";
+      }}
+      className="app-btn-ghost"
+      style={{ padding: "0.25rem 0.75rem", borderRadius: "0.5rem", fontSize: "0.75rem", marginLeft: "0.5rem" }}
+      title="What the agent and operators have done, and when"
+    >
+      Audit
+    </button>
+  );
+
   const alertsButton = !isDeniedSharedSession && (
     <button
       onClick={() => {
@@ -1600,6 +1616,7 @@ export default function ChatPage() {
     <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.75rem" }}>
       <HeaderLiveCounters sessionId={sessionId} />
       {alertsButton}
+      {auditButton}
       {exportPMButton}
       {newInvestigationButton}
       <HeaderOverflow

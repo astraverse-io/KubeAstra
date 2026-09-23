@@ -885,3 +885,161 @@ export async function fetchClusterTopology(
     `/api/v1/cluster/topology/${encodeURIComponent(sessionId)}?scope=${scope}`,
   );
 }
+
+// ── Audit trail ─────────────────────────────────────────────────────────────
+
+export type AuditEvent = {
+  seq: number;
+  id: string;
+  ts: string;
+  actor_type: string;
+  actor_id: string;
+  session_id: string | null;
+  cluster: string | null;
+  event_type: string;
+  subject: string | null;
+  payload: Record<string, unknown>;
+  severity: string;
+  hash: string;
+  prev_hash: string | null;
+};
+
+export type AuditFilters = {
+  sessionId?: string;
+  actorId?: string;
+  cluster?: string;
+  eventType?: string;
+  severity?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export async function getAuditEvents(
+  filters: AuditFilters = {},
+): Promise<{ events: AuditEvent[]; count: number }> {
+  const params = new URLSearchParams();
+  if (filters.sessionId) params.set("session_id", filters.sessionId);
+  if (filters.actorId) params.set("actor_id", filters.actorId);
+  if (filters.cluster) params.set("cluster", filters.cluster);
+  if (filters.eventType) params.set("event_type", filters.eventType);
+  if (filters.severity) params.set("severity", filters.severity);
+  params.set("limit", String(filters.limit ?? 200));
+  if (filters.offset) params.set("offset", String(filters.offset));
+
+  const res = await fetch(apiUrl(`/api/v1/audit/events?${params}`), {
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getAuditReplay(
+  sessionId: string,
+): Promise<{ session_id: string; events: AuditEvent[]; count: number }> {
+  const res = await fetch(
+    apiUrl(`/api/v1/audit/replay/${encodeURIComponent(sessionId)}`),
+    { credentials: "include" },
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function verifyAuditChain(): Promise<{
+  ok: boolean;
+  checked: number;
+  broken_at: number | null;
+  reason: string;
+  note?: string;
+}> {
+  const res = await fetch(apiUrl("/api/v1/audit/verify"), {
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getAuditEventTypes(): Promise<string[]> {
+  const res = await fetch(apiUrl("/api/v1/audit/event-types"), {
+    credentials: "include",
+  });
+  if (!res.ok) return [];
+  const body = await res.json();
+  return body.event_types ?? [];
+}
+
+/** Download URL for the JSONL export. A plain link, so the browser streams it
+ *  to disk rather than the page buffering it in memory. */
+export function auditExportUrl(filters: AuditFilters = {}): string {
+  const params = new URLSearchParams();
+  if (filters.sessionId) params.set("session_id", filters.sessionId);
+  if (filters.cluster) params.set("cluster", filters.cluster);
+  if (filters.eventType) params.set("event_type", filters.eventType);
+  params.set("limit", String(filters.limit ?? 1000));
+  return apiUrl(`/api/v1/audit/export?${params}`);
+}
+
+// ── GitOps PR proposals ───────────────────────────────────────────────────────
+
+export type GitopsRepo = {
+  id: string;
+  provider: string;
+  owner: string;
+  name: string;
+  default_branch: string;
+};
+
+export type GitopsPreview = {
+  preview_token: string;
+  diff: string;
+  files: Record<string, string>;
+  branch: string;
+  title: string;
+};
+
+export type GitopsProposeInput = {
+  proposal_id: string;
+  investigation_id?: string;
+  session_id?: string | null;
+  cluster?: string;
+  diagnosis: Record<string, unknown>;
+  change: {
+    kind: string;
+    name: string;
+    namespace: string | null;
+    field_path: (string | number)[];
+    new_value: string | number;
+    reason: string;
+  };
+  target_env?: string | null;
+};
+
+export async function getGitopsRepos(): Promise<{ repos: GitopsRepo[] }> {
+  return fetchJson("/api/gitops/repos");
+}
+
+export async function connectGitopsRepo(body: {
+  provider: string;
+  owner: string;
+  name: string;
+  default_branch?: string;
+}): Promise<GitopsRepo> {
+  return fetchJson("/api/gitops/repos", { method: "POST", body });
+}
+
+export async function deleteGitopsRepo(id: string): Promise<void> {
+  await fetchJson(`/api/gitops/repos/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function previewGitopsPr(body: GitopsProposeInput): Promise<GitopsPreview> {
+  return fetchJson("/api/gitops/preview", { method: "POST", body });
+}
+
+export async function openGitopsPr(
+  preview_token: string,
+): Promise<{ pr_url: string; pr_number: number }> {
+  return fetchJson("/api/gitops/open", { method: "POST", body: { preview_token } });
+}
+
+export async function listGitopsPrs(): Promise<{ prs: Record<string, unknown>[] }> {
+  return fetchJson("/api/gitops/prs");
+}

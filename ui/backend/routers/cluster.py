@@ -18,6 +18,7 @@ import yaml
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+import audit
 import auth
 import cluster_session
 import db
@@ -29,6 +30,20 @@ router = APIRouter()
 
 class UnsafeKubeconfigDir(RuntimeError):
     """The directory kubeconfigs would be written to cannot be trusted."""
+
+
+def _audit_actor(request) -> str:
+    """Who to attribute an event to.
+
+    With auth off — desktop mode and local dev — there is no user to name, and
+    refusing to record the event would lose the more important fact that it
+    happened at all.
+    """
+    try:
+        user = auth.require_current_user(request)
+    except Exception:
+        return "local"
+    return str((user or {}).get("email") or (user or {}).get("id") or "local")
 
 
 def _kubeconfig_dir_path() -> Path:
@@ -368,9 +383,19 @@ def upload_kubeconfig(body: KubeconfigBody, request: Request):
     }
 
 
+# kubectl context names are DNS/label-ish (GKE `gke_..`, EKS `arn:aws:eks:..`,
+# `kind-kind`, …). Confine to a safe allowlist whose first character is
+# alphanumeric — so a value can never be read as a kubectl flag (argument
+# injection) when it is passed as `--context <name>` to the subprocess in
+# _connectivity_check.
+_CONTEXT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:/-]{0,252}$")
+
+
 @router.post("/cluster/connect/context")
 def connect_context(body: ContextSelectBody, request: Request):
     auth.require_owned_session(request, body.session_id)
+    if not _CONTEXT_NAME_RE.match(body.context_name or ""):
+        return {"connected": False, "error": "Invalid context name."}
     if body.mode == "autodetect" and not body.kubeconfig_path:
         kubeconfig_path = _get_local_kubeconfig_path()
     else:
@@ -417,6 +442,18 @@ def connect_context(body: ContextSelectBody, request: Request):
     # to the machine's current-context — is how proactive investigations
     # ended up pointed at whatever cluster the laptop happened to have.
     cluster_session.remember_default(body.context_name, kubeconfig_path)
+    # Which cluster this session can now act on, and who pointed it there.
+    # Every mutation later in the trail is only meaningful against this.
+    audit.emit(
+        audit.EventType.CLUSTER_CONNECTED,
+        actor_type="user",
+        actor_id=_audit_actor(request),
+        session_id=body.session_id,
+        cluster=cluster_name,
+        subject=body.context_name,
+        payload={"mode": body.mode, "namespace": namespace,
+                 "server_url": check.get("server_url", "")},
+    )
     return {
         "connected": True,
         "cluster_name": cluster_name,
@@ -432,6 +469,12 @@ def disconnect(body: DisconnectBody, request: Request):
     auth.require_owned_session(request, body.session_id)
     kubeconfig_path = db.delete_cluster_connection(body.session_id)
     _delete_temp_kubeconfig(kubeconfig_path)
+    audit.emit(
+        audit.EventType.CLUSTER_DISCONNECTED,
+        actor_type="user",
+        actor_id=_audit_actor(request),
+        session_id=body.session_id,
+    )
     return {"disconnected": True}
 
 

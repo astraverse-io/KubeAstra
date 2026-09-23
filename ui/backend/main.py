@@ -50,8 +50,10 @@ import metrics
 import auth as auth_utils
 import tracing
 from routers import ai_tools, kubectl, recovery, health, chat, sessions, cluster, feedback, models, alerts, alert_silences, clusters, remediation, agent_runs, admin, agent, metrics as metrics_router
+from routers import audit as audit_router
 from routers import cluster_live
 from routers import auth as auth_router
+from routers import gitops as gitops_router
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +302,8 @@ app.include_router(chat.router, prefix="/api", tags=["Chat"])
 app.include_router(sessions.router, prefix="/api", tags=["Sessions"])
 app.include_router(cluster.router, prefix="/api", tags=["Cluster"])
 app.include_router(cluster_live.router, prefix="/api", tags=["Cluster Live"])
+# Prefix is on the router itself (/api/v1/audit), as with the alert routers.
+app.include_router(audit_router.router)
 app.include_router(ai_tools.router, prefix="/api", tags=["AI Analysis"])
 app.include_router(kubectl.router, prefix="/api", tags=["Kubectl"])
 app.include_router(recovery.router, prefix="/api", tags=["Recovery"])
@@ -309,6 +313,7 @@ app.include_router(alerts.router, tags=["Alerts"])
 app.include_router(alert_silences.router, tags=["Alerts"])
 app.include_router(clusters.router, tags=["Clusters"])
 app.include_router(remediation.router, tags=["Remediation"])
+app.include_router(gitops_router.router, prefix="/api", tags=["GitOps"])
 app.include_router(metrics_router.router, tags=["Metrics"])
 app.include_router(agent_runs.router, prefix="/api", tags=["AgentRuns"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
