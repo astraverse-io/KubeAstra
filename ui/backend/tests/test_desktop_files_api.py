@@ -43,6 +43,7 @@ def events(tmp_path, monkeypatch):
     monkeypatch.setattr(desktop_paths, "config_path", lambda: tmp_path / "cfg.json")
     monkeypatch.setattr(dv, "_found", lambda tool: None)
     monkeypatch.setattr(dw, "pending_write_store", dw.PendingWriteStore())
+    monkeypatch.setattr(dw, "_session_cluster", lambda session_id: None)   # no cluster connected
     dw._invalid_attempts.clear()
     captured = []
     monkeypatch.setattr(audit, "emit", lambda et, **kw: captured.append((et, kw)) or "evt")

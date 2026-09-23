@@ -409,3 +409,93 @@ class TestKubeconform:
         res = dv.validate_edit(t, deploy(), deploy(replicas=3), root=tmp_path)
         assert _by_name(res)["kubeconform"].status == "skipped"
         assert res.validated is False
+
+
+# ── server-side dry run against the chat's connected cluster (PR 7) ──────────
+
+class TestServerDryRun:
+    """Only the session's explicitly connected cluster is ever used — never the
+    machine's ambient kubeconfig context (often a cluster the user didn't pick)."""
+
+    CLUSTER = {"context_name": "kind-dev", "kubeconfig_path": "/tmp/kc.yaml"}
+
+    @pytest.fixture
+    def kubectl(self, monkeypatch):
+        monkeypatch.setattr(dv, "_found", lambda tool: "/usr/local/bin/kubectl" if tool == "kubectl" else None)
+
+    def _run(self, tmp_path, before, after, cluster):
+        t = _write(tmp_path, "api.yaml", before or "")
+        return _by_name(dv.validate_edit(t, before, after, root=tmp_path, cluster=cluster))
+
+    def test_not_requested_means_not_listed(self, tmp_path):
+        t = _write(tmp_path, "api.yaml", deploy())
+        assert "server_dry_run" not in _by_name(dv.validate_edit(t, deploy(), deploy(replicas=3), root=tmp_path))
+
+    def test_no_cluster_connected_is_skipped_not_guessed(self, tmp_path, kubectl, monkeypatch):
+        calls = []
+        monkeypatch.setattr(dv, "_run", lambda *a, **k: calls.append(a) or (0, "", ""))
+        c = self._run(tmp_path, deploy(), deploy(replicas=3), None)["server_dry_run"]
+        assert c.status == "skipped" and "no cluster" in c.detail
+        assert calls == []
+
+    def test_unavailable_connection_is_skipped(self, tmp_path, kubectl, monkeypatch):
+        calls = []
+        monkeypatch.setattr(dv, "_run", lambda *a, **k: calls.append(a) or (0, "", ""))
+        c = self._run(tmp_path, deploy(), deploy(replicas=3), {"unavailable": True})["server_dry_run"]
+        assert c.status == "skipped" and "unavailable" in c.detail
+        assert calls == []
+
+    def test_pass_uses_exactly_the_session_cluster(self, tmp_path, kubectl, monkeypatch):
+        seen = []
+        monkeypatch.setattr(dv, "_run", lambda cmd, **k: seen.append(cmd) or (0, "deployment.apps/api", ""))
+        c = self._run(tmp_path, deploy(), deploy(replicas=3), self.CLUSTER)["server_dry_run"]
+        assert c.status == "pass"
+        cmd = seen[0]
+        assert "--context=kind-dev" in cmd and "--kubeconfig=/tmp/kc.yaml" in cmd
+        assert "apply" in cmd and "--dry-run=server" in cmd
+        assert not any(a in ("--context", "--kubeconfig") for a in cmd)   # single-token flags only
+
+    def test_context_only_connection_has_no_kubeconfig_flag(self, tmp_path, kubectl, monkeypatch):
+        seen = []
+        monkeypatch.setattr(dv, "_run", lambda cmd, **k: seen.append(cmd) or (0, "", ""))
+        self._run(tmp_path, deploy(), deploy(replicas=3), {"context_name": "in-cluster", "kubeconfig_path": None})
+        assert not any(a.startswith("--kubeconfig") for a in seen[0])
+
+    def test_admission_rejection_introduced_by_the_edit_fails(self, tmp_path, kubectl, monkeypatch):
+        def fake(cmd, **k):
+            text = Path(cmd[-1]).read_text()
+            if "replicas: 50" in text:
+                return 1, "", 'Error from server (Forbidden): admission webhook "quota.acme" denied the request: replicas > 20'
+            return 0, "", ""
+        monkeypatch.setattr(dv, "_run", fake)
+        c = self._run(tmp_path, deploy(), deploy(replicas=50), self.CLUSTER)["server_dry_run"]
+        assert c.status == "fail" and "denied the request" in c.detail
+
+    def test_pre_existing_rejection_is_warn(self, tmp_path, kubectl, monkeypatch):
+        monkeypatch.setattr(dv, "_run", lambda cmd, **k: (1, "", 'The Deployment "api" is invalid: spec.selector: field is immutable'))
+        assert self._run(tmp_path, deploy(), deploy(replicas=3), self.CLUSTER)["server_dry_run"].status == "warn"
+
+    @pytest.mark.parametrize("stderr", [
+        "Unable to connect to the server: dial tcp 10.0.0.1:6443: i/o timeout",
+        "error: You must be logged in to the server (Unauthorized)",
+        'Error from server (Forbidden): deployments.apps "api" is forbidden: User "me" cannot patch resource',
+        'Error from server (NotFound): namespaces "prod" not found',
+        'error: resource mapping not found for name: "r" namespace: "" from "f": no matches for kind "Rollout" in version "argoproj.io/v1alpha1"',
+    ])
+    def test_environment_problems_are_skipped_not_failed(self, tmp_path, kubectl, monkeypatch, stderr):
+        monkeypatch.setattr(dv, "_run", lambda cmd, **k: (1, "", stderr))
+        c = self._run(tmp_path, None, deploy(), self.CLUSTER)["server_dry_run"]
+        assert c.status == "skipped", stderr
+
+    def test_typo_in_a_builtin_kind_still_fails(self, tmp_path, kubectl, monkeypatch):
+        err = 'error: resource mapping not found for name: "api" namespace: "" from "f": no matches for kind "Deploymnet" in version "apps/v1"'
+        monkeypatch.setattr(dv, "_run", lambda cmd, **k: (1, "", err))
+        c = self._run(tmp_path, None, deploy().replace("kind: Deployment", "kind: Deploymnet"), self.CLUSTER)["server_dry_run"]
+        assert c.status == "fail"
+
+    def test_only_manifests_are_dry_run(self, tmp_path, kubectl, monkeypatch):
+        calls = []
+        monkeypatch.setattr(dv, "_run", lambda *a, **k: calls.append(a) or (0, "", ""))
+        t = _write(tmp_path, "config.yaml", "log_level: info\n")
+        res = dv.validate_edit(t, "log_level: info\n", "log_level: debug\n", root=tmp_path, cluster=self.CLUSTER)
+        assert "server_dry_run" not in _by_name(res) and calls == []

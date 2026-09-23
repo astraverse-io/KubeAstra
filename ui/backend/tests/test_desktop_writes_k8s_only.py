@@ -46,6 +46,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(audit, "emit", lambda *a, **k: "evt")
     monkeypatch.setattr(dv, "_found", lambda tool: None)
     monkeypatch.setattr(dw, "pending_write_store", dw.PendingWriteStore())
+    monkeypatch.setattr(dw, "_session_cluster", lambda session_id: None)   # no cluster connected
     dw._invalid_attempts.clear()
 
 

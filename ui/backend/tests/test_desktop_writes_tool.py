@@ -58,6 +58,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(audit, "emit", lambda *a, **k: "evt")
     monkeypatch.setattr(dv, "_found", lambda tool: None)      # deterministic: no binaries
     monkeypatch.setattr(dw, "pending_write_store", dw.PendingWriteStore())
+    monkeypatch.setattr(dw, "_session_cluster", lambda session_id: None)   # no cluster connected
     dw._invalid_attempts.clear()
 
 
@@ -309,3 +310,42 @@ class TestRegistrationAndObservation:
         out = propose(write_repo / "prod" / "api.yaml", edits=PRIVILEGED)
         text = dw.render_propose_observation(out)
         assert "privileged" in text and "2 attempt" in text
+
+
+class TestClusterDryRunWiring:
+    def test_uses_the_calling_sessions_cluster(self, write_repo, monkeypatch):
+        asked = []
+        monkeypatch.setattr(dw, "_session_cluster",
+                            lambda sid: asked.append(sid) or {"context_name": "kind-dev", "kubeconfig_path": None})
+        monkeypatch.setattr(dv, "_found", lambda tool: "/usr/local/bin/kubectl" if tool == "kubectl" else None)
+        monkeypatch.setattr(dv, "_run", lambda cmd, **k: (0, "deployment.apps/api", ""))
+        out = propose(write_repo / "prod" / "api.yaml", edits=REPLICAS, session="sess-42")
+        checks = {c["name"]: c for c in out["pending_write"]["validation"]["checks"]}
+        assert asked == ["sess-42"]
+        assert checks["server_dry_run"]["status"] == "pass"
+
+    def test_no_cluster_is_reported_not_guessed(self, write_repo):
+        out = propose(write_repo / "prod" / "api.yaml", edits=REPLICAS)
+        v = out["pending_write"]["validation"]
+        checks = {c["name"]: c for c in v["checks"]}
+        assert checks["server_dry_run"]["status"] == "skipped"
+        assert "no cluster" in v["unvalidated_reason"]
+
+
+class TestSessionCluster:
+    def test_connection_is_passed_through(self, monkeypatch):
+        import cluster_session
+        conn = {"context_name": "kind-dev", "kubeconfig_path": "/k"}
+        monkeypatch.setattr(cluster_session, "resolve", lambda sid: conn)
+        assert dw._session_cluster_impl("s") == conn
+
+    def test_broken_connection_is_unavailable_never_a_fallback(self, monkeypatch):
+        import cluster_session
+
+        def boom(sid):
+            raise cluster_session.ClusterConnectionUnavailable("prod", "kubeconfig file is missing")
+        monkeypatch.setattr(cluster_session, "resolve", boom)
+        assert dw._session_cluster_impl("s") == {"unavailable": True}
+
+    def test_no_session_means_no_cluster(self):
+        assert dw._session_cluster_impl(None) is None

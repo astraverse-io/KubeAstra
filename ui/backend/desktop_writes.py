@@ -556,6 +556,27 @@ def _refusal(reason: str, detail: str, path, key: Optional[tuple]) -> dict:
     return out
 
 
+def _session_cluster_impl(session_id) -> Optional[dict]:
+    """The chat session's explicit cluster connection, for the server dry-run
+    validator. None when the chat never connected one; {"unavailable": True} when
+    it has one that's broken. Never falls back to the machine's ambient
+    kubeconfig context — that's often a cluster the user didn't pick for this."""
+    if not session_id:
+        return None
+    import cluster_session
+    try:
+        return cluster_session.resolve(session_id)
+    except Exception:
+        # ClusterConnectionUnavailable, or a lookup failure: either way, don't
+        # guess another cluster.
+        return {"unavailable": True}
+
+
+def _session_cluster(session_id) -> Optional[dict]:
+    """Seam over _session_cluster_impl (tests stub it)."""
+    return _session_cluster_impl(session_id)
+
+
 def _handle_propose_file_edit(params: dict, ctx=None) -> dict:
     path = params["path"]
     reason = params.get("reason") or ""
@@ -622,7 +643,8 @@ def _handle_propose_file_edit(params: dict, ctx=None) -> dict:
     from desktop_validators import validate_edit
     from gitops.edit import unified_diff
 
-    validation = validate_edit(target, before, after, root=root).to_dict()
+    validation = validate_edit(target, before, after, root=root,
+                               cluster=_session_cluster(session_id)).to_dict()
     validation["unvalidated_reason"] = _scrub(validation["unvalidated_reason"])
     for c in validation["checks"]:
         c["detail"] = _scrub(c["detail"])

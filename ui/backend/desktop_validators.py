@@ -484,11 +484,99 @@ def _check_kubeconform(before: Optional[str], after: str) -> Check:
         return Check(name, "fail", detail or "schema validation failed")
 
 
+# ── server-side dry run against the chat's connected cluster ─────────────────
+#
+# `kubectl apply --dry-run=server` runs the edit through the real API server:
+# admission webhooks, quotas, immutable fields — things no offline check sees.
+# Nothing is persisted. It uses ONLY the cluster the chat session explicitly
+# connected to (cluster_session.resolve), never the machine's ambient kubeconfig
+# context, which on a laptop is often a cluster the user never chose for this.
+# Problems with the environment (unreachable, not logged in, RBAC, missing
+# namespace, CRD not installed) skip the check — they say nothing about the edit.
+
+_NO_MATCH_RE = re.compile(r'no matches for kind "([^"]+)" in version "([^"]+)"')
+_NS_NOT_FOUND_RE = re.compile(r'namespaces? "[^"]+" not found')
+_RBAC_RE = re.compile(r'is forbidden: User "|cannot (get|list|create|patch|update) resource', re.IGNORECASE)
+_UNREACHABLE = (
+    "unable to connect to the server", "connection refused", "i/o timeout", "no such host",
+    "dial tcp", "couldn't get current server api group list", "tls handshake timeout",
+    "context deadline exceeded", "must be logged in", "(unauthorized)", "provide credentials",
+    "getting credentials",
+)
+_BUILTIN_GROUPS = frozenset({"", "apps", "batch", "autoscaling", "policy", "extensions"})
+
+
+def _dry_run_environment_problem(text: str) -> Optional[str]:
+    """Why a dry-run failure is about the environment rather than the edit, or
+    None when it's a genuine rejection of the manifest."""
+    low = text.lower()
+    if "admission webhook" in low and "denied" in low:
+        return None                     # a policy said no to this object — real
+    m = _NO_MATCH_RE.search(text)
+    if m:
+        version = m.group(2)
+        group = version.split("/")[0] if "/" in version else ""
+        if group in _BUILTIN_GROUPS or group.endswith(".k8s.io"):
+            return None                 # a typo in a built-in kind is a real error
+        return f"kind {m.group(1)} ({version}) isn't installed in the connected cluster"
+    if _NS_NOT_FOUND_RE.search(text):
+        return "the namespace doesn't exist in the connected cluster"
+    if _RBAC_RE.search(text):
+        return "not permitted to dry-run this in the connected cluster"
+    if any(n in low for n in _UNREACHABLE):
+        return "the connected cluster is unreachable or not authenticated"
+    return None
+
+
+def _check_server_dry_run(before: Optional[str], after: str, cluster: Optional[dict]) -> Check:
+    name = "server_dry_run"
+    if cluster is None:
+        return Check(name, "skipped", "no cluster connected to this chat")
+    context = cluster.get("context_name")
+    if cluster.get("unavailable") or not context:
+        return Check(name, "skipped", "this chat's cluster connection is unavailable")
+    kubectl = _found("kubectl")
+    if not kubectl:
+        return Check(name, "skipped", "kubectl not installed")
+    kubeconfig = cluster.get("kubeconfig_path")
+    # Single-token flags: a value can never be parsed as a separate flag.
+    base = [kubectl, f"--context={context}"] + ([f"--kubeconfig={kubeconfig}"] if kubeconfig else [])
+
+    with tempfile.TemporaryDirectory(prefix="kubeastra-validate-") as td:
+        def run(text: str) -> tuple[int, str, str]:
+            p = Path(td) / "manifest.yaml"
+            p.write_text(text)
+            return _run(base + ["apply", "--dry-run=server", "-o", "name", "-f", str(p)])
+
+        rc, out, err = run(after)
+        if rc in (RC_TIMEOUT, RC_NOT_FOUND):
+            return Check(name, "skipped", _first_line(err, out) or "could not run")
+        if rc == 0:
+            return Check(name, "pass")
+        problem = _dry_run_environment_problem(f"{err}\n{out}")
+        if problem:
+            return Check(name, "skipped", problem)
+        detail = _first_line(err, out)
+        if before is not None:
+            rc_b, out_b, err_b = run(before)
+            if rc_b not in (0, RC_TIMEOUT, RC_NOT_FOUND) and not _dry_run_environment_problem(f"{err_b}\n{out_b}"):
+                return Check(name, "warn", f"pre-existing: the cluster also rejects the current file: {detail}")
+        return Check(name, "fail", detail or "the cluster rejected the change")
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
-def validate_edit(target, before: Optional[str], after: str, *, root) -> ValidationResult:
+_UNSET = object()
+
+
+def validate_edit(target, before: Optional[str], after: str, *, root, cluster=_UNSET) -> ValidationResult:
     """Validate replacing ``before`` (None for a new file) with ``after`` at
-    ``target`` inside the granted ``root``."""
+    ``target`` inside the granted ``root``.
+
+    ``cluster`` is the chat session's explicit connection
+    ({context_name, kubeconfig_path}), None when the chat has none, or
+    {"unavailable": True} when it has one that's broken. Omit it to leave the
+    server dry run out entirely."""
     root = Path(root).resolve()
     target = Path(target).resolve()
     checks: list[Check] = []
@@ -528,5 +616,7 @@ def validate_edit(target, before: Optional[str], after: str, *, root) -> Validat
 
     if manifests_after:
         checks.append(_check_kubeconform(before, after))
+        if cluster is not _UNSET:
+            checks.append(_check_server_dry_run(before, after, cluster))
 
     return _result(checks)
