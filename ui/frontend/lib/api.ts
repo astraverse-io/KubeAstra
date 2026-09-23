@@ -273,6 +273,13 @@ export interface ChatStreamEvent {
   reason?: string;
   run_id?: string;
   step_id?: number;
+  // present on "write_proposed" (desktop agent proposed a local file edit)
+  token?: string;
+  root?: string;
+  created?: boolean;
+  diff?: string;              // sanitized; the card fetches the real diff
+  validation?: WriteValidation;
+  expires_at?: number;
 }
 
 /**
@@ -396,6 +403,58 @@ export async function revokeFolderGrant(id: string): Promise<{ revoked: boolean 
   return fetchJson(`/api/desktop/folders/grant/${encodeURIComponent(id)}`, {
     method: "DELETE",
   }) as Promise<{ revoked: boolean }>;
+}
+
+// ── Desktop: proposed local file edits (desktop mode only) ─────────────────────
+//
+// The agent never writes. propose_file_edit parks a validated edit and the chat
+// stream emits `write_proposed`; the user reviews the REAL diff (fetched here —
+// the stream only carries a sanitized one) and approves or discards it.
+
+export interface WriteValidationCheck {
+  name: string;
+  status: "pass" | "fail" | "warn" | "skipped";
+  detail: string;
+}
+
+export interface WriteValidation {
+  ok: boolean;
+  /** false when an applicable check was skipped — the UI stamps UNVALIDATED */
+  validated: boolean;
+  unvalidated_reason: string | null;
+  checks: WriteValidationCheck[];
+}
+
+export interface ProposedWrite {
+  token: string;
+  path: string;
+  root: string;
+  created: boolean;
+  reason: string;
+  diff: string;
+  validation: WriteValidation;
+  expires_at: number;
+}
+
+export async function getPendingWrite(token: string): Promise<ProposedWrite> {
+  return fetchJson(`/api/desktop/files/pending/${encodeURIComponent(token)}`) as Promise<ProposedWrite>;
+}
+
+export async function applyPendingWrite(
+  token: string,
+): Promise<{ written: boolean; path: string; created: boolean }> {
+  return fetchJson("/api/desktop/files/apply", { method: "POST", body: { token } }) as Promise<{
+    written: boolean;
+    path: string;
+    created: boolean;
+  }>;
+}
+
+export async function discardPendingWrite(token: string): Promise<{ discarded: boolean }> {
+  return fetchJson("/api/desktop/files/discard", {
+    method: "POST",
+    body: { token },
+  }) as Promise<{ discarded: boolean }>;
 }
 
 /**

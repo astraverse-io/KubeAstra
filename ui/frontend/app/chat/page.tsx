@@ -25,6 +25,7 @@ import { MissionControlLeftRail } from "../../components/MissionControlLeftRail"
 import { MissionControlDiagnosis } from "../../components/MissionControlDiagnosis";
 import { MissionControlApprovalOverlay } from "../../components/MissionControlApprovalOverlay";
 import { FolderAccessPrompt, type FolderAccessRequest } from "../../components/FolderAccessPrompt";
+import WriteApprovalCard from "../../components/WriteApprovalCard";
 import { MissionControlToolTrail } from "../../components/MissionControlToolTrail";
 import { CommandBar } from "../../components/CommandBar";
 import { DesktopBridge } from "../../components/DesktopBridge";
@@ -65,11 +66,32 @@ import {
   appendSessionMessages,
   fetchDesktopSetup,
   type DesktopSetupState,
+  type ProposedWrite,
 } from "../../lib/api";
 import FirstRunWizard from "../../components/FirstRunWizard";
 import DesktopSettings from "../../components/DesktopSettings";
 
 /* ── types ───────────────────────────────────────────────────── */
+
+// Desktop agent: a `write_proposed` stream event → the approval card's input.
+function proposedWriteFromEvent(evt: ChatStreamEvent): ProposedWrite | null {
+  if (evt.type !== "write_proposed" || !evt.token) return null;
+  return {
+    token: evt.token,
+    path: evt.path ?? "",
+    root: evt.root ?? "",
+    created: Boolean(evt.created),
+    reason: evt.reason ?? "",
+    diff: evt.diff ?? "",
+    validation: evt.validation ?? { ok: true, validated: false, unvalidated_reason: null, checks: [] },
+    expires_at: evt.expires_at ?? 0,
+  };
+}
+
+function withProposedWrite(m: Message, pw: ProposedWrite): Message {
+  if ((m.pendingWrites ?? []).some((w) => w.token === pw.token)) return m;
+  return { ...m, pendingWrites: [...(m.pendingWrites ?? []), pw] };
+}
 
 interface Message {
   id: string;
@@ -88,6 +110,9 @@ interface Message {
   captureId?: string;
   feedbackSent?: "up" | "down" | null;
   runId?: string | null;
+  // Desktop agent: local file edits proposed during this turn, each awaiting
+  // the user's approval (write_proposed events).
+  pendingWrites?: ProposedWrite[];
   costSummary?: {
     total_cost_usd: number;
     total_tokens_in: number;
@@ -1114,6 +1139,13 @@ export default function ChatPage() {
             m.id === thinkingMsg.id ? { ...m, loading: false, text: streamedText } : m,
           ),
         );
+      } else if (evt.type === "write_proposed") {
+        // The agent proposed a local file edit. Attach an approval card to this
+        // turn; the run keeps going. Nothing is written until the user approves.
+        const pw = proposedWriteFromEvent(evt);
+        if (pw) {
+          setMessages((prev) => prev.map((m) => (m.id === thinkingMsg.id ? withProposedWrite(m, pw) : m)));
+        }
       } else if (evt.type === "access_required") {
         // The agent needs a local folder it hasn't been granted. Surface the
         // consent prompt; the suspended run resumes after the grant (below).
@@ -1363,7 +1395,23 @@ export default function ChatPage() {
     const msgId = uid();
     setMessages((prev) => [...prev, { id: msgId, role: "assistant", text: "…", loading: true }]);
     try {
-      const res = await resumeFolderGrant(req.runId, req.stepId, () => {});
+      // The resumed run is often where the edit gets proposed (the first edit
+      // in a folder needs a write grant first), and it may ask for another
+      // grant (read, then write). Handle both instead of dropping the events.
+      const res = await resumeFolderGrant(req.runId, req.stepId, (evt) => {
+        const pw = proposedWriteFromEvent(evt);
+        if (pw) {
+          setMessages((prev) => prev.map((m) => (m.id === msgId ? withProposedWrite(m, pw) : m)));
+        } else if (evt.type === "access_required") {
+          setPendingFolderAccess({
+            path: evt.path ?? "",
+            mode: (evt.mode as "read" | "write") ?? "read",
+            reason: evt.reason,
+            runId: evt.run_id,
+            stepId: evt.step_id,
+          });
+        }
+      });
       setMessages((prev) =>
         prev.map((m) => (m.id === msgId ? { ...m, loading: false, text: res.reply ?? "" } : m)),
       );
@@ -2353,6 +2401,10 @@ export default function ChatPage() {
                     onFollowUp={(prompt) => submit(prompt)}
                   />
                 )}
+
+                {isOwnedSession && m.role === "assistant" && (m.pendingWrites ?? []).map((pw) => (
+                  <WriteApprovalCard key={pw.token} proposal={pw} />
+                ))}
 
                 {m.executionResult && (
                   <div
