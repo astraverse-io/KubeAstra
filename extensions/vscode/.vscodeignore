@@ -19,6 +19,7 @@ tsconfig.test.json
 .vscode-test.mjs
 .gitignore
 resources/marketplace-icon.svg
+CONTRIBUTING.md
 **/.DS_Store
 !out/extension.js
 !webview/dist/**

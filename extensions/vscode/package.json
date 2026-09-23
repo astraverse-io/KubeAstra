@@ -1,9 +1,9 @@
 {
   "name": "kubeastra-vscode",
   "displayName": "KubeAstra",
-  "description": "AI-powered Kubernetes investigation assistant, inside your editor.",
+  "description": "AI root-cause analysis for Kubernetes, inside your editor. Investigate crashing pods and manifests against your own cluster, then review and approve the fix.",
   "publisher": "astraverse-io",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "Apache-2.0",
   "preview": true,
   "repository": {
@@ -11,10 +11,16 @@
     "url": "https://github.com/astraverse-io/KubeAstra.git",
     "directory": "extensions/vscode"
   },
+  "homepage": "https://github.com/astraverse-io/KubeAstra/tree/main/extensions/vscode#readme",
+  "bugs": {
+    "url": "https://github.com/astraverse-io/KubeAstra/issues"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
+    "AI",
+    "Chat",
     "Other"
   ],
   "icon": "resources/icon.png",
@@ -25,8 +31,11 @@
   "keywords": [
     "kubernetes",
     "k8s",
+    "kubectl",
     "devops",
     "sre",
+    "troubleshooting",
+    "root cause analysis",
     "ai"
   ],
   "activationEvents": [
