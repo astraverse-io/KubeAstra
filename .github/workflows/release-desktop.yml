@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - 'desktop-v*'
+  # Build without minting a tag. The macOS lane took nine attempts to get
+  # right; doing that through real version tags would have left nine releases
+  # behind.
+  #
+  # A dispatched run publishes nothing ONLY because tagName is empty unless
+  # github.ref_type is 'tag' — see the build steps. tauri-action does not
+  # care what triggered the run: it expands __VERSION__ from tauri.conf.json,
+  # and if a release already exists under that tag it uploads into it. That
+  # is not hypothetical; it added an unverified MSI to the live 0.2.3 release
+  # and rewrote latest.json.
+  workflow_dispatch:
 
 jobs:
   build-desktop:
@@ -16,6 +27,9 @@ jobs:
           - platform: 'macos-latest'
             target: 'aarch64-apple-darwin'
             args: '--target aarch64-apple-darwin'
+          - platform: 'windows-latest'
+            target: 'x86_64-pc-windows-msvc'
+            args: '--target x86_64-pc-windows-msvc'
           # arm64 only. There is no x86_64 macOS entry and no Linux entry —
           # both deliberate, both explained in desktop/README.md § Platforms.
           #
@@ -26,6 +40,12 @@ jobs:
           # an arm64 runner would ship an arm64 sidecar inside an x86_64 app.
 
     runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        # windows-latest defaults to PowerShell. Every `run:` in this job is
+        # bash, and Git Bash ships on the image, so one default keeps both
+        # lanes running the same script instead of forking each step.
+        shell: bash
     # `secrets` is not available in a step-level `if`, but it is here.
     env:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
@@ -81,7 +101,7 @@ jobs:
       # launch + /health smoke test. PyInstaller exits 0 on all of those
       # failures, so calling it directly lets a broken bundle go green.
       - name: Build and verify PyInstaller backend
-        run: desktop/pyinstaller/build.sh /tmp/pyi-dist /tmp/pyi-work
+        run: desktop/pyinstaller/build.sh "$RUNNER_TEMP/pyi-dist" "$RUNNER_TEMP/pyi-work"
 
       # Shipped through bundle.resources, so the directory keeps its name and
       # carries no target-triple suffix. externalBin cannot be used here: it
@@ -89,10 +109,17 @@ jobs:
       # Contents/MacOS/, which strands _internal/ and breaks the launcher.
       - name: Stage sidecar for Tauri
         run: |
+          set -euo pipefail
           rm -rf desktop/src-tauri/binaries
           mkdir -p desktop/src-tauri/binaries
-          cp -r /tmp/pyi-dist/kubeastra-backend desktop/src-tauri/binaries/kubeastra-backend
-          test -x desktop/src-tauri/binaries/kubeastra-backend/kubeastra-backend
+          cp -r "$RUNNER_TEMP/pyi-dist/kubeastra-backend" desktop/src-tauri/binaries/kubeastra-backend
+          # PyInstaller appends .exe on Windows, and main.rs looks for exactly
+          # that name under cfg!(windows). Checked with -f rather than -x:
+          # Git Bash reports permission bits that do not mean what they do on
+          # a unix filesystem.
+          EXE=kubeastra-backend
+          [ "$RUNNER_OS" = "Windows" ] && EXE=kubeastra-backend.exe
+          test -f "desktop/src-tauri/binaries/kubeastra-backend/$EXE"
           test -d desktop/src-tauri/binaries/kubeastra-backend/_internal
 
       # Notarization needs every Mach-O in the bundle signed, and codesign does
@@ -111,7 +138,7 @@ jobs:
       # into Contents/Resources/, and Tauri sealing the .app afterwards records
       # them rather than replacing them.
       - name: Sign the sidecar binaries
-        if: env.HAS_APPLE_CERT == 'true'
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -187,14 +214,23 @@ jobs:
       # certificate actually exists. This needs no edit when the certs land —
       # add the secrets and the signed path takes over on its own.
       - name: Build Tauri App (unsigned)
-        if: env.HAS_APPLE_CERT != 'true'
+        if: env.HAS_APPLE_CERT != 'true' || !startsWith(matrix.platform, 'macos')
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: desktop-v__VERSION__
+          # Empty on anything that is not a tag push, which stops
+          # tauri-action creating or touching a release at all.
+          #
+          # __VERSION__ expands from tauri.conf.json, so on a dispatched run
+          # this resolved to the CURRENT version — matched the release already
+          # published under that tag, and uploaded into it. A CI test run
+          # added an unverified MSI to the live 0.2.3 release and rewrote the
+          # latest.json every installed copy polls. The trigger was never part
+          # of the decision; only the version was.
+          tagName: ${{ github.ref_type == 'tag' && 'desktop-v__VERSION__' || '' }}
           releaseName: 'KubeAstra Desktop v__VERSION__'
           releaseBody: 'Unsigned build — macOS will warn on first launch.'
           releaseDraft: true
@@ -207,7 +243,7 @@ jobs:
       # a secret base64-encoded and is materialised here, on the runner, for
       # the length of one job.
       - name: Materialize App Store Connect API key
-        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
@@ -219,7 +255,7 @@ jobs:
             || { echo "::error::APPLE_API_KEY_P8 did not decode to a PEM private key."; exit 1; }
 
       - name: Build Tauri App (signed, notarized with an API key)
-        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -233,7 +269,16 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: desktop-v__VERSION__
+          # Empty on anything that is not a tag push, which stops
+          # tauri-action creating or touching a release at all.
+          #
+          # __VERSION__ expands from tauri.conf.json, so on a dispatched run
+          # this resolved to the CURRENT version — matched the release already
+          # published under that tag, and uploaded into it. A CI test run
+          # added an unverified MSI to the live 0.2.3 release and rewrote the
+          # latest.json every installed copy polls. The trigger was never part
+          # of the decision; only the version was.
+          tagName: ${{ github.ref_type == 'tag' && 'desktop-v__VERSION__' || '' }}
           releaseName: 'KubeAstra Desktop v__VERSION__'
           releaseBody: 'See release notes for desktop updates.'
           releaseDraft: true
@@ -247,7 +292,7 @@ jobs:
       # an unset variable, so naming APPLE_API_* here would make Tauri choose
       # the API-key branch with blank credentials and fail.
       - name: Build Tauri App (signed, notarized with an app-specific password)
-        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY != 'true'
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY != 'true'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -259,13 +304,144 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: desktop-v__VERSION__
+          # Empty on anything that is not a tag push, which stops
+          # tauri-action creating or touching a release at all.
+          #
+          # __VERSION__ expands from tauri.conf.json, so on a dispatched run
+          # this resolved to the CURRENT version — matched the release already
+          # published under that tag, and uploaded into it. A CI test run
+          # added an unverified MSI to the live 0.2.3 release and rewrote the
+          # latest.json every installed copy polls. The trigger was never part
+          # of the decision; only the version was.
+          tagName: ${{ github.ref_type == 'tag' && 'desktop-v__VERSION__' || '' }}
           releaseName: 'KubeAstra Desktop v__VERSION__'
           releaseBody: 'See release notes for desktop updates.'
           releaseDraft: true
           prerelease: false
           workdir: desktop
           args: ${{ matrix.args }}
+
+      # The Windows counterpart of the .app check below. Weaker on purpose:
+      # confirming the sidecar runs from inside an *installed* app means
+      # actually running the MSI, which needs an elevated install and an
+      # uninstall to follow. That is a later phase. What this catches now is
+      # the failure that has bitten every other lane — a bundle that builds
+      # clean and ships nothing usable.
+      - name: Verify the Windows bundle
+        if: startsWith(matrix.platform, 'windows')
+        run: |
+          set -euo pipefail
+          MSI="$(find desktop/src-tauri/target -name '*.msi' | head -1)"
+          [ -n "$MSI" ] || { echo "::error::no MSI was produced"; exit 1; }
+          echo "built $MSI ($(du -m "$MSI" | cut -f1)MB)"
+
+          # An MSI that omits the sidecar still installs and then fails at
+          # launch, which is exactly how the macOS lane shipped a dead bundle
+          # twice. The sidecar is ~100MB, so a tiny MSI means it is missing.
+          size_mb="$(du -m "$MSI" | cut -f1)"
+          [ "$size_mb" -gt 40 ] || {
+            echo "::error::MSI is only ${size_mb}MB — the sidecar is almost certainly not in it"
+            exit 1
+          }
+
+          # The staged sidecar must at least start. build.sh already smoke
+          # tests it, but it runs before Tauri touches anything.
+          ./desktop/src-tauri/binaries/kubeastra-backend/kubeastra-backend.exe --help >/dev/null
+          echo "staged sidecar executes"
+
+      # The Windows counterpart of the .app check below, and the only way to
+      # learn what an installed layout actually looks like: msiexec puts the
+      # app somewhere the build tree cannot tell us, and resolve_backend_
+      # executable() has to find the sidecar there at runtime.
+      #
+      # pwsh rather than the job's bash default. msiexec is a native Windows
+      # program that needs a Windows path and, launched from bash, returns
+      # before the install finishes — so the checks would race it.
+      - name: Install the MSI and prove the installed app runs
+        if: startsWith(matrix.platform, 'windows')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msi = Get-ChildItem -Path desktop/src-tauri/target -Recurse -Filter *.msi |
+                 Select-Object -First 1
+          if (-not $msi) { throw "no MSI to install" }
+          Write-Host "installing $($msi.FullName)"
+
+          $p = Start-Process msiexec.exe -Wait -NoNewWindow -PassThru -ArgumentList `
+                 "/i", "`"$($msi.FullName)`"", "/quiet", "/norestart", "/l*v", "install.log"
+          if ($p.ExitCode -ne 0) {
+            Get-Content install.log -Tail 40
+            throw "msiexec install failed with $($p.ExitCode)"
+          }
+
+          $root = "C:\Program Files\KubeAstra"
+          if (-not (Test-Path $root)) { throw "nothing installed at $root" }
+          Write-Host "--- installed layout ---"
+          Get-ChildItem -Path $root -Recurse -Depth 2 |
+            Select-Object -ExpandProperty FullName
+
+          # Discover the shell rather than assume its name. Tauri names the
+          # Windows executable after the Cargo binary — kubeastra-desktop.exe
+          # — not after productName, exactly as on macOS where the bundle is
+          # KubeAstra.app but the binary inside is kubeastra-desktop.
+          # Asserting "KubeAstra.exe" failed against a perfectly good install.
+          $shell = Get-ChildItem -Path $root -Filter *.exe |
+                   Where-Object { $_.Name -ne "kubeastra-backend.exe" } |
+                   Select-Object -First 1
+          if (-not $shell) {
+            throw "no launcher .exe at the install root"
+          }
+          Write-Host "launcher: $($shell.FullName)"
+
+          # The failure this exists for: an installer that lays down the shell
+          # and not the backend. On macOS that shipped twice — a bundle that
+          # opened to a blank window because the sidecar was missing or its
+          # onedir tree had been flattened.
+          $sidecar = Get-ChildItem -Path $root -Recurse -Filter kubeastra-backend.exe |
+                     Select-Object -First 1
+          if (-not $sidecar) { throw "the installed app has no sidecar" }
+          Write-Host "sidecar installed at $($sidecar.FullName)"
+
+          $internal = Join-Path $sidecar.Directory.FullName "_internal"
+          if (-not (Test-Path $internal)) {
+            throw "_internal/ missing next to the sidecar — the onedir tree was flattened"
+          }
+
+          # Run the INSTALLED sidecar, not the staged one. It prints PORT=,
+          # then READY, once the ASGI app is serving.
+          $proc = Start-Process -FilePath $sidecar.FullName -PassThru -NoNewWindow `
+                    -RedirectStandardOutput sidecar.out -RedirectStandardError sidecar.err
+          try {
+            $ready = $false
+            foreach ($i in 1..60) {
+              Start-Sleep -Seconds 1
+              if (Test-Path sidecar.out) {
+                $out = Get-Content sidecar.out -Raw
+                if ($out -match "READY") { $ready = $true; break }
+              }
+            }
+            if (-not $ready) {
+              Write-Host "--- stdout ---"; Get-Content sidecar.out -ErrorAction SilentlyContinue
+              Write-Host "--- stderr ---"; Get-Content sidecar.err -ErrorAction SilentlyContinue
+              throw "the installed sidecar never reached READY"
+            }
+            $port = ([regex]::Match((Get-Content sidecar.out -Raw), "PORT=(\d+)")).Groups[1].Value
+            $health = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -UseBasicParsing -TimeoutSec 30
+            if ($health.StatusCode -ne 200) { throw "/health returned $($health.StatusCode)" }
+            Write-Host "installed sidecar healthy on port $port"
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+          # Uninstall, so the runner is not left in a state the next step
+          # silently depends on — and so a broken uninstaller is caught here
+          # rather than by whoever tries to remove the app.
+          $u = Start-Process msiexec.exe -Wait -NoNewWindow -PassThru -ArgumentList `
+                 "/x", "`"$($msi.FullName)`"", "/quiet", "/norestart"
+          if ($u.ExitCode -ne 0) { throw "msiexec uninstall failed with $($u.ExitCode)" }
+          if (Test-Path $shell.FullName) { throw "uninstall left $($shell.FullName) behind" }
+          if (Test-Path $root) { throw "uninstall left $root behind" }
+          Write-Host "installed, verified, and uninstalled cleanly"
 
       # The check that matters. Every earlier gate passed on a .app whose
       # sidecar could not start — bundling had flattened the onedir tree, so
@@ -333,7 +509,7 @@ jobs:
       # The DMG has already been uploaded to the draft release by this point,
       # so the stapled copy replaces it with --clobber.
       - name: Notarize and staple the DMG
-        if: env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_API_KEY == 'true'
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -358,5 +534,13 @@ jobs:
           xcrun stapler validate "$DMG"
           spctl -a -vvv -t open --context context:primary-signature "$DMG"
 
-          gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber \
-            --repo "$GITHUB_REPOSITORY"
+          # Only a tag push has a release to upload to. A dispatched run
+          # still notarizes and staples — that is the part worth verifying —
+          # but GITHUB_REF_NAME is a branch there, and `gh release upload`
+          # ends the job with a bare "release not found".
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            echo "dispatched run on $GITHUB_REF_NAME — notarized and stapled, nothing to upload"
+          fi
