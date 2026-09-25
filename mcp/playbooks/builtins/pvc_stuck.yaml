@@ -1,0 +1,65 @@
+name: pvc_stuck
+description: >
+  Investigate a PersistentVolumeClaim stuck in Pending — checks events for
+  provisioner errors, lists PVCs in the namespace, and checks storage classes
+  to determine if the issue is a missing StorageClass, capacity, or binding.
+category: storage
+severity_hint: high
+tags: [pvc, storage, volume, persistent]
+
+triggers:
+  - type: category
+    pattern: "storage"
+  - type: error
+    pattern: "persistentvolumeclaim.*not found|no persistent volumes|FailedMount|storageclass.*not found"
+  - type: event
+    pattern: "FailedMount|FailedBinding|ProvisioningFailed"
+
+params:
+  - name: namespace
+    required: true
+    description: Namespace to check for stuck PVCs
+  - name: pod_name
+    required: false
+    default: ""
+    description: Optional pod name that depends on the PVC
+
+steps:
+  - tool: get_events
+    params:
+      namespace: "{{ namespace }}"
+    store_as: events
+
+  - tool: describe_pod
+    params:
+      namespace: "{{ namespace }}"
+      pod_name: "{{ pod_name }}"
+    store_as: describe
+    condition: "{{ pod_name }}"
+    on_error: continue
+
+  - tool: list_namespace_resources
+    params:
+      namespace: "{{ namespace }}"
+    store_as: resources
+
+synthesis:
+  prompt: |
+    Investigate stuck PersistentVolumeClaims in namespace {{ namespace }}.
+
+    {{ "Pod waiting on PVC: " + pod_name if pod_name else "No specific pod — checking all PVCs in namespace." }}
+
+    --- Recent events ---
+    {{ events }}
+
+    --- Pod describe (if applicable) ---
+    {{ describe }}
+
+    --- Namespace resources ---
+    {{ resources }}
+
+    Focus on:
+    1. Which PVC is stuck and why (no StorageClass, no matching PV, capacity)
+    2. Whether the StorageClass exists and has a provisioner configured
+    3. If this is blocking dependent pods from starting
+    4. Provide fix commands (create StorageClass, resize PV, or bind manually)

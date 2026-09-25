@@ -1,0 +1,38 @@
+# Sample RAG ingestion config (blueprint §7).
+# Read by mcp/scripts/reindex.py.
+#
+# Set RAG_CONFIG=/etc/rag/config.yaml in the CronJob to use this in-cluster.
+
+sources:
+  # Local directory mounted into the pod (e.g. from a ConfigMap or PVC).
+  - kind: local_path
+    path: /knowledge
+    recursive: true
+    # Optional: extra metadata propagated to every chunk's payload.
+    # Use COMMON_FIELDS keys so the retrieval router can filter on them.
+    metadata:
+      source: "local_path:/knowledge"
+
+  # Git repository — shallow-cloned at ingest time, walked, then discarded.
+  # Token-based auth for private repos: set token_env to the env var name.
+  # Token bytes never appear in logs (we route subprocess stderr to PIPE).
+  - kind: git_repo
+    url: https://github.com/your-org/devops-runbooks
+    branch: main
+    subdir: docs               # optional — walk only this subtree
+    token_env: GITHUB_TOKEN    # optional — only used when url is https://
+    clone_timeout_seconds: 120
+    metadata:
+      source: "git_repo:devops-runbooks@main"
+
+chunking:
+  # Per-chunk token budget. Sections shorter than this become one chunk;
+  # longer sections are split into overlapping windows.
+  max_tokens: 400
+  # Window overlap (tokens) between consecutive chunks of a long section.
+  # 0 = no overlap (faster, but neighboring chunks share no context).
+  overlap_tokens: 60
+
+# When true, run discovery + chunking + dedupe but skip embedding + upsert.
+# Useful for verifying config / counting work before paying embed cost.
+dry_run: false

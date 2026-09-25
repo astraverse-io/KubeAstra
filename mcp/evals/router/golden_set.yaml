@@ -1,0 +1,75 @@
+# RAG router eval set (blueprint §8 + Appendix E).
+#
+# Each case has:
+#   name                      — short identifier for CI output
+#   seed                      — list of {collection, payload, query} entries
+#                               to upsert into Qdrant before the eval runs
+#   query                     — the question to route
+#   expected_mode             — "cached" | "grounded" | "cold"
+#   expected_top_collection?  — optional: which collection should win
+#   expected_min_score?       — optional: min similarity for the top hit
+#   expected_max_score?       — optional: max similarity (for cold cases)
+#   expected_citation_substr? — optional: substring expected in top citation URL
+
+# ── Cached: verified runbook, exact-ish match ─────────────────────────────────
+- name: cached_verified_runbook
+  seed:
+    - collection: runbook
+      query: "CrashLoopBackOff after deploy in production"
+      payload:
+        title: "CrashLoopBackOff recovery"
+        url: "https://runbooks/crashloop"
+        section: "Recovery"
+        content: "Roll back the deployment via kubectl rollout undo."
+        verified: true
+        resolution: "Run kubectl rollout undo deployment/<name>"
+  query: "CrashLoopBackOff after deploy in production"
+  expected_mode: cached
+  expected_top_collection: runbook
+  expected_min_score: 0.92
+  expected_citation_substr: "crashloop"
+
+# ── Grounded: high-score devops_doc hit, no runbook ───────────────────────────
+- name: grounded_devops_doc
+  seed:
+    - collection: devops_doc
+      query: "investigate stuck PVC in storage"
+      payload:
+        title: "PVC troubleshooting"
+        url: "file:///knowledge/pvc.md"
+        section: "Diagnosis"
+        content: "Check pvc/<name> -o yaml for stuck state."
+        verified: true
+  query: "investigate stuck PVC in storage"
+  expected_mode: grounded
+  expected_top_collection: devops_doc
+  expected_min_score: 0.70
+
+# ── Grounded: unverified runbook still gets grounded mode ─────────────────────
+- name: unverified_runbook_grounded_not_cached
+  seed:
+    - collection: runbook
+      query: "ImagePullBackOff missing imagePullSecret"
+      payload:
+        title: "Unverified draft"
+        url: "https://drafts/imagepull"
+        content: "Add the imagePullSecret to the deployment."
+        verified: false
+  query: "ImagePullBackOff missing imagePullSecret"
+  # Cached requires verified=True AND collection=runbook. Unverified falls
+  # through to grounded.
+  expected_mode: grounded
+  expected_top_collection: runbook
+
+# ── Cold: empty content corpus ───────────────────────────────────────────────
+# Note: "off-topic query against seeded content" is an essential test case
+# but can only be evaluated meaningfully with a REAL sentence-transformers
+# embedder — the offline fake embedder uses hash-derived vectors, which
+# don't have semantic distance properties. The fake can score random
+# unrelated strings at ~0.9 similarity by chance.
+#
+# That case lives in `golden_set_live.yaml` (gated on EVAL_LIVE_LLM=true).
+- name: cold_no_content
+  seed: []
+  query: "any random question"
+  expected_mode: cold

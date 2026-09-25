@@ -1,0 +1,79 @@
+name: crashloop
+description: >
+  Investigate a pod stuck in CrashLoopBackOff — collects describe, current logs,
+  previous container logs, and events, then runs AI analysis to identify
+  root cause and suggest fixes.
+category: pod
+severity_hint: critical
+tags: [pod, crash, restart, backoff]
+
+triggers:
+  - type: status
+    pattern: "CrashLoopBackOff"
+  - type: category
+    pattern: "pod_crashloop"
+  - type: event
+    pattern: "BackOff"
+
+params:
+  - name: namespace
+    required: true
+    description: Namespace containing the pod
+  - name: pod_name
+    required: true
+    description: Name of the crashing pod
+  - name: tail
+    required: false
+    default: 200
+    description: Number of log lines to retrieve
+
+steps:
+  - tool: describe_pod
+    params:
+      namespace: "{{ namespace }}"
+      pod_name: "{{ pod_name }}"
+    store_as: describe
+
+  - tool: get_pod_logs
+    params:
+      namespace: "{{ namespace }}"
+      pod_name: "{{ pod_name }}"
+      previous: false
+      tail: "{{ tail }}"
+    store_as: logs_current
+
+  - tool: get_pod_logs
+    params:
+      namespace: "{{ namespace }}"
+      pod_name: "{{ pod_name }}"
+      previous: true
+      tail: "{{ tail }}"
+    store_as: logs_previous
+
+  - tool: get_events
+    params:
+      namespace: "{{ namespace }}"
+    store_as: events
+
+synthesis:
+  prompt: |
+    Investigate this CrashLoopBackOff pod and provide a root cause diagnosis.
+
+    Pod: {{ pod_name }} in namespace {{ namespace }}
+
+    --- kubectl describe pod ---
+    {{ describe }}
+
+    --- Current logs ---
+    {{ logs_current }}
+
+    --- Previous container logs ---
+    {{ logs_previous }}
+
+    --- Recent events ---
+    {{ events }}
+
+    Analyze the root cause. Focus on:
+    1. Why the container is exiting (exit code, error messages in logs)
+    2. Whether it's a code error, missing dependency, or config issue
+    3. Provide fix commands that RESOLVE the issue (not diagnostic commands)

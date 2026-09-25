@@ -1,0 +1,61 @@
+name: pending_pod
+description: >
+  Investigate a pod stuck in Pending state — checks describe for scheduling
+  failures, events for resource constraints, and node status to identify
+  whether it's a capacity, taint, or affinity issue.
+category: pod
+severity_hint: high
+tags: [pod, pending, scheduling, resources, node]
+
+triggers:
+  - type: status
+    pattern: "Pending"
+  - type: category
+    pattern: "pod_pending"
+  - type: error
+    pattern: "Unschedulable|nodes are available|Insufficient"
+
+params:
+  - name: namespace
+    required: true
+    description: Namespace containing the pod
+  - name: pod_name
+    required: true
+    description: Name of the pending pod
+
+steps:
+  - tool: describe_pod
+    params:
+      namespace: "{{ namespace }}"
+      pod_name: "{{ pod_name }}"
+    store_as: describe
+
+  - tool: get_events
+    params:
+      namespace: "{{ namespace }}"
+    store_as: events
+
+  - tool: get_nodes
+    params: {}
+    store_as: nodes
+
+synthesis:
+  prompt: |
+    Investigate this Pending pod that cannot be scheduled.
+
+    Pod: {{ pod_name }} in namespace {{ namespace }}
+
+    --- kubectl describe pod ---
+    {{ describe }}
+
+    --- Recent events ---
+    {{ events }}
+
+    --- Cluster nodes ---
+    {{ nodes }}
+
+    Focus on:
+    1. Scheduling failure reason (insufficient resources, taints, node selector, affinity)
+    2. Compare pod resource requests vs available node capacity
+    3. Check if nodes have taints that the pod doesn't tolerate
+    4. Provide fix commands (adjust requests, add tolerations, scale nodes)

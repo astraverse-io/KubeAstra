@@ -104,3 +104,7 @@ graphify-out/
 desktop/build/
 desktop/src-tauri/binaries/
 desktop/src-tauri/gen/schemas/
+
+# Personal, per-machine Claude Code settings (this repo is public). Holds a
+# local PreToolUse hook that pins pushes to the pruthviraja GitHub account.
+.claude/settings.local.json

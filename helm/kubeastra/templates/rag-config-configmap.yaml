@@ -1,0 +1,21 @@
+{{/*
+RAG ingestion config (blueprint §7). Mounted as /etc/rag/config.yaml in
+the ingestion CronJob. The reindex.py script reads it via RAG_CONFIG env.
+
+The whole config goes into a single `config.yaml` key. Edit values.yaml
+under `rag.ingestion.config` to change sources / chunking parameters
+without re-templating the chart.
+*/}}
+{{- if and .Values.qdrant.enabled .Values.rag.ingestion.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubeastra.fullname" . }}-rag-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "kubeastra.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rag-ingestion
+data:
+  config.yaml: |
+    {{- toYaml .Values.rag.ingestion.config | nindent 4 }}
+{{- end }}

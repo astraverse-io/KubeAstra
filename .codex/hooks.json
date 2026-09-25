@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CMD=$(jq -r '.tool_input.command // \"\"' 2>/dev/null); if printf '%s' \"$CMD\" | grep -Eq 'git( +-C +[^ ]+)? +push'; then GH=$(command -v gh || echo /opt/homebrew/bin/gh); \"$GH\" auth switch --user pruthviraja >/dev/null 2>&1; fi; exit 0",
+            "statusMessage": "Switching to pruthviraja for push"
+          }
+        ]
+      }
+    ]
+  }
+}

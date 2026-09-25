@@ -1,0 +1,58 @@
+name: node_pressure
+description: >
+  Investigate node pressure conditions (disk, memory, PID) — checks node status,
+  events, and pods on affected nodes to determine eviction risk and capacity.
+category: cluster
+severity_hint: critical
+tags: [node, pressure, eviction, capacity, disk, memory]
+
+triggers:
+  - type: category
+    pattern: "node"
+  - type: error
+    pattern: "NotReady|node.*pressure|cordoned|kubelet.*not.*running"
+  - type: event
+    pattern: "NodeNotReady|NodeHasDiskPressure|NodeHasMemoryPressure|Evicted"
+
+params:
+  - name: namespace
+    required: false
+    default: "*"
+    description: Namespace to check for affected pods (default all)
+
+steps:
+  - tool: get_nodes
+    params: {}
+    store_as: nodes
+
+  - tool: get_events
+    params:
+      namespace: "{{ namespace }}"
+      field_selector: "type=Warning"
+    store_as: warning_events
+
+  - tool: get_pods
+    params:
+      namespace: "{{ namespace }}"
+      status_filter: "Evicted"
+    store_as: evicted_pods
+    on_error: continue
+
+synthesis:
+  prompt: |
+    Investigate node pressure across the cluster.
+
+    --- Node status ---
+    {{ nodes }}
+
+    --- Warning events ---
+    {{ warning_events }}
+
+    --- Evicted pods ---
+    {{ evicted_pods }}
+
+    Focus on:
+    1. Which nodes are under pressure and what type (disk, memory, PID)
+    2. How many pods have been evicted
+    3. Whether the cluster needs more capacity or if a specific workload is consuming too much
+    4. Immediate actions (cordon, drain) and longer-term fixes (scale cluster, adjust limits)

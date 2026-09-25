@@ -1,0 +1,77 @@
+name: dns_failure
+description: >
+  Investigate DNS resolution failures — checks CoreDNS pods, service endpoints,
+  and networking events to determine if DNS is down, misconfigured, or
+  if the issue is service-level routing.
+category: networking
+severity_hint: critical
+tags: [dns, coredns, networking, resolution, service]
+
+triggers:
+  - type: category
+    pattern: "networking"
+  - type: error
+    pattern: "dial.*timeout|connection refused|no route to host|network.*unreachable|nslookup.*failed|NXDOMAIN"
+
+params:
+  - name: namespace
+    required: false
+    default: ""
+    description: Namespace where DNS failures are observed
+  - name: service_name
+    required: false
+    default: ""
+    description: Service name that cannot be resolved
+
+steps:
+  - tool: get_pods
+    params:
+      namespace: "kube-system"
+    store_as: kube_system_pods
+
+  - tool: get_events
+    params:
+      namespace: "kube-system"
+      field_selector: "type=Warning"
+    store_as: kube_system_events
+
+  - tool: get_service
+    params:
+      namespace: "{{ namespace }}"
+      service_name: "{{ service_name }}"
+    store_as: service_details
+    condition: "{{ service_name }}"
+    on_error: continue
+
+  - tool: get_endpoints
+    params:
+      namespace: "{{ namespace }}"
+      service_name: "{{ service_name }}"
+    store_as: endpoints
+    condition: "{{ service_name }}"
+    on_error: continue
+
+synthesis:
+  prompt: |
+    Investigate DNS resolution failures in the cluster.
+
+    {{ "Namespace: " + namespace if namespace else "Cluster-wide investigation" }}
+    {{ "Failed service: " + service_name if service_name else "" }}
+
+    --- CoreDNS / kube-system pods ---
+    {{ kube_system_pods }}
+
+    --- kube-system warning events ---
+    {{ kube_system_events }}
+
+    --- Service details (if applicable) ---
+    {{ service_details }}
+
+    --- Service endpoints (if applicable) ---
+    {{ endpoints }}
+
+    Focus on:
+    1. Is CoreDNS running and healthy?
+    2. Are there any networking events or errors in kube-system?
+    3. If a specific service can't be resolved, does it have endpoints?
+    4. Provide fix commands (restart CoreDNS, check service selectors, fix endpoints)

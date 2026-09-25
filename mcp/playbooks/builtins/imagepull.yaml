@@ -1,0 +1,54 @@
+name: imagepull
+description: >
+  Investigate ImagePullBackOff or ErrImagePull — checks describe for image details
+  and events for registry errors to determine if the issue is a wrong tag,
+  missing image, or authentication failure.
+category: pod
+severity_hint: high
+tags: [pod, image, registry, pull]
+
+triggers:
+  - type: status
+    pattern: "ImagePullBackOff|ErrImagePull"
+  - type: category
+    pattern: "pod_image"
+  - type: error
+    pattern: "ImagePullBackOff|ErrImagePull|manifest.*not found|unauthorized.*repository"
+
+params:
+  - name: namespace
+    required: true
+    description: Namespace containing the pod
+  - name: pod_name
+    required: true
+    description: Name of the pod with image pull errors
+
+steps:
+  - tool: describe_pod
+    params:
+      namespace: "{{ namespace }}"
+      pod_name: "{{ pod_name }}"
+    store_as: describe
+
+  - tool: get_events
+    params:
+      namespace: "{{ namespace }}"
+    store_as: events
+
+synthesis:
+  prompt: |
+    Investigate this ImagePullBackOff pod.
+
+    Pod: {{ pod_name }} in namespace {{ namespace }}
+
+    --- kubectl describe pod ---
+    {{ describe }}
+
+    --- Recent events ---
+    {{ events }}
+
+    Focus on:
+    1. The exact image name and tag — is the tag correct? Does the image exist?
+    2. Registry authentication — is there a missing imagePullSecret?
+    3. Network connectivity to the registry
+    4. Provide the exact fix commands (correct the image tag, add pull secret, etc.)

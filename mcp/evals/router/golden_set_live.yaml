@@ -1,0 +1,37 @@
+# Router golden set — LIVE-only cases.
+#
+# These cases require semantic understanding (real sentence-transformers
+# embeddings, not the offline hash-fake). They're gated on EVAL_LIVE_LLM=true
+# and run nightly on main.
+#
+# Pass criterion: same as offline — 100% expected_mode match.
+
+# ── Off-topic query against seeded K8s content → cold ───────────────────────
+- name: cold_off_topic_query
+  seed:
+    - collection: devops_doc
+      query: "Kubernetes pod troubleshooting basics"
+      payload:
+        title: "K8s pod basics"
+        url: "file:///knowledge/pods.md"
+        content: "Pods are the smallest deployable units in Kubernetes."
+        verified: true
+  query: "best brownie recipe with chocolate chips"
+  expected_mode: cold
+  expected_max_score: 0.50
+
+# ── Paraphrased query → grounded (semantic similarity, not lexical) ─────────
+- name: paraphrased_grounded
+  seed:
+    - collection: devops_doc
+      query: "How to recover from an OOMKilled container"
+      payload:
+        title: "OOMKilled recovery"
+        url: "file:///knowledge/oom.md"
+        content: "Increase the memory limit and redeploy the workload."
+        verified: true
+  # Different words, same intent — only a real embedder catches this.
+  query: "container ran out of memory, what do I do?"
+  expected_mode: grounded
+  expected_min_score: 0.60
+  expected_top_collection: devops_doc

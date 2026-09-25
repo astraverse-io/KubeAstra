@@ -1,0 +1,75 @@
+name: oomkilled
+description: >
+  Investigate a pod killed due to Out-Of-Memory (OOMKilled) — collects describe
+  to check resource limits, previous container logs for memory patterns,
+  and events for eviction signals.
+category: pod
+severity_hint: high
+tags: [pod, oom, memory, resources]
+
+triggers:
+  - type: status
+    pattern: "OOMKilled"
+  - type: category
+    pattern: "pod_oom"
+  - type: error
+    pattern: "OOMKilled|OutOfMemory|memory limit exceeded"
+
+params:
+  - name: namespace
+    required: true
+    description: Namespace containing the pod
+  - name: pod_name
+    required: true
+    description: Name of the OOMKilled pod
+
+steps:
+  - tool: describe_pod
+    params:
+      namespace: "{{ namespace }}"
+      pod_name: "{{ pod_name }}"
+    store_as: describe
+
+  - tool: get_pod_logs
+    params:
+      namespace: "{{ namespace }}"
+      pod_name: "{{ pod_name }}"
+      previous: true
+      tail: 200
+    store_as: logs_previous
+
+  - tool: get_events
+    params:
+      namespace: "{{ namespace }}"
+    store_as: events
+
+  - tool: get_deployment
+    params:
+      namespace: "{{ namespace }}"
+      deployment_name: "{{ pod_name }}"
+    store_as: deployment
+    on_error: continue
+
+synthesis:
+  prompt: |
+    Investigate this OOMKilled pod and diagnose the memory issue.
+
+    Pod: {{ pod_name }} in namespace {{ namespace }}
+
+    --- kubectl describe pod ---
+    {{ describe }}
+
+    --- Previous container logs (before OOM) ---
+    {{ logs_previous }}
+
+    --- Recent events ---
+    {{ events }}
+
+    --- Deployment (if available) ---
+    {{ deployment }}
+
+    Focus on:
+    1. Current memory limits vs requests
+    2. Whether the limit is too low or the application has a memory leak
+    3. Recommended memory limit adjustment (be specific with numbers)
+    4. Provide kubectl commands to increase memory limits

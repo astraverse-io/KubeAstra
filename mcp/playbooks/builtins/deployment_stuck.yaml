@@ -1,0 +1,71 @@
+name: deployment_stuck
+description: >
+  Investigate a deployment that is not progressing — checks rollout status,
+  deployment details, pod status, and events to determine if the issue is
+  a failed rollout, insufficient replicas, or a deadline exceeded.
+category: pod
+severity_hint: high
+tags: [deployment, rollout, stuck, replicas, progressdeadline]
+
+triggers:
+  - type: category
+    pattern: "deployment_stuck"
+  - type: error
+    pattern: "ProgressDeadlineExceeded|does not have minimum availability|unavailable replicas"
+  - type: event
+    pattern: "ProgressDeadlineExceeded|FailedCreate|ReplicaSetUpdated"
+
+params:
+  - name: namespace
+    required: true
+    description: Namespace containing the deployment
+  - name: deployment_name
+    required: true
+    description: Name of the stuck deployment
+
+steps:
+  - tool: get_deployment
+    params:
+      namespace: "{{ namespace }}"
+      deployment_name: "{{ deployment_name }}"
+    store_as: deployment
+
+  - tool: get_rollout_status
+    params:
+      namespace: "{{ namespace }}"
+      deployment_name: "{{ deployment_name }}"
+    store_as: rollout
+
+  - tool: get_pods
+    params:
+      namespace: "{{ namespace }}"
+    store_as: pods
+
+  - tool: get_events
+    params:
+      namespace: "{{ namespace }}"
+    store_as: events
+
+synthesis:
+  prompt: |
+    Investigate this stuck deployment.
+
+    Deployment: {{ deployment_name }} in namespace {{ namespace }}
+
+    --- Deployment details ---
+    {{ deployment }}
+
+    --- Rollout status ---
+    {{ rollout }}
+
+    --- Pods in namespace ---
+    {{ pods }}
+
+    --- Recent events ---
+    {{ events }}
+
+    Focus on:
+    1. Is this a failed rollout? What changed in the latest revision?
+    2. Are new pods failing to start? (check pod statuses)
+    3. Is it a resource quota or scheduling issue preventing new replicas?
+    4. Provide fix commands (rollback, scale, patch, or adjust resources)
