@@ -1,0 +1,149 @@
+"""Bridge the native tool-calling loop (loop.py) into react_loop's contract.
+
+``run_native_react`` adapts :func:`harness.loop.run_native_tool_loop` so that,
+from the outside, a native run looks exactly like a text-ReAct run:
+
+- it returns a ``ReActResult`` (answer + steps + totals),
+- it emits the same ``on_event`` SSE shapes the text harness uses
+  (``step_complete`` per tool call, ``answer_start`` / ``token`` / ``answer_end``),
+- it records steps and the final rollup through ``agent_run_recorder``,
+- tool observations go through ``react._truncate_observation`` → the same
+  envelope + ``sanitize_observation`` secret-scrubbing as the text path.
+
+Called from ``react_loop`` only when ``AGENT_HARNESS_V2`` is set and the provider
+reports ``supports_native_tools()``; everything else stays on text-ReAct. Heavy
+imports are deferred to call time because ``react`` imports this module lazily.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any, Callable, Optional
+
+from .loop import LoopResult, StepRecord, run_native_tool_loop
+
+logger = logging.getLogger(__name__)
+
+# Native tool-calling needs no "emit action JSON" instructions (the text-ReAct
+# prompt's whole middle section) — tools are passed structurally — so the system
+# prompt only sets role and investigative intent.
+_NATIVE_SYSTEM = (
+    "You are KubeAstra, an expert Kubernetes investigation assistant. Use the "
+    "provided tools to gather evidence before you answer: call tools to inspect "
+    "the cluster, then give a clear, specific answer grounded in what the tools "
+    "returned. Do not guess when a tool can tell you."
+)
+
+
+def run_native_react(
+    *,
+    question: str,
+    provider: Any,
+    dispatch_fn: Callable[[str, dict], dict],
+    on_event: Optional[Callable[[dict], None]] = None,
+    run_recorder: Optional[Any] = None,
+    tool_scope: Optional[set] = None,
+    memory_preamble: str = "",
+    grounded_preamble: str = "",
+    max_steps: int = 12,
+) -> Any:
+    """Run one native tool-calling investigation and return a ``ReActResult``."""
+    # Deferred imports: react imports this module, so import react lazily here.
+    from react import ReActResult, ReActStep, _truncate_observation
+    from agent_run_recorder import finish as _rec_finish
+    from agent_run_recorder import record as _rec_step
+    from services.llm.pricing import TokenUsage
+    from tool_registry import build_native_tool_specs
+
+    tools = build_native_tool_specs(allowed_tools=tool_scope)
+
+    system = _NATIVE_SYSTEM
+    preamble = "\n\n".join(p for p in (grounded_preamble, memory_preamble) if p)
+    if preamble:
+        system = f"{system}\n\n{preamble}"
+
+    steps: list[Any] = []
+    started = time.monotonic()
+
+    def _emit(event: dict) -> None:
+        if on_event:
+            try:
+                on_event(event)
+            except Exception:  # progress reporting must never affect correctness
+                pass
+
+    def execute_tool(name: str, arguments: dict) -> str:
+        result = dispatch_fn(name, arguments)
+        try:
+            return _truncate_observation(result, name)
+        except Exception:  # defensive: never let formatting crash a run
+            logger.warning("native harness: observation formatting failed for %s", name)
+            return str(result)
+
+    def on_step(rec: StepRecord) -> None:
+        step = ReActStep(
+            iteration=rec.index + 1,
+            thought=rec.thought,
+            action=rec.tool_name,
+            action_params=rec.arguments,
+            observation=rec.observation,
+        )
+        steps.append(step)
+        _rec_step(
+            run_recorder,
+            iteration=step.iteration,
+            action=step.action,
+            status="error" if rec.error else "ok",
+            step_kind="tool",
+            thought=step.thought,
+            observation_preview=rec.observation,
+        )
+        _emit(
+            {
+                "type": "step_complete",
+                "iteration": step.iteration,
+                "thought": step.thought,
+                "action": step.action,
+                "action_params": step.action_params,
+                "observation": rec.observation,
+                "error": rec.error,
+            }
+        )
+
+    def on_answer(answer: str) -> None:
+        _emit({"type": "answer_start"})
+        if answer:
+            _emit({"type": "token", "content": answer})
+        _emit({"type": "answer_end", "answer": answer})
+
+    result: LoopResult = run_native_tool_loop(
+        provider=provider,
+        question=question,
+        tools=tools,
+        execute_tool=execute_tool,
+        system=system,
+        max_steps=max_steps,
+        on_step=on_step,
+        on_answer=on_answer,
+    )
+
+    usage = result.usage or TokenUsage()
+    last_tool = steps[-1].action if steps else ""
+    _rec_finish(
+        run_recorder,
+        final_answer=result.answer,
+        final_tool=last_tool,
+        total_tokens_in=usage.tokens_in,
+        total_tokens_out=usage.tokens_out,
+        total_cached_tokens_in=usage.cached_tokens_in,
+        total_cost_usd=usage.cost_usd,
+    )
+
+    return ReActResult(
+        answer=result.answer,
+        tool_used=last_tool,
+        steps=steps,
+        total_iterations=len(steps),
+        total_duration_ms=(time.monotonic() - started) * 1000.0,
+    )
