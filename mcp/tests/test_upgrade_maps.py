@@ -64,3 +64,13 @@ def test_validator_flags_missing_replacement():
 def test_validator_flags_bad_version():
     bad = {"deprecations": [{"kind": "X", "group": "g", "version": "v1", "removed_in": "soon", "replacement": None}]}
     assert any("removed_in" in p for p in validate_api_deprecations(bad))
+
+
+def test_load_maps_is_cached():
+    # Review fix #1: repeated calls reuse the parsed result (no re-read from disk).
+    from services.upgrade import load_maps as lm
+
+    lm.cache_clear()
+    a = lm()
+    b = lm()
+    assert a is b

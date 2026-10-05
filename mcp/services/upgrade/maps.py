@@ -7,6 +7,7 @@ the deterministic knowledge the planner reasons over — the API-deprecation map
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -93,9 +94,15 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text()) or {}
 
 
+@lru_cache(maxsize=8)
 def load_maps(data_dir: Optional[Path] = None, *, strict: bool = False) -> dict[str, Any]:
     """Load all three maps. With ``strict=True`` raise on an invalid deprecation
-    map; otherwise return what parsed (the planner degrades gracefully)."""
+    map; otherwise return what parsed (the planner degrades gracefully).
+
+    Cached: the data files are read-only at runtime, so repeated calls (e.g. one
+    per ``assess``) reuse the parsed result instead of re-reading from disk.
+    Callers must treat the returned dict as read-only. Use ``load_maps.cache_clear()``
+    in a test that writes a temp data_dir between calls."""
     d = Path(data_dir) if data_dir else _DATA_DIR
     api_raw = _load_yaml(d / "api_deprecations.yaml")
     if strict:

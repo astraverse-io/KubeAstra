@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 MCP_DIR = Path(__file__).resolve().parents[1]
 if str(MCP_DIR) not in sys.path:
     sys.path.insert(0, str(MCP_DIR))
@@ -104,3 +106,19 @@ def test_generator_parse_pluto_maps_and_filters():
     assert psp["removed_in"] == "1.25" and psp["replacement"] is None
     ing = next(r for r in rows if r["kind"] == "Ingress")
     assert ing["group"] == "networking.k8s.io" and ing["version"] == "v1beta1"
+
+
+def _load_generator():
+    gen_path = MCP_DIR / "scripts" / "gen_api_deprecations.py"
+    spec = importlib.util.spec_from_file_location("gen_api_deprecations", gen_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_generator_fetch_rejects_non_https():
+    # Review fix #2: _fetch must refuse file:// / http:// (SSRF / local-file guard).
+    mod = _load_generator()
+    for bad in ("file:///etc/passwd", "http://example.com/x", "ftp://host/x"):
+        with pytest.raises(ValueError):
+            mod._fetch(bad)

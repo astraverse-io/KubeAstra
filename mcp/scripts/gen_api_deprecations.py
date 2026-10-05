@@ -93,7 +93,11 @@ def _dump_yaml(deprecations: list[dict[str, Any]]) -> str:
 def _fetch(url: str) -> dict[str, Any]:
     from urllib.request import urlopen
 
-    with urlopen(url, timeout=30) as resp:  # noqa: S310 - fixed, trusted URL
+    if not url.startswith("https://"):
+        # Only https — refuse file://, http://, and other schemes so a stray
+        # --url can't turn this into a local-file read or an SSRF vector.
+        raise ValueError(f"--url must be an https URL, got: {url!r}")
+    with urlopen(url, timeout=30) as resp:  # noqa: S310 - scheme checked above
         return json.loads(resp.read().decode("utf-8"))
 
 
