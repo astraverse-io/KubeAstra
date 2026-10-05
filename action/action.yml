@@ -1,0 +1,67 @@
+name: "KubeAstra Upgrade Pilot"
+description: >-
+  Detect deprecated/removed Kubernetes APIs for a target version and fail the
+  check — keyless, no cluster needed when scanning rendered manifests.
+author: "astraverse-io"
+branding:
+  icon: "arrow-up-circle"
+  color: "blue"
+
+inputs:
+  target:
+    description: "Target Kubernetes minor version, e.g. 1.31"
+    required: true
+  manifests:
+    description: "Directory of rendered manifests to scan (helm template / kustomize build / raw YAML)."
+    required: false
+    default: "."
+  output:
+    description: "Format written to the step log: text | json | sarif."
+    required: false
+    default: "text"
+  sarif-file:
+    description: "Also write a SARIF report here (feed it to github/codeql-action/upload-sarif)."
+    required: false
+    default: ""
+  fail-on-blocking:
+    description: "Fail the check when blocking API removals are found."
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install KubeAstra CLI
+      shell: bash
+      run: pip install --quiet "pyyaml>=6" && pip install --quiet "${{ github.action_path }}/cli"
+
+    - name: Run Upgrade Pilot
+      shell: bash
+      env:
+        # The pure planner core ships alongside this action; expose it so the
+        # keyless CLI finds it without a server.
+        PYTHONPATH: "${{ github.action_path }}/mcp"
+      run: |
+        set -o pipefail
+        GATE="--fail-on-blocking"
+        [ "${{ inputs.fail-on-blocking }}" = "true" ] || GATE="--no-fail-on-blocking"
+        kubeastra upgrade plan \
+          --target "${{ inputs.target }}" \
+          --manifests "${{ inputs.manifests }}" \
+          -o "${{ inputs.output }}" $GATE
+
+    - name: Write SARIF report
+      if: inputs.sarif-file != ''
+      shell: bash
+      env:
+        PYTHONPATH: "${{ github.action_path }}/mcp"
+      run: |
+        kubeastra upgrade plan \
+          --target "${{ inputs.target }}" \
+          --manifests "${{ inputs.manifests }}" \
+          -o sarif --no-fail-on-blocking > "${{ inputs.sarif-file }}"

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# kubectl krew plugin wrapper: `kubectl kubeastra-upgrade ...` -> `kubeastra upgrade ...`.
+# Requires the `kubeastra` CLI on PATH (pip install kubeastra).
+set -euo pipefail
+if ! command -v kubeastra >/dev/null 2>&1; then
+  echo "kubectl-kubeastra_upgrade: the 'kubeastra' CLI is not on PATH (pip install kubeastra)." >&2
+  exit 127
+fi
+exec kubeastra upgrade "$@"

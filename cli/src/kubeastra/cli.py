@@ -43,6 +43,13 @@ app = typer.Typer(
 config_app = typer.Typer(name="config", help="Manage CLI configuration.", no_args_is_help=True)
 app.add_typer(config_app)
 
+upgrade_app = typer.Typer(
+    name="upgrade",
+    help="Plan a safe Kubernetes version / API-deprecation migration (keyless — no backend).",
+    no_args_is_help=True,
+)
+app.add_typer(upgrade_app)
+
 console = Console()
 err_console = Console(stderr=True)
 
@@ -389,6 +396,40 @@ def open(  # noqa: A001 — `open` is the natural verb here; shadowing is local
     from .desktop import launch
 
     raise typer.Exit(code=launch(open_browser=not no_browser, echo=console.print))
+
+
+# ── Upgrade Pilot (keyless) ──────────────────────────────────────────────────
+
+
+@upgrade_app.command("plan")
+def upgrade_plan(
+    target: str = typer.Option(..., "--target", help="Target Kubernetes minor, e.g. 1.31."),
+    manifests: Optional[str] = typer.Option(
+        None, "--manifests", help="Scan rendered manifests in this directory (keyless, no cluster)."
+    ),
+    kubeconfig: Optional[str] = typer.Option(
+        None, "--kubeconfig", help="kubeconfig for a live cluster scan (default context otherwise)."
+    ),
+    output: str = typer.Option("text", "--output", "-o", help="Output format: text | json | sarif."),
+    fail_on_blocking: bool = typer.Option(
+        True, "--fail-on-blocking/--no-fail-on-blocking",
+        help="Exit non-zero when blocking APIs are found (CI gate).",
+    ),
+) -> None:
+    """Detect deprecated/removed APIs for a target version and print an ordered,
+    per-item-routed migration plan. No backend, no API key."""
+    from .upgrade import UpgradeCoreUnavailable, run_plan
+
+    try:
+        code, text = run_plan(
+            target, manifests=manifests, kubeconfig=kubeconfig, output=output,
+            fail_on_blocking=fail_on_blocking,
+        )
+    except UpgradeCoreUnavailable as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2)
+    typer.echo(text)
+    raise typer.Exit(code=code)
 
 
 if __name__ == "__main__":  # pragma: no cover
