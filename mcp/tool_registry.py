@@ -787,6 +787,14 @@ def _reg(tool: ToolDef) -> None:
     TOOLS[tool.name] = tool
 
 
+def register_tool(tool: ToolDef) -> None:
+    """Public registration entry point for tools defined outside this module —
+    e.g. the desktop-only local-folder tools, registered at startup in desktop
+    mode. Aliases resolve dynamically via resolve_tool, so no separate alias map
+    needs updating."""
+    _reg(tool)
+
+
 # -- Investigation tools --
 
 _reg(ToolDef(

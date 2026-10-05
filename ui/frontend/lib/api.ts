@@ -267,6 +267,19 @@ export interface ChatStreamEvent {
   message?: string;
   session?: string;
   timestamp?: number;
+  // present on "access_required" (desktop local-folder consent)
+  path?: string;
+  mode?: "read" | "write";
+  reason?: string;
+  run_id?: string;
+  step_id?: number;
+  // present on "write_proposed" (desktop agent proposed a local file edit)
+  token?: string;
+  root?: string;
+  created?: boolean;
+  diff?: string;              // sanitized; the card fetches the real diff
+  validation?: WriteValidation;
+  expires_at?: number;
 }
 
 /**
@@ -358,6 +371,153 @@ export async function sendChatStream(
   if (!finalResult) {
     throw new Error("stream ended without a 'done' event");
   }
+  return finalResult;
+}
+
+// ── Desktop: local folder access grants (desktop mode only) ────────────────────
+
+export interface FolderGrant {
+  id: string;
+  root: string;
+  mode: "read" | "write";
+  granted_at: string;
+  last_used: string;
+}
+
+export async function listFolderGrants(): Promise<FolderGrant[]> {
+  const data = await fetchJson("/api/desktop/folders/grants");
+  return (data?.grants ?? []) as FolderGrant[];
+}
+
+export async function createFolderGrant(
+  root: string,
+  mode: "read" | "write" = "read",
+): Promise<FolderGrant> {
+  return fetchJson("/api/desktop/folders/grant", {
+    method: "POST",
+    body: { root, mode },
+  }) as Promise<FolderGrant>;
+}
+
+export async function revokeFolderGrant(id: string): Promise<{ revoked: boolean }> {
+  return fetchJson(`/api/desktop/folders/grant/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  }) as Promise<{ revoked: boolean }>;
+}
+
+// ── Desktop: proposed local file edits (desktop mode only) ─────────────────────
+//
+// The agent never writes. propose_file_edit parks a validated edit and the chat
+// stream emits `write_proposed`; the user reviews the REAL diff (fetched here —
+// the stream only carries a sanitized one) and approves or discards it.
+
+export interface WriteValidationCheck {
+  name: string;
+  status: "pass" | "fail" | "warn" | "skipped";
+  detail: string;
+}
+
+export interface WriteValidation {
+  ok: boolean;
+  /** false when an applicable check was skipped — the UI stamps UNVALIDATED */
+  validated: boolean;
+  unvalidated_reason: string | null;
+  checks: WriteValidationCheck[];
+}
+
+export interface ProposedWrite {
+  token: string;
+  path: string;
+  root: string;
+  created: boolean;
+  reason: string;
+  diff: string;
+  validation: WriteValidation;
+  expires_at: number;
+}
+
+export async function getPendingWrite(token: string): Promise<ProposedWrite> {
+  return fetchJson(`/api/desktop/files/pending/${encodeURIComponent(token)}`) as Promise<ProposedWrite>;
+}
+
+export async function applyPendingWrite(
+  token: string,
+): Promise<{ written: boolean; path: string; created: boolean }> {
+  return fetchJson("/api/desktop/files/apply", { method: "POST", body: { token } }) as Promise<{
+    written: boolean;
+    path: string;
+    created: boolean;
+  }>;
+}
+
+export async function discardPendingWrite(token: string): Promise<{ discarded: boolean }> {
+  return fetchJson("/api/desktop/files/discard", {
+    method: "POST",
+    body: { token },
+  }) as Promise<{ discarded: boolean }>;
+}
+
+/**
+ * Resume a run that suspended awaiting a local-folder grant. The grant IS the
+ * approval, so no confirmation token is sent (empty token). Streams the resumed
+ * ReAct run's SSE events to `onEvent`, mirroring sendChatStream, and resolves
+ * with the final ChatResponse.
+ */
+export async function resumeFolderGrant(
+  runId: string,
+  stepId: number,
+  onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<ChatResponse> {
+  const res = await fetch(
+    apiUrl(`/api/agent-runs/${encodeURIComponent(runId)}/steps/${stepId}/approve`),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({ token: "" }),
+      signal,
+      credentials: "include",
+    },
+  );
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResult: ChatResponse | null = null;
+  let errorMessage: string | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sep = buffer.indexOf("\n\n");
+    while (sep !== -1) {
+      const raw = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      sep = buffer.indexOf("\n\n");
+      const dataLines: string[] = [];
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+      }
+      if (dataLines.length === 0) continue;
+      let evt: ChatStreamEvent;
+      try {
+        evt = JSON.parse(dataLines.join("\n")) as ChatStreamEvent;
+      } catch {
+        continue; // ignore malformed frames; keep the stream alive
+      }
+      try {
+        onEvent(evt);
+      } catch {
+        // consumer errors must not break the stream loop
+      }
+      if (evt.type === "done" && evt.result) finalResult = evt.result;
+      else if (evt.type === "error") errorMessage = evt.message ?? "stream error";
+    }
+  }
+  if (errorMessage) throw new Error(errorMessage);
+  if (!finalResult) throw new Error("stream ended without a 'done' event");
   return finalResult;
 }
 
