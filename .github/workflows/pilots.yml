@@ -1,0 +1,65 @@
+name: Pilots
+
+# Runs the KubeAstra Pilots test suites (Upgrade + GitOps Reconciliation) on the
+# long-lived integration branch and on PRs that touch the backend/CLI. The repo's
+# other workflow (vscode-extension.yml) is scoped to extensions/vscode, so until
+# this file existed the Pilots work had no CI gate.
+#
+# Deps are the LIGHT runtime core (requirements-core.txt, no torch) plus the
+# backend requirements — enough to import the app and run the keyless cores.
+# The three suites run as separate pytest invocations because mcp/tests and
+# ui/backend/tests are both top-level `tests` packages and would collide in one run.
+
+on:
+  push:
+    branches: [feat/pilots, "feat/pilots-*"]
+  pull_request:
+    paths:
+      - "mcp/**"
+      - "ui/backend/**"
+      - "cli/**"
+      - ".github/workflows/pilots.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  pilots-tests:
+    name: Pilots tests (upgrade + gitops-reconcile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies (light runtime core + backend)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r mcp/requirements-core.txt -r ui/backend/requirements.txt pytest
+
+      - name: mcp core (detect / plan / migrate guard / reconcile)
+        run: >-
+          python -m pytest -q
+          mcp/tests/test_upgrade_core_purity.py
+          mcp/tests/test_upgrade_maps.py
+          mcp/tests/test_upgrade_scan.py
+          mcp/tests/test_upgrade_assess.py
+          mcp/tests/test_upgrade_plan.py
+          mcp/tests/test_upgrade_migrate.py
+          mcp/tests/test_gitops_reconcile.py
+
+      - name: backend (pilots framework + apply runner)
+        run: >-
+          python -m pytest -q
+          ui/backend/tests/test_pilots_framework.py
+          ui/backend/tests/test_upgrade_runner.py
+
+      - name: cli (keyless upgrade + import boundary)
+        run: >-
+          python -m pytest -q
+          cli/tests/test_upgrade_cli.py
+          cli/tests/test_upgrade_import_boundary.py
