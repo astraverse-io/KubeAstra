@@ -24,13 +24,14 @@ from .types import (
 )
 from .snapshot import ClusterSnapshot, HelmRelease, ObjectRef, OperatorInfo
 from .planner import assess, plan
-from .scan import scan_manifests, snapshot_from_cluster
+from .scan import scan_cluster, scan_manifests, snapshot_from_cluster
 from .maps import Deprecation, load_maps, minor_le, minor_tuple, validate_api_deprecations
 
 __all__ = [
     "assess",
     "plan",
     "scan_manifests",
+    "scan_cluster",
     "snapshot_from_cluster",
     "load_maps",
     "validate_api_deprecations",

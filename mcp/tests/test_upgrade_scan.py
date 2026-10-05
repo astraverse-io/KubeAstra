@@ -122,3 +122,56 @@ def test_generator_fetch_rejects_non_https():
     for bad in ("file:///etc/passwd", "http://example.com/x", "ftp://host/x"):
         with pytest.raises(ValueError):
             mod._fetch(bad)
+
+
+# ── live scan adapter (injected kubectl runner, no cluster) ───────────────────
+
+from services.upgrade import scan_cluster  # noqa: E402
+from services.upgrade.maps import Deprecation  # noqa: E402
+
+_DEPS = [
+    Deprecation(kind="Ingress", group="networking.k8s.io", version="v1beta1",
+                removed_in="1.22", replacement="networking.k8s.io/v1"),
+]
+
+
+def test_scan_cluster_builds_snapshot_from_injected_runner():
+    responses = {
+        ("version", "-o", "json"): {"serverVersion": {"gitVersion": "v1.21.5"}},
+        ("get", "nodes", "-o", "json"): {
+            "items": [
+                {"status": {"nodeInfo": {"kubeletVersion": "v1.21.5"}},
+                 "spec": {"providerID": "aws:///us-east-1a/i-abc"}}
+            ]
+        },
+        ("get", "crds", "-o", "json"): {"items": [{"spec": {"group": "cert-manager.io"}}]},
+        ("get", "Ingress.v1beta1.networking.k8s.io", "-A", "-o", "json"): {
+            "items": [{"apiVersion": "networking.k8s.io/v1beta1", "kind": "Ingress",
+                       "metadata": {"name": "web", "namespace": "shop"}}]
+        },
+    }
+    seen = []
+
+    def fake(args):
+        seen.append(tuple(args))
+        return responses.get(tuple(args), {})
+
+    snap = scan_cluster(fake, _DEPS)
+    assert snap.source_mode == "live"
+    assert snap.cluster_version == "1.21.5"  # 'v' stripped
+    assert snap.provider == "eks"  # from aws:// providerID
+    assert snap.node_kubelet_versions == ["v1.21.5"]
+    assert any("cert-manager.io" in o.crds for o in snap.operators)
+    ing = [o for o in snap.objects if o.kind == "Ingress"]
+    assert ing and ing[0].namespace == "shop"
+    # probed the deprecated GVK by Kind.version.group
+    assert ("get", "Ingress.v1beta1.networking.k8s.io", "-A", "-o", "json") in seen
+
+
+def test_scan_cluster_tolerates_runner_errors():
+    def boom(args):
+        raise RuntimeError("no cluster reachable")
+
+    snap = scan_cluster(boom, _DEPS)
+    assert snap.source_mode == "live"
+    assert snap.objects == [] and snap.cluster_version == "" and snap.provider == "unknown"

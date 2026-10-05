@@ -2669,6 +2669,28 @@ def get_pilot_run(run_id: str) -> Optional[dict]:
     return _row_to_pilot_run(row) if row else None
 
 
+def update_pilot_run(
+    run_id: str,
+    *,
+    status: Optional[str] = None,
+    plan: Optional[dict] = None,
+) -> Optional[dict]:
+    """Update a pilot run's status and/or stored plan (plan_json). Always bumps
+    updated_at. Returns the refreshed run, or None if it does not exist."""
+    sets = ["updated_at = ?"]
+    params: list = [datetime.now(timezone.utc).isoformat()]
+    if status is not None:
+        sets.append("status = ?")
+        params.append(status)
+    if plan is not None:
+        sets.append("plan_json = ?")
+        params.append(json.dumps(plan))
+    params.append(run_id)
+    with _conn() as con:
+        con.execute(f"UPDATE pilot_runs SET {', '.join(sets)} WHERE run_id = ?", params)
+    return get_pilot_run(run_id)
+
+
 # ── GitOps PR proposals ───────────────────────────────────────────────────────
 
 def create_gitops_repo(*, repo_id, provider, owner, name, default_branch,

@@ -89,23 +89,41 @@ def test_router_lists_only_enabled_pilots(monkeypatch, tmp_path):
     _reset_settings_cache()
 
 
-def test_run_is_recorded_and_readable(monkeypatch, tmp_path):
+def test_upgrade_run_produces_and_persists_a_plan(monkeypatch, tmp_path):
     monkeypatch.setenv("PILOTS_ENABLED", "true")
     monkeypatch.setenv("UPGRADE_PILOT_ENABLED", "true")
     _reset_settings_cache()
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "pilots-run.db"))
     db.init_db()
+
+    # A manifest with a deprecated API — scanned keylessly via manifests_path
+    # (STATIC mode, no cluster/kubectl needed).
+    manifests = tmp_path / "manifests"
+    manifests.mkdir()
+    (manifests / "ing.yaml").write_text(
+        "apiVersion: networking.k8s.io/v1beta1\nkind: Ingress\n"
+        "metadata: {name: web, namespace: shop}\n"
+    )
+
     from main import app
 
     c = TestClient(app)
-    created = c.post("/api/v1/pilots/upgrade/run", json={"target": "1.31"})
-    assert created.status_code == 201, created.text
-    run_id = created.json()["run_id"]
+    r = c.post(
+        "/api/v1/pilots/upgrade/run",
+        json={"target": "1.22", "inputs": {"manifests_path": str(manifests)}},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["status"] == "planned"
+    assert body["report"]["blocking"], "expected the deprecated Ingress to be flagged"
+    assert any(s["kind"] == "manifest_pr" for s in body["plan"]["steps"])
+    assert body["plan"]["steps"][-1]["kind"] == "control_plane"
 
-    got = c.get(f"/api/v1/pilots/runs/{run_id}")
+    # the stored run carries the plan back
+    got = c.get(f"/api/v1/pilots/runs/{body['run_id']}")
     assert got.status_code == 200
-    assert got.json()["pilot"] == "upgrade"
-    assert got.json()["target"] == "1.31"
+    assert got.json()["status"] == "planned"
+    assert got.json()["plan"]["plan"]["steps"]
 
     # the upgrade pilot requires a target
     assert c.post("/api/v1/pilots/upgrade/run", json={}).status_code == 422

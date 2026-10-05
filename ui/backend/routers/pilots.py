@@ -73,6 +73,23 @@ def list_pilots(request: Request) -> dict:
     return {"pilots": pilots, "count": len(pilots)}
 
 
+def _build_snapshot(body: PilotRunRequest):
+    """Build a ClusterSnapshot for the run.
+
+    STATIC (keyless, no cluster) when ``inputs.manifests_path`` is given — the
+    CI/Action path. Otherwise a LIVE scan of the default kubectl context via the
+    pure ``scan_cluster`` adapter, injecting the real kubectl runner.
+    """
+    from services.upgrade import load_maps, scan_cluster, scan_manifests
+
+    manifests_path = (body.inputs or {}).get("manifests_path")
+    if manifests_path:
+        return scan_manifests(manifests_path)
+    from k8s.kubectl_runner import get_runner
+
+    return scan_cluster(get_runner().run_json, load_maps()["deprecations"])
+
+
 @router.post("/{name}/run", status_code=201)
 def start_run(request: Request, name: str, body: PilotRunRequest) -> dict:
     _require_enabled()
@@ -94,9 +111,29 @@ def start_run(request: Request, name: str, body: PilotRunRequest) -> dict:
         target=body.target,
         created_by=created_by,
     )
-    logger.info("pilot run created: %s (pilot=%s)", run_id, name)
-    # Phase 1–2 attach planning here; Phase 0 only records the run.
-    return {"run_id": run_id, "pilot": name, "status": "planning"}
+
+    if name != "upgrade":
+        # gitops_reconcile is Phase 4; the framework records the run but does not plan yet.
+        logger.info("pilot run created: %s (pilot=%s)", run_id, name)
+        return {"run_id": run_id, "pilot": name, "status": "planning"}
+
+    # Deterministic, keyless: scan -> assess -> plan. Narration (explain=true) is
+    # a later, optional overlay; the plan itself never needs an LLM.
+    try:
+        from services.upgrade import assess, load_maps, plan
+
+        maps = load_maps()
+        report = assess(_build_snapshot(body), body.target, maps)
+        migration = plan(report, maps)
+        result = {"report": report.to_dict(), "plan": migration.to_dict()}
+        db.update_pilot_run(run_id, status="planned", plan=result)
+    except Exception as exc:  # surface a failed run rather than a silent 500
+        logger.exception("pilot run %s failed", run_id)
+        db.update_pilot_run(run_id, status="failed", plan={"error": str(exc)})
+        raise HTTPException(status_code=500, detail=f"pilot run failed: {exc}")
+
+    logger.info("pilot run %s planned (%d steps)", run_id, len(migration.steps))
+    return {"run_id": run_id, "pilot": name, "status": "planned", **result}
 
 
 @router.get("/runs/{run_id}")
