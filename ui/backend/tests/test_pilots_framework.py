@@ -162,3 +162,50 @@ def test_gitops_reconcile_run_diagnoses(monkeypatch, tmp_path):
     # requires inputs.app or inputs.object
     assert c.post("/api/v1/pilots/gitops_reconcile/run", json={}).status_code == 422
     _reset_settings_cache()
+
+
+def test_enabled_pilot_without_run_impl_returns_501(monkeypatch, tmp_path):
+    # Review fix #1: a registered + enabled pilot with no run branch must not be
+    # mis-routed into another pilot's pipeline — it gets a clean 501.
+    monkeypatch.setenv("PILOTS_ENABLED", "true")
+    monkeypatch.setenv("UPGRADE_PILOT_ENABLED", "true")  # reuse to enable the fake pilot
+    _reset_settings_cache()
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "noimpl.db"))
+    db.init_db()
+
+    from pilots import REGISTRY, Pilot, register
+
+    register(Pilot(name="migration", tool_scope=frozenset(), narration_prompt="x",
+                   flag="upgrade_pilot_enabled"))
+    try:
+        from main import app
+
+        r = TestClient(app).post("/api/v1/pilots/migration/run", json={})
+        assert r.status_code == 501, r.text
+    finally:
+        REGISTRY.pop("migration", None)
+    _reset_settings_cache()
+
+
+def test_gitops_reconcile_rejects_unsafe_live_inputs(monkeypatch, tmp_path):
+    # Review fix #2: app/namespace/kind flow into kubectl args on the live path.
+    monkeypatch.setenv("PILOTS_ENABLED", "true")
+    monkeypatch.setenv("GITOPS_RECONCILE_ENABLED", "true")
+    _reset_settings_cache()
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "recon2.db"))
+    db.init_db()
+
+    from main import app
+
+    c = TestClient(app)
+    # flag-injection-looking app name
+    assert c.post("/api/v1/pilots/gitops_reconcile/run", json={"inputs": {"app": "--all"}}).status_code == 422
+    # bad namespace
+    assert c.post(
+        "/api/v1/pilots/gitops_reconcile/run", json={"inputs": {"app": "web", "namespace": "-x"}}
+    ).status_code == 422
+    # unknown kind
+    assert c.post(
+        "/api/v1/pilots/gitops_reconcile/run", json={"inputs": {"app": "web", "kind": "Foo"}}
+    ).status_code == 422
+    _reset_settings_cache()

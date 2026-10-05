@@ -9,6 +9,7 @@ narration. The whole router is gated by the ``pilots_enabled`` master flag
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
@@ -90,6 +91,26 @@ def _build_snapshot(body: PilotRunRequest):
     return scan_cluster(get_runner().run_json, load_maps()["deprecations"])
 
 
+# Argo/Flux names and namespaces flow into kubectl args; validate them so a value
+# like "--all" can't be parsed as a flag (argument injection).
+_SAFE_K8S_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_ALLOWED_GITOPS_KINDS = {"Application", "Kustomization", "HelmRelease"}
+
+
+def _validate_gitops_live_inputs(inputs: dict) -> None:
+    kind = inputs.get("kind", "Application")
+    if kind not in _ALLOWED_GITOPS_KINDS:
+        raise HTTPException(
+            status_code=422, detail=f"inputs.kind must be one of {sorted(_ALLOWED_GITOPS_KINDS)}"
+        )
+    for field in ("app", "namespace"):
+        value = inputs.get(field)
+        if value and not _SAFE_K8S_NAME.match(str(value)):
+            raise HTTPException(
+                status_code=422, detail=f"inputs.{field} is not a valid Kubernetes name"
+            )
+
+
 def _fetch_gitops_object(body: PilotRunRequest) -> dict:
     """The CR to diagnose: ``inputs.object`` when supplied directly (CI / test /
     static), otherwise a LIVE fetch of ``inputs.app`` via the injected runner."""
@@ -121,7 +142,11 @@ def start_run(request: Request, name: str, body: PilotRunRequest) -> dict:
         )
     if name == "gitops_reconcile":
         _inputs = body.inputs or {}
-        if not (isinstance(_inputs.get("object"), dict) or _inputs.get("app")):
+        if isinstance(_inputs.get("object"), dict):
+            pass  # static/CI/test: diagnose the supplied CR as-is (data, not kubectl args)
+        elif _inputs.get("app"):
+            _validate_gitops_live_inputs(_inputs)  # live path: these become kubectl args
+        else:
             raise HTTPException(
                 status_code=422,
                 detail="gitops_reconcile requires inputs.app (the Argo/Flux app name) or inputs.object (the CR)",
@@ -151,23 +176,28 @@ def start_run(request: Request, name: str, body: PilotRunRequest) -> dict:
         logger.info("pilot run %s diagnosed (%s)", run_id, dx.root_cause)
         return {"run_id": run_id, "pilot": name, "status": "diagnosed", **result}
 
-    # Deterministic, keyless: scan -> assess -> plan. Narration (explain=true) is
-    # a later, optional overlay; the plan itself never needs an LLM.
-    try:
-        from services.upgrade import assess, load_maps, plan
+    if name == "upgrade":
+        # Deterministic, keyless: scan -> assess -> plan. Narration (explain=true)
+        # is a later, optional overlay; the plan itself never needs an LLM.
+        try:
+            from services.upgrade import assess, load_maps, plan
 
-        maps = load_maps()
-        report = assess(_build_snapshot(body), body.target, maps)
-        migration = plan(report, maps)
-        result = {"report": report.to_dict(), "plan": migration.to_dict()}
-        db.update_pilot_run(run_id, status="planned", plan=result)
-    except Exception as exc:  # surface a failed run rather than a silent 500
-        logger.exception("pilot run %s failed", run_id)
-        db.update_pilot_run(run_id, status="failed", plan={"error": str(exc)})
-        raise HTTPException(status_code=500, detail=f"pilot run failed: {exc}")
+            maps = load_maps()
+            report = assess(_build_snapshot(body), body.target, maps)
+            migration = plan(report, maps)
+            result = {"report": report.to_dict(), "plan": migration.to_dict()}
+            db.update_pilot_run(run_id, status="planned", plan=result)
+        except Exception as exc:  # surface a failed run rather than a silent 500
+            logger.exception("pilot run %s failed", run_id)
+            db.update_pilot_run(run_id, status="failed", plan={"error": str(exc)})
+            raise HTTPException(status_code=500, detail=f"pilot run failed: {exc}")
+        logger.info("pilot run %s planned (%d steps)", run_id, len(migration.steps))
+        return {"run_id": run_id, "pilot": name, "status": "planned", **result}
 
-    logger.info("pilot run %s planned (%d steps)", run_id, len(migration.steps))
-    return {"run_id": run_id, "pilot": name, "status": "planned", **result}
+    # A registered + enabled pilot with no run implementation yet (e.g. a backlog
+    # pilot). Record it, but never mis-route into another pilot's pipeline.
+    db.update_pilot_run(run_id, status="not_implemented")
+    raise HTTPException(status_code=501, detail=f"pilot '{name}' has no run implementation yet")
 
 
 @router.get("/runs/{run_id}")
