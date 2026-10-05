@@ -56,3 +56,14 @@ def test_allowed_tools_empty_yields_nothing():
 def test_unknown_allowed_tool_is_ignored():
     scoped = build_native_tool_specs(allowed_tools={"does_not_exist"})
     assert scoped == []
+
+
+def test_no_schema_uses_defs_or_refs():
+    """Guard: a tool with a nested Pydantic model / Enum would emit $defs/$ref,
+    which Gemini's parameters_json_schema (and strict OpenAI) can reject. All
+    react tools are flat today; this fails loudly if someone adds a nested one
+    without flattening the schema first."""
+    for spec in build_native_tool_specs():
+        blob = str(spec["input_schema"])
+        assert "$defs" not in spec["input_schema"], f"{spec['name']} schema has $defs"
+        assert "$ref" not in blob, f"{spec['name']} schema has $ref"

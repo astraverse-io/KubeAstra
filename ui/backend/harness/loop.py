@@ -163,11 +163,16 @@ def run_native_tool_loop(
                 }
             )
 
-    # Step cap reached — force a tool-free conclusion.
+    # Step cap reached — force a tool-free conclusion. Drop tools so the model
+    # cannot call more, and nudge via the system prompt rather than a second
+    # user turn: the message list ends with tool results (a user turn), and
+    # appending another user turn would break providers that require strict
+    # user/assistant alternation (Anthropic, Gemini).
+    force_system = f"{system}\n\n{_FORCE_ANSWER}" if system else _FORCE_ANSWER
     final = provider.generate_with_tools(
-        messages + [{"role": "user", "content": _FORCE_ANSWER}],
+        messages,
         [],
-        system=system,
+        system=force_system,
         max_tokens=max_tokens,
     )
     usage = usage + (final.usage or TokenUsage())

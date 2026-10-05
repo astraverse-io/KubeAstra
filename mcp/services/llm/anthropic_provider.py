@@ -67,14 +67,21 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
       already-formed content-block list).
     - ``assistant`` → an assistant turn carrying any prose plus one
       ``tool_use`` block per :class:`ToolCall`.
-    - ``tool`` → Anthropic carries tool *results* inside a **user** turn, as a
-      ``tool_result`` block keyed by ``tool_use_id``.
+    - ``tool`` → Anthropic carries tool *results* inside a **user** turn, as
+      ``tool_result`` blocks keyed by ``tool_use_id``. **All** results for one
+      assistant turn must share a single user message — the API requires strict
+      user/assistant alternation — so consecutive neutral ``tool`` messages
+      (parallel tool calls) are coalesced into one user turn here.
     """
     out: list[dict] = []
-    for m in messages:
+    i = 0
+    n = len(messages)
+    while i < n:
+        m = messages[i]
         role = m.get("role")
         if role == "user":
             out.append({"role": "user", "content": m.get("content", "")})
+            i += 1
         elif role == "assistant":
             blocks: list[dict] = []
             text = m.get("content")
@@ -88,19 +95,21 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
                     {"type": "tool_use", "id": call_id, "name": name, "input": args or {}}
                 )
             out.append({"role": "assistant", "content": blocks})
+            i += 1
         elif role == "tool":
-            out.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": m.get("tool_call_id", ""),
-                            "content": m.get("content", ""),
-                        }
-                    ],
-                }
-            )
+            # Batch every consecutive tool result into one user message.
+            result_blocks: list[dict] = []
+            while i < n and messages[i].get("role") == "tool":
+                tm = messages[i]
+                result_blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tm.get("tool_call_id", ""),
+                        "content": tm.get("content", ""),
+                    }
+                )
+                i += 1
+            out.append({"role": "user", "content": result_blocks})
         else:
             raise LLMProviderError(f"Unknown message role for Anthropic: {role!r}")
     return out

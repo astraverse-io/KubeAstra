@@ -160,6 +160,42 @@ def test_message_mapping_round_trips_assistant_and_tool_roles():
     }
 
 
+def test_parallel_tool_results_coalesce_into_one_user_message():
+    # Two consecutive neutral tool messages (parallel calls) must map to ONE
+    # Anthropic user message with two tool_result blocks — the API requires
+    # strict user/assistant alternation.
+    p = _provider()
+    fake_response = SimpleNamespace(
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text="done")],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1, cache_read_input_tokens=0),
+    )
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "parallel",
+            "tool_calls": [
+                ToolCall(id="c1", name="get_pods", arguments={}),
+                ToolCall(id="c2", name="get_events", arguments={}),
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "get_pods", "content": "podA"},
+        {"role": "tool", "tool_call_id": "c2", "name": "get_events", "content": "evtB"},
+    ]
+    with patch.object(p, "_get_client", return_value=fake_client):
+        p.generate_with_tools(messages=messages, tools=_TOOLS)
+
+    sent = fake_client.messages.create.call_args.kwargs["messages"]
+    # user(q), assistant(2 tool_use), user(2 tool_result) — 3 messages, alternating.
+    assert [msg["role"] for msg in sent] == ["user", "assistant", "user"]
+    result_blocks = sent[2]["content"]
+    assert [b["tool_use_id"] for b in result_blocks] == ["c1", "c2"]
+    assert all(b["type"] == "tool_result" for b in result_blocks)
+
+
 def test_no_tools_omits_tools_kwarg():
     p = _provider()
     fake_response = SimpleNamespace(

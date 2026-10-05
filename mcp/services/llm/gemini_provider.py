@@ -51,13 +51,19 @@ def _to_gemini_contents(types: Any, messages: list[dict]) -> list[Any]:
       ``function_call`` part per :class:`ToolCall`.
     - ``tool`` → a ``function_response`` part keyed by the function **name**
       (Gemini has no call-id correlation); non-dict content is wrapped as
-      ``{"result": <content>}`` since the API requires a struct.
+      ``{"result": <content>}`` since the API requires a struct. Consecutive
+      tool results (parallel calls) are coalesced into one user ``Content`` so
+      user/model turns keep alternating.
     """
     contents: list[Any] = []
-    for m in messages:
+    i = 0
+    n = len(messages)
+    while i < n:
+        m = messages[i]
         role = m.get("role")
         if role == "user":
             contents.append(types.Content(role="user", parts=[types.Part(text=m.get("content", ""))]))
+            i += 1
         elif role == "assistant":
             parts: list[Any] = []
             if m.get("content"):
@@ -67,21 +73,23 @@ def _to_gemini_contents(types: Any, messages: list[dict]) -> list[Any]:
                 args = tc.arguments if isinstance(tc, ToolCall) else tc.get("arguments", {})
                 parts.append(types.Part(function_call=types.FunctionCall(name=name, args=args or {})))
             contents.append(types.Content(role="model", parts=parts))
+            i += 1
         elif role == "tool":
-            raw = m.get("content", "")
-            response = raw if isinstance(raw, dict) else {"result": raw}
-            contents.append(
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part(
-                            function_response=types.FunctionResponse(
-                                name=m.get("name", "") or "", response=response
-                            )
+            # Batch every consecutive tool result into one user Content.
+            response_parts: list[Any] = []
+            while i < n and messages[i].get("role") == "tool":
+                tm = messages[i]
+                raw = tm.get("content", "")
+                response = raw if isinstance(raw, dict) else {"result": raw}
+                response_parts.append(
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=tm.get("name", "") or "", response=response
                         )
-                    ],
+                    )
                 )
-            )
+                i += 1
+            contents.append(types.Content(role="user", parts=response_parts))
         else:
             raise LLMProviderError(f"Unknown message role for Gemini: {role!r}")
     return contents

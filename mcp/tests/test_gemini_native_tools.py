@@ -135,3 +135,34 @@ def test_contents_mapping_round_trips_assistant_and_tool_roles():
     fr = contents[2].parts[0].function_response
     assert fr.name == "get_pods"
     assert dict(fr.response) == {"result": "pod a: CrashLoopBackOff"}
+
+
+def test_parallel_tool_results_coalesce_into_one_content():
+    # Two consecutive neutral tool messages (parallel calls) must map to ONE
+    # Gemini user Content with two function_response parts, preserving
+    # user/model alternation.
+    p = _provider()
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _response(
+        [SimpleNamespace(text="done", function_call=None)]
+    )
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "parallel",
+            "tool_calls": [
+                ToolCall(id="c1", name="get_pods", arguments={}),
+                ToolCall(id="c2", name="get_events", arguments={}),
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "get_pods", "content": "podA"},
+        {"role": "tool", "tool_call_id": "c2", "name": "get_events", "content": "evtB"},
+    ]
+    with patch.object(p, "_get_client", return_value=fake_client):
+        p.generate_with_tools(messages=messages, tools=_TOOLS)
+
+    contents = fake_client.models.generate_content.call_args.kwargs["contents"]
+    assert [c.role for c in contents] == ["user", "model", "user"]
+    result_parts = contents[2].parts
+    assert [prt.function_response.name for prt in result_parts] == ["get_pods", "get_events"]

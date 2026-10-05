@@ -160,8 +160,13 @@ def test_step_cap_forces_tool_free_conclusion():
     assert result.halted == "max_steps"
     assert result.answer == "final best effort"
     assert len(result.steps) == 3  # exactly the cap
-    # The forced final call was made with NO tools.
+    # The forced final call was made with NO tools...
     assert provider.calls[-1]["tools"] == []
+    # ...the force instruction rode in via system (not a second user turn)...
+    assert "final answer" in (provider.calls[-1]["system"] or "").lower()
+    # ...and the message list still ends with a tool result, preserving
+    # user/assistant alternation (no appended user turn).
+    assert provider.calls[-1]["messages"][-1]["role"] == "tool"
 
 
 def test_hooks_fire():
