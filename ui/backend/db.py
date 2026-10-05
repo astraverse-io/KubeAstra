@@ -2725,6 +2725,44 @@ def get_plan_approval(run_id: str) -> Optional[dict]:
     return approval
 
 
+def upsert_pilot_step(
+    run_id: str,
+    step_id: str,
+    *,
+    ord: int,
+    kind: str,
+    status: str,
+    proposal_id: Optional[str] = None,
+    pr_url: Optional[str] = None,
+    verify: Optional[dict] = None,
+) -> None:
+    """Record (or update) one step's execution state for a Pilot run. The runner
+    rebuilds progress from these rows + a live re-verify, so a run is resumable."""
+    with _conn() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO pilot_run_steps "
+            "(run_id, step_id, ord, kind, status, proposal_id, pr_url, verify_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, step_id, ord, kind, status, proposal_id, pr_url, json.dumps(verify or {})),
+        )
+
+
+def get_pilot_steps(run_id: str) -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM pilot_run_steps WHERE run_id = ? ORDER BY ord", (run_id,)
+        ).fetchall()
+    out = []
+    for row in rows:
+        d = dict(row)
+        try:
+            d["verify"] = json.loads(d.pop("verify_json", "{}") or "{}")
+        except (TypeError, ValueError):
+            d["verify"] = {}
+        out.append(d)
+    return out
+
+
 # ── GitOps PR proposals ───────────────────────────────────────────────────────
 
 def create_gitops_repo(*, repo_id, provider, owner, name, default_branch,
