@@ -192,7 +192,11 @@ class LLMProvider(ABC):
 
         - ``{"role": "user", "content": <str | list>}``
         - ``{"role": "assistant", "content": <str>, "tool_calls": [ToolCall, …]}``
-        - ``{"role": "tool", "tool_call_id": <str>, "content": <str>}``
+        - ``{"role": "tool", "tool_call_id": <str>, "name": <str>, "content": <str>}``
+
+        A tool result carries both ``tool_call_id`` and ``name``: Claude/OpenAI
+        correlate the result by id, while Gemini correlates by the function
+        ``name`` — the harness supplies both so every adapter has what it needs.
 
         ``tools`` are provider-neutral specs from
         :func:`tool_registry.build_native_tool_specs` — one
