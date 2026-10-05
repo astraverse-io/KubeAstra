@@ -297,6 +297,17 @@ class Settings(BaseSettings):
     log_summarization_use_llm: bool = True   # False = heuristic-only (free, deterministic)
     log_summarization_max_tokens: int = 400
 
+    # ── Agent Harness v2 (native tool-calling) ────────────────────────────────
+    # Opt-in: route agent runs through the native tool-calling loop
+    # (ui/backend/harness/loop.py) instead of the text-ReAct parser, for
+    # providers whose supports_native_tools() is True. Providers without a native
+    # path (Ollama, test fakes) always fall back to text-ReAct, so this is safe
+    # to leave off and harmless to turn on. Off by default until evals (Phase 4)
+    # prove it.
+    agent_harness_v2: bool = False
+    # Hard cap on tool-call iterations per native run (defense against loops).
+    agent_harness_v2_max_steps: int = 12
+
     # ── Database (optional, inherited from devops-ai-assistant) ───────────────
     database_url: str = "postgresql://devops_ai:devops_ai_password@localhost:5432/devops_ai_db"
 
