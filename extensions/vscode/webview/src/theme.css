@@ -1,0 +1,26 @@
+/*
+ * Minimal token bridge for the webview.
+ *
+ * The Mission Control components read CSS custom properties (--brand, --red,
+ * --amber, --panel, --text, …) defined in ui/frontend/app/globals.css. In M3
+ * we import that file directly through the Vite alias to avoid drift; this file
+ * only sets the base surface and maps the webview to KubeAstra's dark
+ * "mission-control" theme so components render styled from the first paint.
+ */
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg, var(--vscode-editor-background));
+  color: var(--text, var(--vscode-editor-foreground));
+  font-family: var(--vscode-font-family), system-ui, sans-serif;
+  font-size: 13px;
+}

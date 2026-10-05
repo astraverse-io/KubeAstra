@@ -34,6 +34,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -122,7 +123,18 @@ function writeRootRedirect() {
 
 try {
   stash();
-  execFileSync("npx", ["next", "build"], {
+  // Run Next's JS entry with this Node, rather than shelling out to `npx`.
+  //
+  // On Windows `npx` is `npx.cmd`, so execFileSync("npx") fails with ENOENT —
+  // which is exactly how the first Windows build died. Switching to
+  // "npx.cmd" only trades that for EINVAL: since CVE-2024-27980, Node
+  // refuses to execFile a .bat/.cmd without a shell, and `shell: true`
+  // reintroduces quoting rules that differ per platform.
+  //
+  // Resolving the JS file and handing it to process.execPath sidesteps all of
+  // it, and drops a process from the chain on every platform.
+  const nextBin = createRequire(import.meta.url).resolve("next/dist/bin/next");
+  execFileSync(process.execPath, [nextBin, "build"], {
     cwd: frontendDir,
     stdio: "inherit",
     env: { ...process.env, KUBEASTRA_BUILD_TARGET: "desktop" },

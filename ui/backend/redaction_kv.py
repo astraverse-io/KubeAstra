@@ -40,13 +40,18 @@ _SECRET_LINE_RE = re.compile(
 )
 
 # A complete PEM private-key block (BEGIN line, base64 body, END line).
+# The key-type label between the markers is bounded ({0,40}) rather than `*`:
+# real labels ("RSA", "EC", "OPENSSH", "ENCRYPTED", …) are short, and an
+# unbounded run of `[A-Z0-9 ]` between fixed strings is a polynomial-ReDoS on
+# crafted input (CodeQL py/polynomial-redos). Bounding it removes the ambiguous
+# backtracking while still matching every real PEM label.
 _PEM_BLOCK_RE = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----.*?-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----",
     re.DOTALL | re.IGNORECASE,
 )
 # Defensive: a BEGIN block with no matching END (e.g. truncated value).
 _PEM_OPEN_RE = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*\Z",
+    r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----.*\Z",
     re.DOTALL | re.IGNORECASE,
 )
 
