@@ -14,12 +14,13 @@ plan are always computed here, deterministically.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from .maps import Deprecation, minor_le, minor_tuple
 from .scan import split_api_version
 from .snapshot import ClusterSnapshot, ObjectRef
-from .types import BlockingFinding, OperatorFinding, Plan, ReadinessReport, SkewFinding
+from .types import BlockingFinding, OperatorFinding, Plan, ReadinessReport, SkewFinding, Step
 
 
 def _gvk_parts(obj: ObjectRef) -> tuple[str, str, str]:
@@ -214,10 +215,191 @@ def _ver_ge(a: str, b: str) -> bool:
     return pa >= pb
 
 
-def plan(report: ReadinessReport, maps: Optional[dict[str, Any]] = None) -> Plan:
-    """Turn a :class:`ReadinessReport` into an ordered migration :class:`Plan`.
+# ── Plan construction (Phase 2) ──────────────────────────────────────────────
 
-    Phase 0/1 return an empty, well-formed plan. Phase 2 adds the deterministic
-    ordering and per-item remedy routing.
+# Ordering rank by step kind — lower runs earlier. An operator that owns a
+# deprecated CRD is bumped before the manifests/CRs using the old apiVersions;
+# CRDs migrate before the CRs that depend on them; the control-plane bump is last.
+_ORDER = {
+    "operator_bump": 0,
+    "helm_bump": 1,
+    "manifest_pr_crd": 2,
+    "manifest_pr": 3,
+    "control_plane": 4,
+}
+_CRD_KIND = "CustomResourceDefinition"
+
+
+def _slug(*parts: str) -> str:
+    raw = ":".join(p for p in parts if p)
+    return re.sub(r"[^a-zA-Z0-9]+", "-", raw).strip("-").lower() or "step"
+
+
+def _api_version_of(gvk: str) -> str:
+    """"networking.k8s.io/v1beta1/Ingress" -> "networking.k8s.io/v1beta1"."""
+    return gvk.rpartition("/")[0]
+
+
+def _route_blocking(b: BlockingFinding) -> dict[str, Any]:
+    """Route a blocking object to a remedy and score its risk (deterministic).
+
+    Plain-YAML/Kustomize -> a reviewed GitOps PR (apiVersion swap). Helm- or
+    operator-managed objects are fixed by bumping the chart/operator that owns
+    them, NOT by editing the rendered manifest (#81's boundary). A removal with
+    no in-place replacement needs human rework, not a mechanical swap.
     """
-    return Plan(current=report.current, target=report.target, steps=[])
+    if b.source == "helm":
+        return {"kind": "helm_bump", "remedy_route": "remediation", "risk": "medium",
+                "reversible": True, "advisory": False}
+    if b.source == "operator":
+        return {"kind": "operator_bump", "remedy_route": "remediation", "risk": "medium",
+                "reversible": True, "advisory": False}
+    if b.replacement is None:
+        return {"kind": "manifest_pr", "remedy_route": "advisory", "risk": "high",
+                "reversible": False, "advisory": False}
+    return {"kind": "manifest_pr", "remedy_route": "gitops_pr", "risk": "low",
+            "reversible": True, "advisory": False}
+
+
+def _control_plane_commands(provider: str, target: str) -> list[str]:
+    p = (provider or "unknown").lower()
+    if p == "eks":
+        return [
+            f"eksctl upgrade cluster --name <cluster> --version {target} --approve",
+            f"eksctl upgrade nodegroup --cluster <cluster> --name <nodegroup> --kubernetes-version {target}",
+        ]
+    if p == "gke":
+        return [
+            f"gcloud container clusters upgrade <cluster> --master --cluster-version {target}",
+            f"gcloud container clusters upgrade <cluster> --node-pool <pool> --cluster-version {target}",
+        ]
+    if p == "aks":
+        return [
+            f"az aks upgrade --resource-group <rg> --name <cluster> --kubernetes-version {target}",
+        ]
+    return [
+        f"# Upgrade the control plane to {target} one minor at a time (e.g. kubeadm upgrade apply v{target}),",
+        "# then drain and upgrade each node pool, staying within the version-skew policy.",
+    ]
+
+
+def _control_plane_rationale(report: ReadinessReport) -> str:
+    base = (
+        "Advisory: run after every object/operator step has landed. KubeAstra does not "
+        "execute control-plane changes (it holds no cloud credentials)."
+    )
+    if not report.skew.ok and report.skew.detail:
+        base += f" WARNING — node skew: {report.skew.detail}"
+    return base
+
+
+def _blocking_rationale(b: BlockingFinding, route: dict[str, Any]) -> str:
+    if route["kind"] == "helm_bump":
+        return (
+            f"{b.gvk} is removed at the target and is rendered by a Helm chart; bump the chart "
+            f"(the release owns the manifest), do not edit the rendered output directly."
+        )
+    if route["kind"] == "operator_bump":
+        return f"{b.gvk} is owned by an operator; migrate via the operator/CR, not a direct edit."
+    if b.replacement is None:
+        return (
+            f"{b.gvk} is removed at the target with no in-place replacement; this needs a human "
+            f"rework (e.g. PodSecurityPolicy → Pod Security Admission), not an apiVersion swap."
+        )
+    return f"{b.gvk} is removed at the target; migrate the manifest to {b.replacement} via a reviewed PR."
+
+
+def plan(report: ReadinessReport, maps: Optional[dict[str, Any]] = None) -> Plan:
+    """Turn a :class:`ReadinessReport` into an ordered, per-item-routed migration
+    :class:`Plan`. Deterministic and keyless — no LLM, no cluster. The optional
+    natural-language narration is a separate, caller-side concern.
+    """
+    pending: list[tuple[tuple, Step]] = []
+
+    # 1. Operator bumps (advisory) — first; they own the deprecated CRDs.
+    for op in report.operators:
+        if op.action != "bump":
+            continue
+        pending.append((
+            (_ORDER["operator_bump"], op.name, ""),
+            Step(
+                id=_slug("operator", op.name),
+                order=0,
+                title=f"Bump operator {op.name} to >= {op.min_required or 'a compatible version'}",
+                kind="operator_bump",
+                target={"operator": op.name},
+                change={"from": op.installed, "to_min": op.min_required},
+                remedy_route="remediation",
+                risk="medium",
+                reversible=True,
+                advisory=True,
+                verify={"check": "operator_version", "operator": op.name, "min": op.min_required},
+                rationale=(
+                    "Operator owns deprecated CRD apiVersions; bump it before migrating the "
+                    "objects it manages. ADVISORY — operator-compat is a hint; verify manually."
+                ),
+            ),
+        ))
+
+    # 2. Blocking objects → routed steps.
+    for b in report.blocking:
+        route = _route_blocking(b)
+        is_crd = b.kind == _CRD_KIND
+        rank = (
+            _ORDER["manifest_pr_crd"]
+            if route["kind"] == "manifest_pr" and is_crd
+            else _ORDER[route["kind"]]
+        )
+        where = f"{b.namespace}/{b.name}" if b.namespace else (b.name or "<unnamed>")
+        if route["kind"] == "manifest_pr":
+            title = f"Migrate {b.gvk} ({where}) → {b.replacement or 'replacement (manual)'}"
+            change: dict[str, Any] = {"before": _api_version_of(b.gvk), "after": b.replacement}
+        elif route["kind"] == "helm_bump":
+            title = f"Bump the Helm chart rendering {b.gvk} ({where})"
+            change = {"release_hint": where, "reason": f"chart renders removed {b.gvk}"}
+        else:
+            title = f"Update the operator/CR owning {b.gvk} ({where})"
+            change = {"owner_hint": where}
+        pending.append((
+            (rank, b.gvk, where),
+            Step(
+                id=_slug(route["kind"], b.gvk, where),
+                order=0,
+                title=title,
+                kind=route["kind"],
+                target={"gvk": b.gvk, "name": b.name, "namespace": b.namespace, "source": b.source},
+                change=change,
+                remedy_route=route["remedy_route"],
+                risk=route["risk"],
+                reversible=route["reversible"],
+                advisory=route["advisory"],
+                verify={"check": "api_absent", "gvk": b.gvk, "name": b.name, "namespace": b.namespace},
+                rationale=_blocking_rationale(b, route),
+            ),
+        ))
+
+    # 3. Control-plane bump (advisory) — always last.
+    pending.append((
+        (_ORDER["control_plane"], "", ""),
+        Step(
+            id=_slug("control-plane", report.target),
+            order=0,
+            title=f"Upgrade control plane + node pools to {report.target}",
+            kind="control_plane",
+            target={"target_version": report.target, "provider": report.provider},
+            change={"commands": _control_plane_commands(report.provider, report.target)},
+            remedy_route="advisory",
+            risk="high",
+            reversible=False,
+            advisory=True,
+            verify={"check": "cluster_version", "expect": report.target},
+            rationale=_control_plane_rationale(report),
+        ),
+    ))
+
+    pending.sort(key=lambda t: t[0])
+    steps: list[Step] = []
+    for i, (_rank, step) in enumerate(pending, start=1):
+        step.order = i
+        steps.append(step)
+    return Plan(current=report.current, target=report.target, steps=steps)
