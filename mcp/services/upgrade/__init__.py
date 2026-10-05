@@ -26,6 +26,7 @@ from .snapshot import ClusterSnapshot, HelmRelease, ObjectRef, OperatorInfo
 from .planner import assess, plan
 from .scan import scan_cluster, scan_manifests, snapshot_from_cluster
 from .maps import Deprecation, load_maps, minor_le, minor_tuple, validate_api_deprecations
+from .migrate import build_migrated_object, diff_paths, plan_migration
 
 __all__ = [
     "assess",
@@ -35,6 +36,9 @@ __all__ = [
     "snapshot_from_cluster",
     "load_maps",
     "validate_api_deprecations",
+    "plan_migration",
+    "build_migrated_object",
+    "diff_paths",
     "minor_le",
     "minor_tuple",
     "Deprecation",

@@ -2691,6 +2691,40 @@ def update_pilot_run(
     return get_pilot_run(run_id)
 
 
+def create_plan_approval(run_id: str, approved_by: str, step_ids: list[str]) -> dict:
+    """Record the one-shot, admin-granted plan approval (Option B) that authorizes
+    a Pilot run's listed non-high-risk steps, and flip the run to plan_authorized.
+    A named person authorised these concrete steps — high-risk steps are approved
+    individually through the remediation proposal path, never here."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO pilot_plan_approvals (run_id, approved_by, step_ids, approved_at) "
+            "VALUES (?, ?, ?, ?)",
+            (run_id, approved_by, json.dumps(list(step_ids)), now),
+        )
+        con.execute(
+            "UPDATE pilot_runs SET auth_state = 'plan_authorized', updated_at = ? WHERE run_id = ?",
+            (now, run_id),
+        )
+    return get_plan_approval(run_id)
+
+
+def get_plan_approval(run_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM pilot_plan_approvals WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    approval = dict(row)
+    try:
+        approval["step_ids"] = json.loads(approval["step_ids"] or "[]")
+    except (TypeError, ValueError):
+        approval["step_ids"] = []
+    return approval
+
+
 # ── GitOps PR proposals ───────────────────────────────────────────────────────
 
 def create_gitops_repo(*, repo_id, provider, owner, name, default_branch,

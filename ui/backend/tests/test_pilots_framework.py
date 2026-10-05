@@ -187,6 +187,48 @@ def test_enabled_pilot_without_run_impl_returns_501(monkeypatch, tmp_path):
     _reset_settings_cache()
 
 
+def test_plan_approval_authorizes_non_high_risk_steps(monkeypatch, tmp_path):
+    # Phase 5 Option B: one admin decision authorizes the non-high-risk steps;
+    # high-risk steps are refused here (they're approved individually).
+    monkeypatch.setenv("PILOTS_ENABLED", "true")
+    monkeypatch.setenv("UPGRADE_PILOT_ENABLED", "true")
+    _reset_settings_cache()
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "approve.db"))
+    db.init_db()
+    manifests = tmp_path / "m"
+    manifests.mkdir()
+    (manifests / "ing.yaml").write_text(
+        "apiVersion: networking.k8s.io/v1beta1\nkind: Ingress\n"
+        "metadata: {name: web, namespace: shop}\n"
+    )
+
+    from main import app
+
+    c = TestClient(app)
+    run = c.post(
+        "/api/v1/pilots/upgrade/run",
+        json={"target": "1.22", "inputs": {"manifests_path": str(manifests)}},
+    ).json()
+    run_id = run["run_id"]
+    steps = run["plan"]["steps"]
+    low = [s["id"] for s in steps if s["risk"] != "high"]
+    high = [s["id"] for s in steps if s["risk"] == "high"]
+    assert low and high, "expected both a manifest_pr (low) and control_plane (high) step"
+
+    r = c.post(f"/api/v1/remediation/plans/{run_id}/approve", json={"step_ids": low})
+    assert r.status_code == 200, r.text
+    assert sorted(r.json()["step_ids"]) == sorted(low)
+    assert c.get(f"/api/v1/pilots/runs/{run_id}").json()["auth_state"] == "plan_authorized"
+
+    # high-risk steps cannot be bulk plan-approved
+    assert c.post(f"/api/v1/remediation/plans/{run_id}/approve", json={"step_ids": high}).status_code == 422
+    # unknown step id / empty / missing run
+    assert c.post(f"/api/v1/remediation/plans/{run_id}/approve", json={"step_ids": ["nope"]}).status_code == 422
+    assert c.post(f"/api/v1/remediation/plans/{run_id}/approve", json={"step_ids": []}).status_code == 422
+    assert c.post("/api/v1/remediation/plans/missing/approve", json={"step_ids": low}).status_code == 404
+    _reset_settings_cache()
+
+
 def test_gitops_reconcile_rejects_unsafe_live_inputs(monkeypatch, tmp_path):
     # Review fix #2: app/namespace/kind flow into kubectl args on the live path.
     monkeypatch.setenv("PILOTS_ENABLED", "true")
