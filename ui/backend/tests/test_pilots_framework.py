@@ -130,3 +130,35 @@ def test_upgrade_run_produces_and_persists_a_plan(monkeypatch, tmp_path):
     # a disabled pilot is not runnable
     assert c.post("/api/v1/pilots/gitops_reconcile/run", json={}).status_code == 404
     _reset_settings_cache()
+
+
+def test_gitops_reconcile_run_diagnoses(monkeypatch, tmp_path):
+    monkeypatch.setenv("PILOTS_ENABLED", "true")
+    monkeypatch.setenv("GITOPS_RECONCILE_ENABLED", "true")
+    _reset_settings_cache()
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "recon.db"))
+    db.init_db()
+
+    from main import app
+
+    c = TestClient(app)
+    # An OutOfSync Argo app supplied directly (no cluster) via inputs.object.
+    app_obj = {
+        "kind": "Application",
+        "metadata": {"name": "web"},
+        "status": {"health": {"status": "Healthy"}, "sync": {"status": "OutOfSync"}},
+    }
+    r = c.post("/api/v1/pilots/gitops_reconcile/run", json={"inputs": {"object": app_obj}})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["status"] == "diagnosed"
+    assert body["diagnosis"]["root_cause"] == "out_of_sync_drift"
+    assert body["diagnosis"]["fix"]["route"] == "gitops_pr"
+
+    got = c.get(f"/api/v1/pilots/runs/{body['run_id']}")
+    assert got.status_code == 200
+    assert got.json()["plan"]["diagnosis"]["root_cause"] == "out_of_sync_drift"
+
+    # requires inputs.app or inputs.object
+    assert c.post("/api/v1/pilots/gitops_reconcile/run", json={}).status_code == 422
+    _reset_settings_cache()

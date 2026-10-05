@@ -90,6 +90,23 @@ def _build_snapshot(body: PilotRunRequest):
     return scan_cluster(get_runner().run_json, load_maps()["deprecations"])
 
 
+def _fetch_gitops_object(body: PilotRunRequest) -> dict:
+    """The CR to diagnose: ``inputs.object`` when supplied directly (CI / test /
+    static), otherwise a LIVE fetch of ``inputs.app`` via the injected runner."""
+    inputs = body.inputs or {}
+    if isinstance(inputs.get("object"), dict):
+        return inputs["object"]
+    from k8s.kubectl_runner import get_runner
+    from services.reconcile import fetch_gitops_object
+
+    return fetch_gitops_object(
+        get_runner().run_json,
+        kind=inputs.get("kind", "Application"),
+        name=inputs.get("app", ""),
+        namespace=inputs.get("namespace", ""),
+    )
+
+
 @router.post("/{name}/run", status_code=201)
 def start_run(request: Request, name: str, body: PilotRunRequest) -> dict:
     _require_enabled()
@@ -102,6 +119,13 @@ def start_run(request: Request, name: str, body: PilotRunRequest) -> dict:
         raise HTTPException(
             status_code=422, detail="the upgrade pilot requires a 'target' version (e.g. '1.31')"
         )
+    if name == "gitops_reconcile":
+        _inputs = body.inputs or {}
+        if not (isinstance(_inputs.get("object"), dict) or _inputs.get("app")):
+            raise HTTPException(
+                status_code=422,
+                detail="gitops_reconcile requires inputs.app (the Argo/Flux app name) or inputs.object (the CR)",
+            )
 
     run_id = str(uuid.uuid4())
     db.create_pilot_run(
@@ -112,10 +136,20 @@ def start_run(request: Request, name: str, body: PilotRunRequest) -> dict:
         created_by=created_by,
     )
 
-    if name != "upgrade":
-        # gitops_reconcile is Phase 4; the framework records the run but does not plan yet.
-        logger.info("pilot run created: %s (pilot=%s)", run_id, name)
-        return {"run_id": run_id, "pilot": name, "status": "planning"}
+    if name == "gitops_reconcile":
+        # Deterministic, keyless diagnosis of an Argo/Flux app.
+        try:
+            from services.reconcile import diagnose
+
+            dx = diagnose(_fetch_gitops_object(body))
+            result = {"diagnosis": dx.to_dict()}
+            db.update_pilot_run(run_id, status="diagnosed", plan=result)
+        except Exception as exc:
+            logger.exception("pilot run %s failed", run_id)
+            db.update_pilot_run(run_id, status="failed", plan={"error": str(exc)})
+            raise HTTPException(status_code=500, detail=f"pilot run failed: {exc}")
+        logger.info("pilot run %s diagnosed (%s)", run_id, dx.root_cause)
+        return {"run_id": run_id, "pilot": name, "status": "diagnosed", **result}
 
     # Deterministic, keyless: scan -> assess -> plan. Narration (explain=true) is
     # a later, optional overlay; the plan itself never needs an LLM.
