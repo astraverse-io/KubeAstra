@@ -22,7 +22,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CONF="$ROOT/desktop/src-tauri/tauri.conf.json"
+# Relative from here on, and everything runs with the repo root as cwd.
+#
+# $ROOT is a Git Bash path on Windows — /d/a/KubeAstra/KubeAstra — and the
+# python that reads this config is a native Windows binary that has never
+# heard of it. Handing it the absolute path failed with
+#   FileNotFoundError: '/d/a/KubeAstra/KubeAstra/desktop/src-tauri/tauri.conf.json'
+# A relative path needs no translation, because both worlds agree on cwd.
+cd "$ROOT"
+CONF="desktop/src-tauri/tauri.conf.json"
 
 # sha256 of the development public key generated 2026-07-30. Storing the hash
 # rather than the key keeps a second copy of it out of the repo, and makes the
@@ -32,7 +40,12 @@ DEV_KEY_SHA256="48696364d81c28240c67206c32378137ee93df120ca86e18c77a3cf3366565bf
 RELEASE=0
 [ "${1:-}" = "--release" ] && RELEASE=1
 
-pubkey="$(python3 -c "
+# `python` on the Windows runner, `python3` on macOS. setup-python provides
+# whichever the platform calls it, and this script now runs on both lanes.
+PY=python3
+command -v "$PY" >/dev/null 2>&1 || PY=python
+
+pubkey="$("$PY" -c "
 import json, sys
 conf = json.load(open('$CONF'))
 print((conf.get('plugins', {}).get('updater', {}) or {}).get('pubkey', ''))
@@ -44,7 +57,13 @@ if [ -z "$pubkey" ]; then
     exit 1
 fi
 
-actual="$(printf '%s' "$pubkey" | shasum -a 256 | cut -d' ' -f1)"
+# shasum is Perl and is not guaranteed in Git Bash on the Windows runner;
+# sha256sum is. Try both rather than assume the macOS spelling.
+if command -v shasum >/dev/null 2>&1; then
+    actual="$(printf '%s' "$pubkey" | shasum -a 256 | cut -d' ' -f1)"
+else
+    actual="$(printf '%s' "$pubkey" | sha256sum | cut -d' ' -f1)"
+fi
 
 if [ "$actual" = "$DEV_KEY_SHA256" ]; then
     if [ "$RELEASE" -eq 1 ]; then
