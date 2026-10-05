@@ -480,6 +480,55 @@ def init_db() -> None:
         con.execute("CREATE INDEX IF NOT EXISTS idx_agent_runs_parent ON agent_runs(parent_run_id, started_at)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps(run_id, iteration)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_agent_observations_run ON agent_observations(run_id)")
+
+        # Pilots. A Pilot run and its per-step state, plus the one-shot
+        # plan-level approval (Option B) that authorizes the NON-high-risk
+        # steps in a single audited admin decision. High-risk steps are
+        # approved individually via the remediation proposal path. The lock
+        # table enforces one active apply run per cluster. See PILOTS_PLAN.md §8.
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS pilot_runs (
+                run_id      TEXT PRIMARY KEY,
+                pilot       TEXT NOT NULL,
+                cluster_id  TEXT NOT NULL DEFAULT '',
+                target      TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'planning',
+                auth_state  TEXT NOT NULL DEFAULT 'none',
+                plan_json   TEXT NOT NULL DEFAULT '{}',
+                created_by  TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_pilot_runs_pilot
+                ON pilot_runs(pilot, created_at);
+
+            CREATE TABLE IF NOT EXISTS pilot_run_steps (
+                run_id      TEXT NOT NULL,
+                step_id     TEXT NOT NULL,
+                ord         INTEGER NOT NULL,
+                kind        TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'pending',
+                proposal_id TEXT,
+                pr_url      TEXT,
+                verify_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (run_id, step_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS pilot_plan_approvals (
+                run_id      TEXT PRIMARY KEY,
+                approved_by TEXT NOT NULL,
+                step_ids    TEXT NOT NULL,
+                approved_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pilot_run_locks (
+                cluster_id  TEXT PRIMARY KEY,
+                run_id      TEXT NOT NULL,
+                acquired_at TEXT NOT NULL
+            );
+            """
+        )
     logger.info(f"SQLite DB ready at {DB_PATH}")
 
 
@@ -2577,6 +2626,47 @@ def list_remediation_proposals(
         # the computed status rather than trusting the stored one.
         proposals = [p for p in proposals if p["status"] == "pending"]
     return proposals
+
+
+# ── Pilots ──────────────────────────────────────────────────────────────────────
+
+def create_pilot_run(
+    *,
+    run_id: str,
+    pilot: str,
+    cluster_id: str = "",
+    target: str = "",
+    created_by: str = "",
+    status: str = "planning",
+) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO pilot_runs "
+            "(run_id, pilot, cluster_id, target, status, auth_state, plan_json, "
+            " created_by, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'none', '{}', ?, ?, ?)",
+            (run_id, pilot, cluster_id or "", target or "", status,
+             created_by or "", now, now),
+        )
+    return get_pilot_run(run_id)
+
+
+def _row_to_pilot_run(row) -> dict:
+    run = dict(row)
+    try:
+        run["plan"] = json.loads(run.pop("plan_json", "{}") or "{}")
+    except (TypeError, ValueError):
+        run["plan"] = {}
+    return run
+
+
+def get_pilot_run(run_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM pilot_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    return _row_to_pilot_run(row) if row else None
 
 
 # ── GitOps PR proposals ───────────────────────────────────────────────────────
