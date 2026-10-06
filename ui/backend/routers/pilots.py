@@ -102,7 +102,7 @@ def _safe_manifests_path(raw: str) -> str:
     follows links before the containment check). The CLI/Action path never calls
     this; it scans locally.
     """
-    from pathlib import Path
+    import os
 
     root = (getattr(_settings(), "upgrade_pilot_manifests_root", "") or "").strip()
     if not root:
@@ -114,12 +114,20 @@ def _safe_manifests_path(raw: str) -> str:
                 "manifests_path to scan the live cluster"
             ),
         )
-    base = Path(root).resolve()
-    candidate = Path(raw)
-    target = (candidate if candidate.is_absolute() else base / candidate).resolve()
-    if target != base and not target.is_relative_to(base):
+    # Canonical realpath + commonpath containment. realpath() collapses ``..`` and
+    # follows symlinks before the check, so absolute paths, traversal, and symlink
+    # escapes all resolve to a path outside ``base`` and are rejected. os.path.join
+    # ignores ``base`` when ``raw`` is absolute, so an absolute ``raw`` is checked
+    # on its own merits (and rejected unless it is genuinely under base).
+    base = os.path.realpath(root)
+    target = os.path.realpath(os.path.join(base, raw))
+    try:
+        contained = os.path.commonpath([base, target]) == base
+    except ValueError:  # different drives (Windows) → never contained
+        contained = False
+    if not contained:
         raise HTTPException(status_code=400, detail="manifests_path escapes the allowed root")
-    return str(target)
+    return target
 
 
 # Argo/Flux names and namespaces flow into kubectl args; validate them so a value
