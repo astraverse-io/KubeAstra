@@ -103,7 +103,13 @@ def run_offline(cases: list[Case]) -> OfflineReport:
 
 
 def produce_fix(provider: Any, case: Case) -> str:
-    """Ask the model to produce a corrected manifest (LIVE)."""
+    """Ask the model to produce a corrected manifest (LIVE).
+
+    Scores the *base model's* manifest authoring via a single ``generate`` call.
+    Follow-up: drive the full agent (``react_loop``) instead, and run it with
+    ``AGENT_HARNESS_V2`` off vs on, to measure the native-vs-text harness delta
+    (Phase-3 open question) end-to-end rather than just the raw model.
+    """
     prompt = _FIX_PROMPT.format(symptom=case.symptom, broken=case.broken)
     text = provider.generate(prompt, system="You are a Kubernetes expert.", max_tokens=1024)
     return _strip_fences(text)
@@ -164,7 +170,12 @@ def run_live(
             results.append(LiveCaseResult(case_id=case.id, objective=0.0, judge=None))
             continue
         objective = score_fix(candidate, case).score
-        quality = judge_fix(provider, case, candidate) if judge else None
+        quality: Optional[float] = None
+        if judge:
+            try:
+                quality = judge_fix(provider, case, candidate)
+            except Exception as exc:  # a judge hiccup must not drop the whole suite
+                emit(f"  ! {case.id}: judge failed: {exc}")
         q = f" judge={quality:.2f}" if quality is not None else ""
         emit(f"  {case.id}: objective={objective:.2f}{q}")
         results.append(LiveCaseResult(case_id=case.id, objective=objective, judge=quality))

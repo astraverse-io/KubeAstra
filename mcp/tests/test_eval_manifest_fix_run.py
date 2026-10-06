@@ -126,3 +126,18 @@ def test_run_live_survives_provider_error():
     report = runner.run_live([_CASE], _Boom(), judge=False, emit=lambda *_: None)
     assert report.results[0].objective == 0.0
     assert not report.ok
+
+
+def test_run_live_survives_judge_error():
+    # produce_fix succeeds (correct fix), but the judge call blows up — the suite
+    # must keep the objective score and record judge=None rather than aborting.
+    class _JudgeBoom:
+        def generate(self, prompt, system=None, max_tokens=None):
+            if "single number" in prompt:
+                raise RuntimeError("judge down")
+            return _GOOD
+
+    report = runner.run_live([_CASE], _JudgeBoom(), emit=lambda *_: None)
+    assert report.results[0].objective == 1.0
+    assert report.results[0].judge is None
+    assert report.ok  # objective still clears the threshold

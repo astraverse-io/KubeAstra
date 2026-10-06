@@ -129,8 +129,9 @@ def score_fix(candidate_text: str, case: Case) -> ScoreResult:
     check_results = [check_passes(doc, c) for c in case.checks]
     passed = sum(1 for r in check_results if r)
 
+    # Always ≥1 component (schema_ok), so no empty-guard needed.
     components = [schema_ok] + check_results
-    score = sum(1 for c in components if c) / len(components) if components else float(schema_ok)
+    score = sum(1 for c in components if c) / len(components)
 
     return ScoreResult(
         score=score,
