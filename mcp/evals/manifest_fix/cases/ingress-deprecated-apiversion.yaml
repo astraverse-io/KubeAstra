@@ -1,0 +1,43 @@
+id: ingress-deprecated-apiversion
+symptom: >-
+  The Ingress won't apply on Kubernetes 1.22+: extensions/v1beta1 Ingress was
+  removed. It must use networking.k8s.io/v1 with the current backend shape.
+kind: Ingress
+checks:
+  - path: apiVersion
+    equals: networking.k8s.io/v1
+  - path: spec.rules[0].http.paths[0].backend.service.name
+    equals: web
+broken: |
+  apiVersion: extensions/v1beta1
+  kind: Ingress
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    rules:
+      - host: web.example.com
+        http:
+          paths:
+            - path: /
+              backend:
+                serviceName: web
+                servicePort: 80
+fixed: |
+  apiVersion: networking.k8s.io/v1
+  kind: Ingress
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    rules:
+      - host: web.example.com
+        http:
+          paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: web
+                  port:
+                    number: 80

@@ -1,0 +1,40 @@
+id: cronjob-deprecated-apiversion
+symptom: >-
+  The CronJob fails to apply on 1.25+: batch/v1beta1 CronJob was removed. Move
+  it to batch/v1 (the spec shape is unchanged).
+kind: CronJob
+checks:
+  - path: apiVersion
+    equals: batch/v1
+broken: |
+  apiVersion: batch/v1beta1
+  kind: CronJob
+  metadata:
+    name: report
+    namespace: apps
+  spec:
+    schedule: "0 2 * * *"
+    jobTemplate:
+      spec:
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: report
+                image: ghcr.io/acme/report:1.4.0
+fixed: |
+  apiVersion: batch/v1
+  kind: CronJob
+  metadata:
+    name: report
+    namespace: apps
+  spec:
+    schedule: "0 2 * * *"
+    jobTemplate:
+      spec:
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: report
+                image: ghcr.io/acme/report:1.4.0

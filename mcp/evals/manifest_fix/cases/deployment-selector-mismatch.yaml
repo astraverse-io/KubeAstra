@@ -1,0 +1,48 @@
+id: deployment-selector-mismatch
+symptom: >-
+  The Deployment is rejected: "selector does not match template labels". The
+  selector targets app=web but the pod template is labelled app=api.
+kind: Deployment
+checks:
+  - path: spec.selector.matchLabels.app
+    equals: web
+  - path: spec.template.metadata.labels.app
+    equals: web
+broken: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        app: web
+    template:
+      metadata:
+        labels:
+          app: api
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.25.3
+fixed: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        app: web
+    template:
+      metadata:
+        labels:
+          app: web
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.25.3

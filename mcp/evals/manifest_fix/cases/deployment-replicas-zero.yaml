@@ -1,0 +1,46 @@
+id: deployment-replicas-zero
+symptom: >-
+  No pods are running for the Deployment and the rollout shows 0/0. It was
+  scaled to replicas: 0 and never scaled back up; it should run 3.
+kind: Deployment
+checks:
+  - path: spec.replicas
+    equals: 3
+broken: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    replicas: 0
+    selector:
+      matchLabels:
+        app: web
+    template:
+      metadata:
+        labels:
+          app: web
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.25.3
+fixed: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    replicas: 3
+    selector:
+      matchLabels:
+        app: web
+    template:
+      metadata:
+        labels:
+          app: web
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.25.3
