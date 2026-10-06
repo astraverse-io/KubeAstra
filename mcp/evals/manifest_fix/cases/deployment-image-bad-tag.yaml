@@ -1,0 +1,46 @@
+id: deployment-image-bad-tag
+symptom: >-
+  Pods are stuck in ImagePullBackOff — the image tag nginx:1.2.3.4 does not
+  exist. The intended version is 1.25.3.
+kind: Deployment
+checks:
+  - path: spec.template.spec.containers[0].image
+    equals: nginx:1.25.3
+broken: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        app: web
+    template:
+      metadata:
+        labels:
+          app: web
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.2.3.4
+fixed: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        app: web
+    template:
+      metadata:
+        labels:
+          app: web
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.25.3

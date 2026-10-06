@@ -9,6 +9,7 @@ construction, JSON parsing, and fallbacks so providers stay thin and swappable.
 import contextvars
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Iterator, Optional, Tuple
 
 from .pricing import TokenUsage, compute_cost
@@ -16,6 +17,45 @@ from .pricing import TokenUsage, compute_cost
 
 class LLMProviderError(RuntimeError):
     """Raised when a provider cannot fulfill a generation request."""
+
+
+# ── Native tool-calling (Harness v2) ──────────────────────────────────────────
+# A structured alternative to the text-ReAct loop: the provider returns a
+# first-class ``{name, arguments}`` object instead of action JSON embedded in
+# prose, so the regex "salvage" layers in react.py become unnecessary. Opt-in
+# per provider via ``supports_native_tools`` — providers that return False keep
+# using the text harness with zero behavior change.
+
+
+@dataclass
+class ToolCall:
+    """One structured tool invocation requested by the model.
+
+    ``id`` is the provider's opaque call id, echoed back on the matching tool
+    result so multi-call turns stay correlated. ``arguments`` is the decoded
+    argument object (already a dict — no prose, no regex salvage).
+    """
+
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class ToolTurn:
+    """One assistant turn from a native tool-calling provider.
+
+    ``text`` is any prose emitted alongside the calls (often a short rationale).
+    ``tool_calls`` is empty when the model chose to answer directly — the
+    harness treats that as the final answer. ``stop`` is the provider stop
+    reason normalized to one of ``{"tool_calls", "end", "length", "refusal"}``
+    (unrecognized reasons pass through verbatim).
+    """
+
+    text: str
+    tool_calls: list[ToolCall]
+    usage: TokenUsage
+    stop: str = "end"
 
 
 _generation_deadline: contextvars.ContextVar[float | None] = (
@@ -127,3 +167,48 @@ class LLMProvider(ABC):
             usage_holder.append(TokenUsage.empty(model=self.model))
 
         return _wrap(), usage_holder
+
+    # ── Native tool-calling (Harness v2) ──────────────────────────────────────
+
+    def supports_native_tools(self) -> bool:
+        """Whether this provider can return structured tool calls.
+
+        Defaults to ``False`` so providers without a native path (Ollama, test
+        fakes) are transparently routed to the text-ReAct harness — no
+        regression for local users.
+        """
+        return False
+
+    def generate_with_tools(
+        self,
+        messages: "list[dict]",
+        tools: "list[dict]",
+        system: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> "ToolTurn":
+        """Run one native tool-calling turn and return a :class:`ToolTurn`.
+
+        ``messages`` is a provider-neutral conversation; each item is a dict:
+
+        - ``{"role": "user", "content": <str | list>}``
+        - ``{"role": "assistant", "content": <str>, "tool_calls": [ToolCall, …]}``
+        - ``{"role": "tool", "tool_call_id": <str>, "name": <str>, "content": <str>}``
+
+        A tool result carries both ``tool_call_id`` and ``name``: Claude/OpenAI
+        correlate the result by id, while Gemini correlates by the function
+        ``name`` — the harness supplies both so every adapter has what it needs.
+
+        ``tools`` are provider-neutral specs from
+        :func:`tool_registry.build_native_tool_specs` — one
+        ``{"name", "description", "input_schema"}`` per tool, where
+        ``input_schema`` is the tool's Pydantic JSON schema. Each provider
+        adapter maps these to its SDK shape (Claude ``tool_use`` / OpenAI
+        ``tools`` / Gemini ``function_declarations``).
+
+        Only providers returning ``True`` from :meth:`supports_native_tools`
+        implement this; the default raises so a misroute fails loudly rather
+        than silently degrading.
+        """
+        raise NotImplementedError(
+            f"{self.name} provider does not support native tool-calling"
+        )

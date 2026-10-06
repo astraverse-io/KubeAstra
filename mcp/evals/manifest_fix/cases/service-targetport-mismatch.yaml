@@ -1,0 +1,34 @@
+id: service-targetport-mismatch
+symptom: >-
+  The Service has no healthy endpoints and curling it times out. The Service
+  forwards to targetPort 8080 but the container listens on port 80.
+kind: Service
+checks:
+  - path: spec.ports[0].targetPort
+    equals: 80
+broken: |
+  apiVersion: v1
+  kind: Service
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    selector:
+      app: web
+    ports:
+      - name: http
+        port: 80
+        targetPort: 8080
+fixed: |
+  apiVersion: v1
+  kind: Service
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    selector:
+      app: web
+    ports:
+      - name: http
+        port: 80
+        targetPort: 80

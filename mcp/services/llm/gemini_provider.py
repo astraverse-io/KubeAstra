@@ -3,10 +3,145 @@
 import logging
 from typing import Any, Iterator, Optional, Tuple
 
-from .base import LLMProvider, LLMProviderError, effective_timeout
+from .base import (
+    LLMProvider,
+    LLMProviderError,
+    ToolCall,
+    ToolTurn,
+    effective_timeout,
+)
 from .pricing import TokenUsage, compute_cost
 
 logger = logging.getLogger(__name__)
+
+# Gemini finish_reason → normalized ToolTurn.stop (see ToolTurn docstring).
+# Gemini returns STOP even when it emitted function calls, so the parser sets
+# "tool_calls" itself when calls are present and only consults this otherwise.
+_FINISH_MAP = {
+    "STOP": "end",
+    "MAX_TOKENS": "length",
+    "SAFETY": "refusal",
+    "RECITATION": "refusal",
+    "PROHIBITED_CONTENT": "refusal",
+    "BLOCKLIST": "refusal",
+}
+
+
+def _gemini_function_declaration(types: Any, spec: dict) -> Any:
+    """Build a ``types.FunctionDeclaration`` from a provider-neutral tool spec.
+
+    Prefers ``parameters_json_schema`` (raw JSON-schema passthrough, so the
+    Pydantic schema goes through untouched); falls back to ``parameters`` on
+    older SDKs that lack that field.
+    """
+    fields = getattr(types.FunctionDeclaration, "model_fields", {})
+    kwargs: dict = {"name": spec["name"], "description": spec.get("description", "")}
+    if "parameters_json_schema" in fields:
+        kwargs["parameters_json_schema"] = spec["input_schema"]
+    else:  # pragma: no cover - exercised only on google-genai < ~1.5
+        kwargs["parameters"] = spec["input_schema"]
+    return types.FunctionDeclaration(**kwargs)
+
+
+def _to_gemini_contents(types: Any, messages: list[dict]) -> list[Any]:
+    """Map provider-neutral messages to Gemini ``contents``.
+
+    - ``user`` → ``Content(role="user", parts=[text])``.
+    - ``assistant`` → ``Content(role="model", …)`` with any prose plus one
+      ``function_call`` part per :class:`ToolCall`.
+    - ``tool`` → a ``function_response`` part keyed by the function **name**
+      (Gemini has no call-id correlation); non-dict content is wrapped as
+      ``{"result": <content>}`` since the API requires a struct. Consecutive
+      tool results (parallel calls) are coalesced into one user ``Content`` so
+      user/model turns keep alternating.
+    """
+    contents: list[Any] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        m = messages[i]
+        role = m.get("role")
+        if role == "user":
+            contents.append(types.Content(role="user", parts=[types.Part(text=m.get("content", ""))]))
+            i += 1
+        elif role == "assistant":
+            parts: list[Any] = []
+            if m.get("content"):
+                parts.append(types.Part(text=m["content"]))
+            for tc in m.get("tool_calls") or []:
+                name = tc.name if isinstance(tc, ToolCall) else tc["name"]
+                args = tc.arguments if isinstance(tc, ToolCall) else tc.get("arguments", {})
+                parts.append(types.Part(function_call=types.FunctionCall(name=name, args=args or {})))
+            contents.append(types.Content(role="model", parts=parts))
+            i += 1
+        elif role == "tool":
+            # Batch every consecutive tool result into one user Content.
+            response_parts: list[Any] = []
+            while i < n and messages[i].get("role") == "tool":
+                tm = messages[i]
+                raw = tm.get("content", "")
+                response = raw if isinstance(raw, dict) else {"result": raw}
+                response_parts.append(
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=tm.get("name", "") or "", response=response
+                        )
+                    )
+                )
+                i += 1
+            contents.append(types.Content(role="user", parts=response_parts))
+        else:
+            raise LLMProviderError(f"Unknown message role for Gemini: {role!r}")
+    return contents
+
+
+def _finish_name(finish: Any) -> Optional[str]:
+    """Normalize a Gemini finish_reason (enum or str) to its string name."""
+    if finish is None:
+        return None
+    return getattr(finish, "name", None) or (finish if isinstance(finish, str) else str(finish))
+
+
+def _parse_gemini_tool_turn(response: Any, model: str) -> ToolTurn:
+    """Parse a Gemini response into a :class:`ToolTurn`.
+
+    Walks ``candidates[0].content.parts`` collecting ``function_call`` parts into
+    :class:`ToolCall` objects and ``text`` parts into prose. A safety/recitation
+    finish with no usable output is surfaced as an error.
+    """
+    candidates = getattr(response, "candidates", None) or []
+    text_parts: list[str] = []
+    tool_calls: list[ToolCall] = []
+    finish = None
+    if candidates:
+        cand = candidates[0]
+        finish = getattr(cand, "finish_reason", None)
+        content = getattr(cand, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            fc = getattr(part, "function_call", None)
+            if fc is not None:
+                tool_calls.append(
+                    ToolCall(
+                        id=getattr(fc, "id", "") or "",
+                        name=getattr(fc, "name", "") or "",
+                        arguments=dict(getattr(fc, "args", None) or {}),
+                    )
+                )
+                continue
+            text = getattr(part, "text", None)
+            if text:
+                text_parts.append(text)
+
+    stop = "tool_calls" if tool_calls else _FINISH_MAP.get(_finish_name(finish), "end")
+    if stop == "refusal" and not tool_calls and not text_parts:
+        raise LLMProviderError(f"Gemini declined the request (finish_reason={_finish_name(finish)})")
+
+    return ToolTurn(
+        text="".join(text_parts).strip(),
+        tool_calls=tool_calls,
+        usage=_extract_usage(response, model),
+        stop=stop,
+    )
 
 
 def _extract_usage(response_or_chunk: Any, model: str) -> TokenUsage:
@@ -127,6 +262,53 @@ class GeminiProvider(LLMProvider):
     ) -> Tuple[str, TokenUsage]:
         response = self._raw_generate(prompt, system, temperature, max_tokens)
         return (response.text or ""), _extract_usage(response, self._model)
+
+    # ── Native tool-calling (Harness v2) ──────────────────────────────────────
+
+    def supports_native_tools(self) -> bool:
+        return True
+
+    def generate_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> ToolTurn:
+        client = self._get_client(effective_timeout(self._timeout))
+        if client is None:
+            raise LLMProviderError("Gemini API key is not configured")
+
+        try:
+            from google.genai import types
+        except ImportError as exc:
+            raise LLMProviderError("google-genai SDK is not installed") from exc
+
+        config_kwargs: dict = {}
+        if system:
+            config_kwargs["system_instruction"] = system
+        if max_tokens:
+            config_kwargs["max_output_tokens"] = max_tokens
+        if tools:
+            config_kwargs["tools"] = [
+                types.Tool(
+                    function_declarations=[_gemini_function_declaration(types, t) for t in tools]
+                )
+            ]
+
+        try:
+            response = client.models.generate_content(
+                model=self._model,
+                contents=_to_gemini_contents(types, messages),
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
+        except LLMProviderError:
+            raise
+        except Exception as exc:
+            logger.error("Gemini tool request failed: %s", exc)
+            raise LLMProviderError(str(exc)) from exc
+
+        return _parse_gemini_tool_turn(response, self._model)
 
     def generate_stream(
         self,
