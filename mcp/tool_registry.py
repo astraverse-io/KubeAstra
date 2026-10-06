@@ -787,6 +787,14 @@ def _reg(tool: ToolDef) -> None:
     TOOLS[tool.name] = tool
 
 
+def register_tool(tool: ToolDef) -> None:
+    """Public registration entry point for tools defined outside this module —
+    e.g. the desktop-only local-folder tools, registered at startup in desktop
+    mode. Aliases resolve dynamically via resolve_tool, so no separate alias map
+    needs updating."""
+    _reg(tool)
+
+
 # -- Investigation tools --
 
 _reg(ToolDef(
@@ -1645,6 +1653,47 @@ _PARAM_ALIASES: dict[str, dict[str, str]] = {
     "get_fix_commands": {"error": "error_text", "message": "error_text", "log": "error_text"},
     "cluster_report": {"events": "events_text"},
 }
+
+
+def build_native_tool_specs(
+    allowed_tools: Optional[Iterable[str]] = None,
+) -> list[dict]:
+    """Provider-neutral native tool-calling specs built from the registry.
+
+    One spec per react-enabled tool on the ``react`` surface:
+    ``{"name", "description", "input_schema"}``, where ``input_schema`` is the
+    tool's Pydantic model JSON schema. Per-provider adapters translate these
+    into their SDK shape (Claude ``tool_use`` / OpenAI ``tools`` / Gemini
+    ``function_declarations``) in :meth:`LLMProvider.generate_with_tools`.
+
+    Filtering mirrors :func:`build_react_tool_descriptions` exactly, so the
+    native harness (v2) and the text harness see the *same* tool set. When
+    ``allowed_tools`` is given, the list is narrowed to that set — the hook for
+    per-skill sub-agent tool scoping.
+    """
+    allowed_set = set(allowed_tools) if allowed_tools is not None else None
+    specs: list[dict] = []
+    for t in tools_for_surface("react"):
+        if not t.react_enabled:
+            continue
+        if allowed_set is not None and t.name not in allowed_set:
+            continue
+        try:
+            schema = t.schema.model_json_schema()
+        except Exception as exc:  # pragma: no cover - defensive; schemas are Pydantic
+            logger.warning("Could not build native schema for tool %s: %s", t.name, exc)
+            continue
+        # Native tool APIs (Anthropic/OpenAI/Gemini) require a top-level object
+        # schema; Pydantic already emits one, but default defensively.
+        schema.setdefault("type", "object")
+        specs.append(
+            {
+                "name": t.name,
+                "description": t.description,
+                "input_schema": schema,
+            }
+        )
+    return specs
 
 
 def _schema_signature(schema: type) -> str:

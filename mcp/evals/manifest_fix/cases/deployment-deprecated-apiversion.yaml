@@ -1,0 +1,46 @@
+id: deployment-deprecated-apiversion
+symptom: >-
+  kubectl apply fails: "no matches for kind Deployment in version apps/v1beta1".
+  apps/v1beta1 was removed in Kubernetes 1.16.
+kind: Deployment
+checks:
+  - path: apiVersion
+    equals: apps/v1
+broken: |
+  apiVersion: apps/v1beta1
+  kind: Deployment
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    replicas: 3
+    selector:
+      matchLabels:
+        app: web
+    template:
+      metadata:
+        labels:
+          app: web
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.25.3
+fixed: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: web
+    namespace: apps
+  spec:
+    replicas: 3
+    selector:
+      matchLabels:
+        app: web
+    template:
+      metadata:
+        labels:
+          app: web
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.25.3

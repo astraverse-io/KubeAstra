@@ -194,8 +194,13 @@ def test_the_signing_step_runs_before_the_build_that_bundles_it():
 
 
 def test_the_signing_step_only_runs_when_a_certificate_exists():
-    """Unguarded, it would fail every unsigned build at `security import`."""
-    assert _step("Sign the sidecar binaries")["if"] == "env.HAS_APPLE_CERT == 'true'"
+    """Unguarded, it would fail every unsigned build at `security import` —
+    and, since the Windows lane was added, every Windows build too, because
+    HAS_APPLE_CERT is a secret-presence flag and is equally true there."""
+    condition = _step("Sign the sidecar binaries")["if"]
+
+    assert "env.HAS_APPLE_CERT == 'true'" in condition
+    assert "startsWith(matrix.platform, 'macos')" in condition
 
 
 def test_the_signing_step_demands_an_identity_rather_than_skipping():
@@ -365,6 +370,18 @@ def test_the_dmg_check_asks_the_question_the_user_asks():
     assert "stapler validate" in run
 
 
+def test_the_upload_is_skipped_when_there_is_no_release():
+    """The workflow also runs on workflow_dispatch, where GITHUB_REF_NAME is a
+    branch. `gh release upload` then ends the job with a bare "release not
+    found" — after signing, notarizing and stapling all succeeded, which is a
+    confusing way to fail a run that did everything right."""
+    run = _step("Notarize and staple the DMG")["run"]
+
+    assert 'GITHUB_REF_TYPE" = "tag"' in run, (
+        "the upload is unconditional; a dispatched run will fail on it"
+    )
+
+
 def test_the_stapled_dmg_replaces_the_one_already_uploaded():
     """tauri-action uploads the DMG before this step runs, so without
     --clobber the release keeps the unstapled copy and every check here passes
@@ -375,6 +392,91 @@ def test_the_stapled_dmg_replaces_the_one_already_uploaded():
     assert "--clobber" in run
 
 
+# ── the Windows lane ──────────────────────────────────────────────────────
+#
+# HAS_APPLE_CERT is a secret-presence flag, not a platform flag: it is equally
+# 'true' on the Windows runner. Every Apple step therefore needs the platform
+# in its condition as well, or the Windows lane runs `security`, `codesign`
+# and `xcrun` and dies.
+
+
+def _matrix() -> list[dict]:
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build-desktop"]
+    return job["strategy"]["matrix"]["include"]
+
+
+def _fires(condition: str, *, mac: bool, cert: bool, api_key: bool) -> bool:
+    """Evaluate a step `if` for one scenario. Crude, but these conditions are
+    built from exactly three predicates and nothing else."""
+    c = condition.replace("startsWith(matrix.platform, 'macos')", "True" if mac else "False")
+    c = c.replace("env.HAS_APPLE_CERT == 'true'", "True" if cert else "False")
+    c = c.replace("env.HAS_APPLE_CERT != 'true'", "False" if cert else "True")
+    c = c.replace("env.HAS_APPLE_API_KEY == 'true'", "True" if api_key else "False")
+    c = c.replace("env.HAS_APPLE_API_KEY != 'true'", "False" if api_key else "True")
+    c = c.replace("&&", " and ").replace("||", " or ")
+    c = c.replace("!True", "not True").replace("!False", "not False")
+    return bool(eval(c))  # noqa: S307 — fixed vocabulary, from a file in this repo
+
+
+def test_there_is_a_windows_lane():
+    platforms = {e["platform"] for e in _matrix()}
+
+    assert any(p.startswith("windows") for p in platforms), "the Windows lane is gone"
+    assert any(p.startswith("macos") for p in platforms)
+
+
+@pytest.mark.parametrize("mac", [True, False], ids=["macos", "windows"])
+@pytest.mark.parametrize("cert", [True, False], ids=["cert", "nocert"])
+@pytest.mark.parametrize("api_key", [True, False], ids=["apikey", "noapikey"])
+def test_exactly_one_build_step_fires(mac: bool, cert: bool, api_key: bool):
+    """Two firing means two Tauri builds racing for the same artifacts; zero
+    means a release with nothing in it. Neither announces itself."""
+    builds = [s for s in _build_steps()]
+    hits = [s["name"] for s in builds if _fires(s["if"], mac=mac, cert=cert, api_key=api_key)]
+
+    assert len(hits) == 1, (
+        f"{'macOS' if mac else 'Windows'} cert={cert} api_key={api_key} fires "
+        f"{len(hits)} build steps: {hits}"
+    )
+
+
+@pytest.mark.parametrize(
+    "step_name",
+    [
+        "Sign the sidecar binaries",
+        "Materialize App Store Connect API key",
+        "Build Tauri App (signed, notarized with an API key)",
+        "Build Tauri App (signed, notarized with an app-specific password)",
+        "Notarize and staple the DMG",
+    ],
+)
+def test_every_apple_step_is_gated_on_macos(step_name: str):
+    """Without the platform check these run on windows-latest, where
+    `security` and `codesign` do not exist."""
+    assert "startsWith(matrix.platform, 'macos')" in _step(step_name)["if"], (
+        f"{step_name} would run on the Windows runner"
+    )
+
+
+def test_the_job_runs_bash_on_both_platforms():
+    """windows-latest defaults to PowerShell, and every `run:` here is bash —
+    `set -euo pipefail`, `$RUNNER_TEMP`, `test -f`."""
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build-desktop"]
+
+    assert job.get("defaults", {}).get("run", {}).get("shell") == "bash"
+
+
+def test_no_step_hardcodes_slash_tmp():
+    """/tmp is not a usable path on the Windows runner; $RUNNER_TEMP is
+    defined everywhere."""
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build-desktop"]
+    offenders = [
+        s.get("name", "?") for s in job["steps"] if "/tmp/" in str(s.get("run", ""))
+    ]
+
+    assert offenders == [], f"these hardcode /tmp: {offenders}"
+
+
 def test_the_p8_secret_is_never_named_by_a_build_step():
     """The key material is decoded to a file by one step. A build step that
     also named it would put the raw key into the environment of a third-party
@@ -383,3 +485,71 @@ def test_the_p8_secret_is_never_named_by_a_build_step():
         assert "APPLE_API_KEY_P8" not in set(step.get("env", {})), (
             f"{step['name']} exposes the raw .p8 to tauri-action"
         )
+
+
+def test_a_non_tag_run_cannot_publish():
+    """tauri-action decides what to upload from the version in
+    tauri.conf.json, not from what triggered the run. With a literal tagName,
+    a workflow_dispatch on a branch expanded __VERSION__ to the current
+    version, matched the release already published under that tag, and
+    uploaded into it — adding an unverified MSI to the live 0.2.3 release and
+    rewriting the latest.json every installed copy polls.
+
+    An empty tagName makes it build and upload nothing.
+    """
+    for step in _build_steps():
+        tag_name = step["with"]["tagName"]
+        assert "github.ref_type == 'tag'" in tag_name, (
+            f"{step['name']} publishes regardless of trigger; a dispatched "
+            f"run will upload into whatever release matches the current version"
+        )
+
+
+# ── the Windows installer ─────────────────────────────────────────────────
+
+
+def test_the_msi_is_installed_and_exercised_not_just_produced():
+    """"An MSI exists" is the Windows version of "the build exited 0", and
+    this repo has been burned by that twice on macOS — a bundle that opened to
+    a blank window because the sidecar was missing or its onedir tree had been
+    flattened. The only way to know is to install it and run what came out."""
+    run = _step("Install the MSI and prove the installed app runs")["run"]
+
+    assert "msiexec" in run and "/i" in run, "the MSI is never installed"
+    assert "kubeastra-backend.exe" in run, "the installed sidecar is never located"
+    assert "READY" in run and "/health" in run, (
+        "the installed sidecar is never actually run — existence is not proof"
+    )
+
+
+def test_the_installer_step_uses_pwsh():
+    """The job defaults to bash. msiexec is a native Windows program: it needs
+    a Windows path, and launched from bash it returns before the install has
+    finished, so every check after it races the installer."""
+    assert _step("Install the MSI and prove the installed app runs")["shell"] == "pwsh"
+
+
+def test_the_msi_is_uninstalled_afterwards():
+    """Leaving it installed makes later steps depend on state this one created,
+    and a broken uninstaller would first be discovered by a user trying to
+    remove the app."""
+    run = _step("Install the MSI and prove the installed app runs")["run"]
+
+    assert "/x" in run, "the MSI is never uninstalled"
+    assert "uninstall left" in run, "nothing checks the uninstall actually removed it"
+
+
+def test_the_installed_launcher_is_discovered_not_assumed():
+    """Tauri names the Windows executable after the Cargo binary
+    (kubeastra-desktop.exe), not after productName — the same split as macOS,
+    where the bundle is KubeAstra.app but the binary inside is
+    kubeastra-desktop. Asserting "KubeAstra.exe" failed a build whose MSI had
+    installed perfectly.
+    """
+    run = _step("Install the MSI and prove the installed app runs")["run"]
+
+    assert 'Join-Path $root "KubeAstra.exe"' not in run, (
+        "the launcher name is hardcoded again; Tauri names it after the Cargo "
+        "binary, not productName"
+    )
+    assert "-Filter *.exe" in run, "the launcher should be discovered"

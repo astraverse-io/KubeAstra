@@ -13,12 +13,27 @@ Notes on parameter mapping:
 import logging
 from typing import Any, Optional, Tuple
 
-from .base import LLMProvider, LLMProviderError, effective_timeout
+from .base import (
+    LLMProvider,
+    LLMProviderError,
+    ToolCall,
+    ToolTurn,
+    effective_timeout,
+)
 from .pricing import TokenUsage, compute_cost
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TOKENS = 4096
+
+# Anthropic stop_reason → normalized ToolTurn.stop (see ToolTurn docstring).
+_STOP_MAP = {
+    "tool_use": "tool_calls",
+    "end_turn": "end",
+    "stop_sequence": "end",
+    "max_tokens": "length",
+    "refusal": "refusal",
+}
 
 
 def _extract_usage(response: Any, model: str) -> TokenUsage:
@@ -43,6 +58,95 @@ def _extract_usage(response: Any, model: str) -> TokenUsage:
     )
     result.cost_usd = compute_cost(result)
     return result
+
+
+def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
+    """Map provider-neutral messages to the Anthropic Messages ``messages`` shape.
+
+    - ``user`` → a user turn (content passed through: a plain string or an
+      already-formed content-block list).
+    - ``assistant`` → an assistant turn carrying any prose plus one
+      ``tool_use`` block per :class:`ToolCall`.
+    - ``tool`` → Anthropic carries tool *results* inside a **user** turn, as
+      ``tool_result`` blocks keyed by ``tool_use_id``. **All** results for one
+      assistant turn must share a single user message — the API requires strict
+      user/assistant alternation — so consecutive neutral ``tool`` messages
+      (parallel tool calls) are coalesced into one user turn here.
+    """
+    out: list[dict] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        m = messages[i]
+        role = m.get("role")
+        if role == "user":
+            out.append({"role": "user", "content": m.get("content", "")})
+            i += 1
+        elif role == "assistant":
+            blocks: list[dict] = []
+            text = m.get("content")
+            if text:
+                blocks.append({"type": "text", "text": text})
+            for tc in m.get("tool_calls", []) or []:
+                call_id = tc.id if isinstance(tc, ToolCall) else tc["id"]
+                name = tc.name if isinstance(tc, ToolCall) else tc["name"]
+                args = tc.arguments if isinstance(tc, ToolCall) else tc.get("arguments", {})
+                blocks.append(
+                    {"type": "tool_use", "id": call_id, "name": name, "input": args or {}}
+                )
+            out.append({"role": "assistant", "content": blocks})
+            i += 1
+        elif role == "tool":
+            # Batch every consecutive tool result into one user message.
+            result_blocks: list[dict] = []
+            while i < n and messages[i].get("role") == "tool":
+                tm = messages[i]
+                result_blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tm.get("tool_call_id", ""),
+                        "content": tm.get("content", ""),
+                    }
+                )
+                i += 1
+            out.append({"role": "user", "content": result_blocks})
+        else:
+            raise LLMProviderError(f"Unknown message role for Anthropic: {role!r}")
+    return out
+
+
+def _parse_tool_turn(response: Any, model: str) -> ToolTurn:
+    """Parse an Anthropic Messages response into a :class:`ToolTurn`.
+
+    Collects every ``text`` block into prose and every ``tool_use`` block into a
+    :class:`ToolCall`. A ``refusal`` stop is surfaced as an error, consistent
+    with the plain ``generate`` path.
+    """
+    stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason == "refusal":
+        raise LLMProviderError("Anthropic declined the request (stop_reason=refusal)")
+
+    text_parts: list[str] = []
+    tool_calls: list[ToolCall] = []
+    for block in getattr(response, "content", None) or []:
+        btype = getattr(block, "type", None)
+        if btype == "text":
+            text_parts.append(getattr(block, "text", "") or "")
+        elif btype == "tool_use":
+            tool_calls.append(
+                ToolCall(
+                    id=getattr(block, "id", "") or "",
+                    name=getattr(block, "name", "") or "",
+                    arguments=dict(getattr(block, "input", None) or {}),
+                )
+            )
+
+    return ToolTurn(
+        text="".join(text_parts).strip(),
+        tool_calls=tool_calls,
+        usage=_extract_usage(response, model),
+        stop=_STOP_MAP.get(stop_reason, stop_reason or "end"),
+    )
 
 
 class AnthropicProvider(LLMProvider):
@@ -139,3 +243,53 @@ class AnthropicProvider(LLMProvider):
     ) -> Tuple[str, TokenUsage]:
         response = self._raw_generate(prompt, system, max_tokens)
         return self._response_text(response), _extract_usage(response, self._model)
+
+    # ── Native tool-calling (Harness v2) ──────────────────────────────────────
+
+    def supports_native_tools(self) -> bool:
+        return True
+
+    def generate_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> ToolTurn:
+        if not self.enabled:
+            raise LLMProviderError("ANTHROPIC_API_KEY is not configured")
+
+        try:
+            import anthropic
+        except ImportError as exc:
+            raise LLMProviderError(
+                "The 'anthropic' package is not installed. Run: pip install anthropic"
+            ) from exc
+
+        client = self._get_client(effective_timeout(self._timeout))
+        kwargs: dict = {
+            "model": self._model,
+            "max_tokens": max_tokens or DEFAULT_MAX_TOKENS,
+            "messages": _to_anthropic_messages(messages),
+        }
+        if system:
+            kwargs["system"] = system
+        # Anthropic wants {name, description, input_schema} — the provider-neutral
+        # spec already uses that shape, so pass it straight through.
+        if tools:
+            kwargs["tools"] = [
+                {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "input_schema": t["input_schema"],
+                }
+                for t in tools
+            ]
+
+        try:
+            response = client.messages.create(**kwargs)
+        except anthropic.APIError as exc:
+            logger.error("Anthropic tool request failed: %s", exc)
+            raise LLMProviderError(f"Anthropic request failed: {exc}") from exc
+
+        return _parse_tool_turn(response, self._model)

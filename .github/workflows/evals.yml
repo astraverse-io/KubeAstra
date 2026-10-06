@@ -79,10 +79,15 @@ jobs:
           python -m pytest tests/ -v --tb=short
 
       # ── Per-feature evals (offline mode) ─────────────────────────────────
-      # The mcp/evals/ harness (offline runner + golden set) was part of a
-      # pre-rebrand milestone that was superseded by the internal fork's
-      # more mature features; it needs to be re-created against the current
-      # tree before these steps can fire. Uncomment as each ships.
+      # Manifest-fix suite (design §7): deterministic coherence gate — every
+      # golden fix scores 1.0 and every broken manifest scores < 1.0.
+      - name: Eval § Manifest fix (offline self-check)
+        working-directory: mcp
+        run: python -m evals.manifest_fix.run
+
+      # The remaining evals below were part of a pre-rebrand milestone that was
+      # superseded by the internal fork; re-create against the current tree and
+      # uncomment as each ships.
       #
       # - name: Eval § RAG router
       #   working-directory: mcp
@@ -143,10 +148,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r mcp/requirements.txt
 
-      # The mcp/evals/ harness (LIVE runner + golden set) was part of a
-      # pre-rebrand milestone that was superseded by the internal fork's
-      # more mature features; it needs to be re-created against the current
-      # tree before these steps can fire. Uncomment as each ships.
+      # Manifest-fix suite (design §7), LIVE: the model produces a fix for each
+      # case; scored by the objective validators + an LLM-as-judge. Skips
+      # cleanly (exit 0) when no provider key is configured.
+      - name: Eval § Manifest fix (LIVE)
+        working-directory: mcp
+        run: python -m evals.manifest_fix.run
+
+      # The remaining evals below were superseded by the internal fork; re-create
+      # against the current tree and uncomment as each ships.
       #
       # - name: Eval § RAG router (LIVE)
       #   working-directory: mcp

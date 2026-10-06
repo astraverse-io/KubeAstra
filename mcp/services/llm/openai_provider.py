@@ -5,15 +5,31 @@ the Ollama provider). Requires OPENAI_API_KEY. OPENAI_BASE_URL can point at
 any OpenAI-compatible endpoint (Azure OpenAI gateways, vLLM, LiteLLM, ...).
 """
 
+import json
 import logging
 from typing import Any, Optional, Tuple
 
 import httpx
 
-from .base import LLMProvider, LLMProviderError, effective_timeout
+from .base import (
+    LLMProvider,
+    LLMProviderError,
+    ToolCall,
+    ToolTurn,
+    effective_timeout,
+)
 from .pricing import TokenUsage, compute_cost
 
 logger = logging.getLogger(__name__)
+
+# OpenAI finish_reason → normalized ToolTurn.stop (see ToolTurn docstring).
+_STOP_MAP = {
+    "tool_calls": "tool_calls",
+    "function_call": "tool_calls",
+    "stop": "end",
+    "length": "length",
+    "content_filter": "refusal",
+}
 
 
 def _extract_usage(payload: dict, model: str) -> TokenUsage:
@@ -37,6 +53,83 @@ def _extract_usage(payload: dict, model: str) -> TokenUsage:
     )
     result.cost_usd = compute_cost(result)
     return result
+
+
+def _to_openai_messages(messages: list[dict], system: Optional[str]) -> list[dict]:
+    """Map provider-neutral messages to OpenAI Chat Completions ``messages``.
+
+    - ``system`` (if given) becomes the leading ``system`` turn.
+    - ``user`` → a user turn.
+    - ``assistant`` → an assistant turn; each :class:`ToolCall` becomes an
+      OpenAI ``tool_calls`` entry (arguments re-encoded as a JSON string).
+    - ``tool`` → a ``tool`` turn keyed by ``tool_call_id``.
+    """
+    out: list[dict] = []
+    if system:
+        out.append({"role": "system", "content": system})
+    for m in messages:
+        role = m.get("role")
+        if role == "user":
+            out.append({"role": "user", "content": m.get("content", "")})
+        elif role == "assistant":
+            entry: dict[str, Any] = {"role": "assistant", "content": m.get("content") or None}
+            calls = m.get("tool_calls") or []
+            if calls:
+                entry["tool_calls"] = []
+                for tc in calls:
+                    call_id = tc.id if isinstance(tc, ToolCall) else tc["id"]
+                    name = tc.name if isinstance(tc, ToolCall) else tc["name"]
+                    args = tc.arguments if isinstance(tc, ToolCall) else tc.get("arguments", {})
+                    entry["tool_calls"].append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": json.dumps(args or {})},
+                        }
+                    )
+            out.append(entry)
+        elif role == "tool":
+            out.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": m.get("tool_call_id", ""),
+                    "content": m.get("content", ""),
+                }
+            )
+        else:
+            raise LLMProviderError(f"Unknown message role for OpenAI: {role!r}")
+    return out
+
+
+def _parse_openai_tool_turn(data: dict, model: str) -> ToolTurn:
+    """Parse an OpenAI Chat Completions body into a :class:`ToolTurn`.
+
+    OpenAI returns tool calls on ``message.tool_calls`` with ``function.arguments``
+    as a JSON *string*; malformed argument JSON degrades to ``{}`` with a warning
+    rather than crashing the turn.
+    """
+    choices = data.get("choices") or []
+    choice = choices[0] if choices else {}
+    message = choice.get("message") or {}
+    finish = choice.get("finish_reason")
+
+    tool_calls: list[ToolCall] = []
+    for raw in message.get("tool_calls") or []:
+        fn = raw.get("function") or {}
+        raw_args = fn.get("arguments") or "{}"
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+        except (ValueError, TypeError) as exc:
+            logger.warning("OpenAI tool-call arguments were not valid JSON (%s): %r", exc, raw_args)
+            args = {}
+        tool_calls.append(ToolCall(id=raw.get("id", "") or "", name=fn.get("name", "") or "", arguments=args))
+
+    return ToolTurn(
+        text=(message.get("content") or "").strip(),
+        tool_calls=tool_calls,
+        usage=_extract_usage(data, model),
+        stop=_STOP_MAP.get(finish, finish or "end"),
+    )
 
 
 class OpenAIProvider(LLMProvider):
@@ -126,3 +219,52 @@ class OpenAIProvider(LLMProvider):
     ) -> Tuple[str, TokenUsage]:
         data = self._raw_generate(prompt, system, temperature, max_tokens)
         return self._response_text(data), _extract_usage(data, self._model)
+
+    # ── Native tool-calling (Harness v2) ──────────────────────────────────────
+
+    def supports_native_tools(self) -> bool:
+        return True
+
+    def generate_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> ToolTurn:
+        if not self.enabled:
+            raise LLMProviderError("OPENAI_API_KEY is not configured")
+
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": _to_openai_messages(messages, system),
+        }
+        if max_tokens:
+            payload["max_completion_tokens"] = max_tokens
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "parameters": t["input_schema"],
+                    },
+                }
+                for t in tools
+            ]
+
+        url = f"{self._base_url}/chat/completions"
+        try:
+            response = httpx.post(
+                url,
+                json=payload,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                timeout=effective_timeout(self._timeout),
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.error("OpenAI tool request to %s failed: %s", url, exc)
+            raise LLMProviderError(f"OpenAI request failed: {exc}") from exc
+
+        return _parse_openai_tool_turn(response.json(), self._model)
