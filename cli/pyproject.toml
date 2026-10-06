@@ -33,6 +33,10 @@ dependencies = [
     "httpx-sse>=0.4.0",
     # Python 3.11 std lib has tomllib for READING; we need tomli-w to WRITE.
     "tomli-w>=1.0.0",
+    # The `upgrade` subcommand loads the pure planner core (services.upgrade),
+    # which parses manifests with PyYAML. Without it the core import fails and
+    # `kubeastra upgrade` can't run from an installed package.
+    "pyyaml>=6",
 ]
 
 [project.optional-dependencies]
