@@ -85,6 +85,14 @@ jobs:
         working-directory: mcp
         run: python -m evals.manifest_fix.run
 
+      # Pilots suite (PILOTS_PLAN §Phase 6): blocking recall/precision, routing,
+      # plan ordering (Kendall-τ), and reconciliation root-cause hit rate — all
+      # deterministic against the keyless cores. The cluster safe-apply eval is
+      # deferred (Phase 5 pt3; needs a kind cluster).
+      - name: Eval § Pilots (upgrade plan + reconcile)
+        working-directory: mcp
+        run: python -m evals.pilots.run
+
       # The remaining evals below were part of a pre-rebrand milestone that was
       # superseded by the internal fork; re-create against the current tree and
       # uncomment as each ships.

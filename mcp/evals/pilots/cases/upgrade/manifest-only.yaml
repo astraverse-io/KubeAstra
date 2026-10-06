@@ -1,0 +1,15 @@
+id: manifest-only
+target: "1.16"
+snapshot:
+  cluster_version: "1.15"
+  provider: gke
+  objects:
+    - {gvk: "apps/v1beta1/Deployment", kind: Deployment, name: web, namespace: apps, source: manifest}
+expect:
+  blocking:
+    - "apps/v1beta1/Deployment"
+  routes:
+    "apps/v1beta1/Deployment": manifest_pr
+  order:
+    - "apps/v1beta1/Deployment"
+    - "control_plane"

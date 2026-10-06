@@ -51,6 +51,7 @@ jobs:
           mcp/tests/test_upgrade_plan.py
           mcp/tests/test_upgrade_migrate.py
           mcp/tests/test_gitops_reconcile.py
+          mcp/tests/test_eval_pilots.py
 
       - name: backend (pilots framework + apply runner)
         run: >-

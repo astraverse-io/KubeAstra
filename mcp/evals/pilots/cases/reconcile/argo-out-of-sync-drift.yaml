@@ -1,0 +1,11 @@
+id: argo-out-of-sync-drift
+expect_root_cause: out_of_sync_drift
+obj:
+  kind: Application
+  metadata: {name: web}
+  status:
+    health: {status: Healthy}
+    sync: {status: OutOfSync}
+    resources: []
+    conditions: []
+    operationState: {}

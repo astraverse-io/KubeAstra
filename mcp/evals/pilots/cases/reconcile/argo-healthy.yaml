@@ -1,0 +1,11 @@
+id: argo-healthy
+expect_root_cause: healthy
+obj:
+  kind: Application
+  metadata: {name: web}
+  status:
+    health: {status: Healthy}
+    sync: {status: Synced}
+    resources: []
+    conditions: []
+    operationState: {}

@@ -1,0 +1,12 @@
+id: no-blocker
+target: "1.25"
+snapshot:
+  cluster_version: "1.24"
+  provider: aks
+  objects:
+    - {gvk: "apps/v1/Deployment", kind: Deployment, name: web, namespace: apps, source: manifest}
+expect:
+  blocking: []
+  routes: {}
+  order:
+    - "control_plane"

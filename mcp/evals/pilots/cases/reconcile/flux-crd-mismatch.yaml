@@ -1,0 +1,11 @@
+id: flux-crd-mismatch
+expect_root_cause: crd_schema_mismatch
+obj:
+  kind: Kustomization
+  metadata: {name: apps}
+  status:
+    conditions:
+      - type: Ready
+        status: "False"
+        reason: BuildFailed
+        message: "kustomize build failed: no matches for kind CronJob"
