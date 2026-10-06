@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     gitops_reconcile_enabled: bool = False
     upgrade_pilot_allowed_targets: str = ""
     upgrade_pilot_explain: bool = False
+    # Allowed root for STATIC manifests scanning via the server (inputs.manifests_path).
+    # Empty (default) = disabled: the server never reads a request-supplied path, so an
+    # authenticated user cannot traverse the filesystem. Set to a directory to opt in;
+    # paths are confined to it. The CLI/Action path is unaffected (it runs locally).
+    upgrade_pilot_manifests_root: str = ""
 
     # ── Deployment repository settings ────────────────────────────────────────
     # The internal Ansible deployment repo, indexed into the

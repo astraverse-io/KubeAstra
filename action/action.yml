@@ -36,9 +36,16 @@ runs:
       with:
         python-version: "3.11"
 
+    # Every ${{ … }} value is passed via `env:` and referenced as "$VAR" in the
+    # script — never interpolated straight into `run:` — so a crafted input
+    # cannot inject shell (GitHub Actions script-injection; CodeQL py/code-injection).
     - name: Install KubeAstra CLI
       shell: bash
-      run: pip install --quiet "pyyaml>=6" && pip install --quiet "${{ github.action_path }}/cli"
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        pip install --quiet "pyyaml>=6"
+        pip install --quiet "$ACTION_PATH/cli"
 
     - name: Run Upgrade Pilot
       shell: bash
@@ -46,22 +53,29 @@ runs:
         # The pure planner core ships alongside this action; expose it so the
         # keyless CLI finds it without a server.
         PYTHONPATH: "${{ github.action_path }}/mcp"
+        TARGET: ${{ inputs.target }}
+        MANIFESTS: ${{ inputs.manifests }}
+        OUTPUT: ${{ inputs.output }}
+        FAIL_ON_BLOCKING: ${{ inputs.fail-on-blocking }}
       run: |
         set -o pipefail
         GATE="--fail-on-blocking"
-        [ "${{ inputs.fail-on-blocking }}" = "true" ] || GATE="--no-fail-on-blocking"
+        [ "$FAIL_ON_BLOCKING" = "true" ] || GATE="--no-fail-on-blocking"
         kubeastra upgrade plan \
-          --target "${{ inputs.target }}" \
-          --manifests "${{ inputs.manifests }}" \
-          -o "${{ inputs.output }}" $GATE
+          --target "$TARGET" \
+          --manifests "$MANIFESTS" \
+          -o "$OUTPUT" $GATE
 
     - name: Write SARIF report
       if: inputs.sarif-file != ''
       shell: bash
       env:
         PYTHONPATH: "${{ github.action_path }}/mcp"
+        TARGET: ${{ inputs.target }}
+        MANIFESTS: ${{ inputs.manifests }}
+        SARIF_FILE: ${{ inputs.sarif-file }}
       run: |
         kubeastra upgrade plan \
-          --target "${{ inputs.target }}" \
-          --manifests "${{ inputs.manifests }}" \
-          -o sarif --no-fail-on-blocking > "${{ inputs.sarif-file }}"
+          --target "$TARGET" \
+          --manifests "$MANIFESTS" \
+          -o sarif --no-fail-on-blocking > "$SARIF_FILE"

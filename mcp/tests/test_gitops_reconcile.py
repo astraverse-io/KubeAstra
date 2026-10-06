@@ -133,6 +133,9 @@ def test_fetch_flux_helmrelease_uses_right_plural():
 
     fetch_gitops_object(fake, kind="HelmRelease", name="redis", namespace="flux-system")
     flat = [p for call in seen for p in call]
+    # CodeQL py/incomplete-url-substring-sanitization false positive: `flat` is the
+    # list of kubectl argv tokens, and this is list-membership asserting the right
+    # resource was queried — not URL parsing or a security check.
     assert "helmreleases.helm.toolkit.fluxcd.io" in flat
 
 

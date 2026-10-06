@@ -161,6 +161,9 @@ def test_scan_cluster_builds_snapshot_from_injected_runner():
     assert snap.cluster_version == "1.21.5"  # 'v' stripped
     assert snap.provider == "eks"  # from aws:// providerID
     assert snap.node_kubelet_versions == ["v1.21.5"]
+    # CodeQL py/incomplete-url-substring-sanitization false positive: `o.crds` is a
+    # list of detected CRD group names, and this is list-membership — not URL parsing
+    # or a security check.
     assert any("cert-manager.io" in o.crds for o in snap.operators)
     ing = [o for o in snap.objects if o.kind == "Ingress"]
     assert ing and ing[0].namespace == "shop"

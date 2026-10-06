@@ -85,10 +85,41 @@ def _build_snapshot(body: PilotRunRequest):
 
     manifests_path = (body.inputs or {}).get("manifests_path")
     if manifests_path:
-        return scan_manifests(manifests_path)
+        return scan_manifests(_safe_manifests_path(str(manifests_path)))
     from k8s.kubectl_runner import get_runner
 
     return scan_cluster(get_runner().run_json, load_maps()["deprecations"])
+
+
+def _safe_manifests_path(raw: str) -> str:
+    """Confine a request-supplied manifests path to the configured allowed root.
+
+    STATIC scanning reads whatever path it is given, so letting a request choose
+    it would let an authenticated user walk the server's filesystem
+    (CodeQL py/path-injection). We require an explicit opt-in root
+    (``upgrade_pilot_manifests_root``) and reject anything resolving outside it —
+    including absolute paths, ``..`` traversal, and symlink escapes (``resolve()``
+    follows links before the containment check). The CLI/Action path never calls
+    this; it scans locally.
+    """
+    from pathlib import Path
+
+    root = (getattr(_settings(), "upgrade_pilot_manifests_root", "") or "").strip()
+    if not root:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "manifests_path scanning is disabled on this server; set "
+                "upgrade_pilot_manifests_root to an allowed directory, or omit "
+                "manifests_path to scan the live cluster"
+            ),
+        )
+    base = Path(root).resolve()
+    candidate = Path(raw)
+    target = (candidate if candidate.is_absolute() else base / candidate).resolve()
+    if target != base and not target.is_relative_to(base):
+        raise HTTPException(status_code=400, detail="manifests_path escapes the allowed root")
+    return str(target)
 
 
 # Argo/Flux names and namespaces flow into kubectl args; validate them so a value

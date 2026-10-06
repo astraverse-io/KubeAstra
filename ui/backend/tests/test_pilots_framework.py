@@ -12,6 +12,7 @@ for _p in (BACKEND_DIR, MCP_DIR):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import db  # noqa: E402
@@ -92,6 +93,7 @@ def test_router_lists_only_enabled_pilots(monkeypatch, tmp_path):
 def test_upgrade_run_produces_and_persists_a_plan(monkeypatch, tmp_path):
     monkeypatch.setenv("PILOTS_ENABLED", "true")
     monkeypatch.setenv("UPGRADE_PILOT_ENABLED", "true")
+    monkeypatch.setenv("UPGRADE_PILOT_MANIFESTS_ROOT", str(tmp_path))
     _reset_settings_cache()
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "pilots-run.db"))
     db.init_db()
@@ -192,6 +194,7 @@ def test_plan_approval_authorizes_non_high_risk_steps(monkeypatch, tmp_path):
     # high-risk steps are refused here (they're approved individually).
     monkeypatch.setenv("PILOTS_ENABLED", "true")
     monkeypatch.setenv("UPGRADE_PILOT_ENABLED", "true")
+    monkeypatch.setenv("UPGRADE_PILOT_MANIFESTS_ROOT", str(tmp_path))
     _reset_settings_cache()
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "approve.db"))
     db.init_db()
@@ -251,3 +254,38 @@ def test_gitops_reconcile_rejects_unsafe_live_inputs(monkeypatch, tmp_path):
         "/api/v1/pilots/gitops_reconcile/run", json={"inputs": {"app": "web", "kind": "Foo"}}
     ).status_code == 422
     _reset_settings_cache()
+
+
+# ── manifests_path containment guard (CodeQL py/path-injection) ────────────────
+
+def test_manifests_path_disabled_by_default(monkeypatch, tmp_path):
+    import routers.pilots as pr
+    monkeypatch.setattr(pr, "_settings", lambda: SimpleNamespace(upgrade_pilot_manifests_root=""))
+    with pytest.raises(pr.HTTPException) as ei:
+        pr._safe_manifests_path("anything")
+    assert ei.value.status_code == 400 and "disabled" in ei.value.detail
+
+
+def test_manifests_path_allows_inside_root(monkeypatch, tmp_path):
+    import routers.pilots as pr
+    (tmp_path / "manifests").mkdir()
+    monkeypatch.setattr(pr, "_settings", lambda: SimpleNamespace(upgrade_pilot_manifests_root=str(tmp_path)))
+    resolved = pr._safe_manifests_path("manifests")
+    assert resolved == str((tmp_path / "manifests").resolve())
+
+
+def test_manifests_path_rejects_absolute_escape(monkeypatch, tmp_path):
+    import routers.pilots as pr
+    monkeypatch.setattr(pr, "_settings", lambda: SimpleNamespace(upgrade_pilot_manifests_root=str(tmp_path)))
+    with pytest.raises(pr.HTTPException) as ei:
+        pr._safe_manifests_path("/etc")
+    assert ei.value.status_code == 400 and "escapes" in ei.value.detail
+
+
+def test_manifests_path_rejects_dotdot_traversal(monkeypatch, tmp_path):
+    import routers.pilots as pr
+    base = tmp_path / "base"
+    base.mkdir()
+    monkeypatch.setattr(pr, "_settings", lambda: SimpleNamespace(upgrade_pilot_manifests_root=str(base)))
+    with pytest.raises(pr.HTTPException):
+        pr._safe_manifests_path("../../etc/passwd")
