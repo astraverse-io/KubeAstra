@@ -40,12 +40,14 @@ class _ScriptedProvider:
         self._turns = list(turns)
         self._native = native
         self.last_tools = None
+        self.last_system = None
 
     def supports_native_tools(self):
         return self._native
 
     def generate_with_tools(self, messages, tools, system=None, max_tokens=None):
         self.last_tools = tools
+        self.last_system = system
         return self._turns.pop(0)
 
 
@@ -156,6 +158,51 @@ def test_tool_error_recorded_as_error_step():
     assert recorder.record_step.call_args.kwargs["status"] == "error"
 
 
+def test_history_is_folded_into_system_preamble():
+    provider = _ScriptedProvider(
+        [ToolTurn(text="hi", tool_calls=[], usage=_usage(), stop="end")]
+    )
+    history = [
+        SimpleNamespace(role="user", content="my deployment is crashing"),
+        SimpleNamespace(role="assistant", content="which namespace?"),
+    ]
+    run_native_react(
+        question="prod", provider=provider, dispatch_fn=_dispatch_ok, history=history
+    )
+    assert "Recent conversation:" in provider.last_system
+    assert "my deployment is crashing" in provider.last_system
+    assert "which namespace?" in provider.last_system
+
+
+def test_grounded_and_memory_preambles_in_system():
+    provider = _ScriptedProvider(
+        [ToolTurn(text="hi", tool_calls=[], usage=_usage(), stop="end")]
+    )
+    run_native_react(
+        question="q",
+        provider=provider,
+        dispatch_fn=_dispatch_ok,
+        grounded_preamble="RAG: relevant doc",
+        memory_preamble="MEM: user prefers json",
+    )
+    assert "RAG: relevant doc" in provider.last_system
+    assert "MEM: user prefers json" in provider.last_system
+
+
+def test_cancellation_passthrough_returns_cancelled_answer():
+    provider = _ScriptedProvider(
+        [ToolTurn(text="unreached", tool_calls=[], usage=_usage(), stop="end")]
+    )
+    result = run_native_react(
+        question="q",
+        provider=provider,
+        dispatch_fn=_dispatch_ok,
+        is_cancelled=lambda: True,
+    )
+    assert result.answer == "(cancelled)"
+    assert result.steps == []
+
+
 # ── react_loop routing ────────────────────────────────────────────────────────
 
 
@@ -193,3 +240,28 @@ def test_react_loop_skips_native_for_nonnative_provider(monkeypatch):
         pytest.fail("react_loop wrongly routed a non-native provider to the native path")
     except Exception:
         pass  # text-ReAct path may fail for other reasons with a bare fake; that's fine
+
+
+def test_react_loop_resume_falls_back_to_text(monkeypatch):
+    import react
+
+    _patch_flag(monkeypatch, True)
+    # Native provider, flag ON, but a resume is in progress: must fall through to
+    # the text path (which owns the approval-resume flow), NOT the native loop.
+    # An empty script means a native misroute would IndexError on the first call.
+    provider = _ScriptedProvider([], native=True)
+    try:
+        react.react_loop(
+            question="q",
+            history=[],
+            provider=provider,
+            dispatch_fn=_dispatch_ok,
+            resume_run_id="run-123",
+            approved_token="tok-abc",
+        )
+    except IndexError:  # pragma: no cover
+        pytest.fail("react_loop routed a resume to the native path; it must use text-ReAct")
+    except Exception:
+        pass  # text path may fail with a bare fake; we only assert it did not go native
+    # If native had been entered, generate_with_tools would have set last_tools.
+    assert provider.last_tools is None

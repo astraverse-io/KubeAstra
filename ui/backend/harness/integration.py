@@ -13,6 +13,18 @@ from the outside, a native run looks exactly like a text-ReAct run:
 Called from ``react_loop`` only when ``AGENT_HARNESS_V2`` is set and the provider
 reports ``supports_native_tools()``; everything else stays on text-ReAct. Heavy
 imports are deferred to call time because ``react`` imports this module lazily.
+
+Known native-mode limitations (v1; off by default, to be closed as the harness
+matures and measured by Phase-4 evals):
+
+- **No approval-resume / write-approval UX.** ``react_loop`` falls back to the
+  text harness whenever ``resume_run_id`` / ``approved_token`` is set, so the
+  Phase-2 approve-then-resume flow always runs on text-ReAct. Native mode also
+  does not emit ``write_proposed`` / ``approval_required`` events.
+- **Answer is not streamed token-by-token** — it arrives as a single ``token``
+  event followed by ``answer_end``.
+- **Minimal system prompt** compared with the tuned text-ReAct prompt (tool
+  selection heuristics, safety guidance); quality delta is a Phase-4 question.
 """
 
 from __future__ import annotations
@@ -36,6 +48,24 @@ _NATIVE_SYSTEM = (
 )
 
 
+def _recent_conversation(history: Optional[list]) -> str:
+    """Flatten the last few history turns into a context string.
+
+    Mirrors the text harness (``history[-4:]``, 200 chars/turn): native tool
+    APIs want structured alternating turns and would choke on tool-result
+    interleaving, so recent conversation rides in the system preamble instead —
+    same fidelity as the text path, no alternation hazard.
+    """
+    if not history:
+        return ""
+    recent = history[-4:]
+    lines = [
+        f"{getattr(m, 'role', 'user')}: {str(getattr(m, 'content', m))[:200]}"
+        for m in recent
+    ]
+    return "Recent conversation:\n" + "\n".join(lines)
+
+
 def run_native_react(
     *,
     question: str,
@@ -46,6 +76,8 @@ def run_native_react(
     tool_scope: Optional[set] = None,
     memory_preamble: str = "",
     grounded_preamble: str = "",
+    history: Optional[list] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
     max_steps: int = 12,
 ) -> Any:
     """Run one native tool-calling investigation and return a ``ReActResult``."""
@@ -58,10 +90,13 @@ def run_native_react(
 
     tools = build_native_tool_specs(allowed_tools=tool_scope)
 
-    system = _NATIVE_SYSTEM
-    preamble = "\n\n".join(p for p in (grounded_preamble, memory_preamble) if p)
-    if preamble:
-        system = f"{system}\n\n{preamble}"
+    # Fold RAG/memory/recent-conversation context into the system preamble (the
+    # text harness does the same; keeping it out of the turn list avoids native
+    # role-alternation hazards).
+    preamble = "\n\n".join(
+        p for p in (grounded_preamble, memory_preamble, _recent_conversation(history)) if p
+    )
+    system = f"{_NATIVE_SYSTEM}\n\n{preamble}" if preamble else _NATIVE_SYSTEM
 
     steps: list[Any] = []
     started = time.monotonic()
@@ -126,6 +161,7 @@ def run_native_react(
         max_steps=max_steps,
         on_step=on_step,
         on_answer=on_answer,
+        is_cancelled=is_cancelled,
     )
 
     usage = result.usage or TokenUsage()

@@ -475,6 +475,10 @@ def react_loop(
         # tool-calling path (Ollama / fakes return False). Everything else — and
         # any failure to decide — falls through to the text-ReAct loop below, so
         # this is safe to leave off and harmless to turn on.
+        #
+        # The approval-resume flow (resume_run_id / approved_token) is handled
+        # only by the text loop, so a resume ALWAYS falls through regardless of
+        # the flag — otherwise an approved write would silently no-op.
         try:
             from config.settings import get_settings
             _s = get_settings()
@@ -482,7 +486,12 @@ def react_loop(
         except Exception:
             _use_v2 = False
             _s = None
-        if _use_v2 and getattr(traced_provider, "supports_native_tools", lambda: False)():
+        _is_resume = bool(resume_run_id or approved_token)
+        if (
+            _use_v2
+            and not _is_resume
+            and getattr(traced_provider, "supports_native_tools", lambda: False)()
+        ):
             from harness.integration import run_native_react
             return run_native_react(
                 question=question,
@@ -493,6 +502,8 @@ def react_loop(
                 tool_scope=tool_scope,
                 memory_preamble=memory_preamble,
                 grounded_preamble=grounded_preamble,
+                history=history,
+                is_cancelled=is_cancelled,
                 max_steps=getattr(_s, "agent_harness_v2_max_steps", 12),
             )
 

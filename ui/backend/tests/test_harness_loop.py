@@ -213,6 +213,54 @@ def test_assistant_turn_threaded_with_tool_calls():
     assert second[2] == {"role": "tool", "tool_call_id": "c1", "name": "get_pods", "content": "obs"}
 
 
+def test_cancel_before_first_call_returns_cancelled():
+    provider = _ScriptedProvider(
+        [ToolTurn(text="should not run", tool_calls=[], usage=_usage(), stop="end")]
+    )
+    result = run_native_tool_loop(
+        provider=provider,
+        question="q",
+        tools=_TOOLS,
+        execute_tool=lambda n, a: "x",
+        is_cancelled=lambda: True,
+    )
+    assert result.halted == "cancelled"
+    assert result.answer == "(cancelled)"
+    assert result.steps == []
+    assert provider.calls == []  # never called the model
+
+
+def test_cancel_after_first_step_stops_loop():
+    provider = _ScriptedProvider(
+        [
+            ToolTurn(
+                text="t",
+                tool_calls=[ToolCall(id="c1", name="get_pods", arguments={})],
+                usage=_usage(),
+                stop="tool_calls",
+            ),
+            ToolTurn(text="unreached", tool_calls=[], usage=_usage(), stop="end"),
+        ]
+    )
+    flag = {"n": 0}
+
+    def cancel():
+        # Not cancelled on the first pre-call check; cancelled after step 1.
+        flag["n"] += 1
+        return flag["n"] > 1
+
+    result = run_native_tool_loop(
+        provider=provider,
+        question="q",
+        tools=_TOOLS,
+        execute_tool=lambda n, a: "obs",
+        is_cancelled=cancel,
+    )
+    assert result.halted == "cancelled"
+    assert len(result.steps) == 1  # the one step that completed before cancel
+    assert len(provider.calls) == 1  # did not make the second model call
+
+
 def test_unsupported_provider_raises():
     provider = _ScriptedProvider([], native=False)
     with pytest.raises(HarnessUnsupported, match="text-ReAct"):

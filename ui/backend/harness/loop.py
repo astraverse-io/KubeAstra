@@ -73,14 +73,19 @@ class LoopResult:
     """Outcome of a native tool-calling run.
 
     ``halted`` is one of ``"answered"`` (model produced a final answer),
-    ``"max_steps"`` (step cap hit; ``answer`` is the forced conclusion), or
-    ``"empty"`` (model returned neither tool calls nor text).
+    ``"max_steps"`` (step cap hit; ``answer`` is the forced conclusion),
+    ``"empty"`` (model returned neither tool calls nor text), or ``"cancelled"``
+    (the caller's ``is_cancelled`` fired; ``answer`` is a short notice and
+    ``steps`` holds whatever completed first).
     """
 
     answer: str
     steps: list[StepRecord] = field(default_factory=list)
     usage: TokenUsage = field(default_factory=TokenUsage)
     halted: str = "answered"
+
+
+_CANCELLED_ANSWER = "(cancelled)"
 
 
 def run_native_tool_loop(
@@ -94,13 +99,16 @@ def run_native_tool_loop(
     max_tokens: Optional[int] = None,
     on_step: Optional[Callable[[StepRecord], None]] = None,
     on_answer: Optional[Callable[[str], None]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> LoopResult:
     """Drive one native tool-calling run and return a :class:`LoopResult`.
 
     Raises :class:`HarnessUnsupported` if ``provider`` has no native path, and
     :class:`ValueError` if ``max_steps`` is not positive. A tool that raises is
     not fatal: its error is fed back as the observation so the model can adapt,
-    bounded by ``max_steps``.
+    bounded by ``max_steps``. ``is_cancelled`` is polled before each model call
+    and after each tool call, so a stopped run exits promptly instead of burning
+    the full step budget.
     """
     if not provider.supports_native_tools():
         raise HarnessUnsupported(
@@ -110,11 +118,16 @@ def run_native_tool_loop(
     if max_steps <= 0:
         raise ValueError("max_steps must be positive")
 
+    def _cancelled() -> bool:
+        return bool(is_cancelled and is_cancelled())
+
     messages: list[dict] = [{"role": "user", "content": question}]
     usage = TokenUsage()
     steps: list[StepRecord] = []
 
     for _ in range(max_steps):
+        if _cancelled():
+            return LoopResult(answer=_CANCELLED_ANSWER, steps=steps, usage=usage, halted="cancelled")
         turn = provider.generate_with_tools(
             messages, tools, system=system, max_tokens=max_tokens
         )
@@ -162,6 +175,9 @@ def run_native_tool_loop(
                     "content": observation,
                 }
             )
+
+        if _cancelled():
+            return LoopResult(answer=_CANCELLED_ANSWER, steps=steps, usage=usage, halted="cancelled")
 
     # Step cap reached — force a tool-free conclusion. Drop tools so the model
     # cannot call more, and nudge via the system prompt rather than a second
