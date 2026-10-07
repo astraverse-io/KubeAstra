@@ -18,6 +18,7 @@ from tool_registry import (  # noqa: E402
 EXPECTED_TOOLS = {
     "add_kubeconfig_context",
     "analyze_error",
+    "analyze_k8s_health",
     "analyze_namespace",
     "apply_patch",
     "cluster_report",
@@ -36,8 +37,10 @@ EXPECTED_TOOLS = {
     "get_endpoints",
     "get_events",
     "get_fix_commands",
+    "get_ingress",
     "get_namespaces",
     "get_nodes",
+    "get_persistent_volume_claim",
     "get_plan",
     "get_helm_release",
     "get_investigation_details",
@@ -50,6 +53,7 @@ EXPECTED_TOOLS = {
     "get_service",
     "helm_available",
     "investigate_helm_release",
+    "investigate_ingress",
     "investigate_pod",
     "investigate_node",
     "investigate_workload",
@@ -72,6 +76,7 @@ EXPECTED_TOOLS = {
 
 EXPECTED_CHAT_TOOLS = {
     "analyze_error",
+    "analyze_k8s_health",
     "analyze_namespace",
     "cluster_report",
     "diff_helm_revisions",
@@ -83,10 +88,12 @@ EXPECTED_CHAT_TOOLS = {
     "get_endpoints",
     "get_events",
     "get_fix_commands",
+    "get_ingress",
     "get_namespaces",
     "get_nodes",
     "get_helm_release",
     "get_investigation_details",
+    "get_persistent_volume_claim",
     "get_pod_logs",
     "get_pods",
     "get_recent_alerts",
@@ -96,6 +103,7 @@ EXPECTED_CHAT_TOOLS = {
     "get_service",
     "helm_available",
     "investigate_helm_release",
+    "investigate_ingress",
     "investigate_pod",
     "investigate_node",
     "investigate_workload",
@@ -131,6 +139,7 @@ def test_aliases_resolve():
     assert resolve_tool("describe_workload").name == "investigate_workload"
     assert resolve_tool("list_workload_pods").name == "investigate_workload"
     assert resolve_tool("describe_pod_pvcs").name == "list_namespace_resources"
+    assert resolve_tool("get_pvc").name == "get_persistent_volume_claim"
     assert resolve_tool("does_not_exist") is None
 
 
