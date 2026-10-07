@@ -1,0 +1,72 @@
+# Kubernetes API deprecations/removals — the Upgrade Pilot's GUARANTEED core.
+#
+# GENERATED artifact: regenerate with `python mcp/scripts/gen_api_deprecations.py`
+# (parses the Kubernetes Deprecated API Migration Guide / FairwindsOps pluto
+# versions.json). Hand-edits are allowed but will be overwritten on regen; the
+# checked-in copy below is a curated snapshot covering the removals real
+# clusters actually hit, through k8s 1.32.
+#
+# Query semantics (see services/upgrade/planner.assess):
+#   An in-use (group, version, kind) is a BLOCKER for target T when
+#   `removed_in <= T`; a WARNING when `deprecated_in <= T < removed_in`.
+#   `replacement` is the apiVersion to migrate to, or `null` when the API is
+#   removed outright with no in-place replacement (e.g. PodSecurityPolicy).
+#
+# `version` is the DEPRECATED apiVersion's group/version (core group = "").
+deprecations:
+  # ── removed in 1.16 ──────────────────────────────────────────────────────
+  - {kind: Deployment,  group: extensions,            version: v1beta1, deprecated_in: "1.9",  removed_in: "1.16", replacement: apps/v1}
+  - {kind: Deployment,  group: apps,                  version: v1beta1, deprecated_in: "1.9",  removed_in: "1.16", replacement: apps/v1}
+  - {kind: Deployment,  group: apps,                  version: v1beta2, deprecated_in: "1.9",  removed_in: "1.16", replacement: apps/v1}
+  - {kind: DaemonSet,   group: extensions,            version: v1beta1, deprecated_in: "1.9",  removed_in: "1.16", replacement: apps/v1}
+  - {kind: DaemonSet,   group: apps,                  version: v1beta2, deprecated_in: "1.9",  removed_in: "1.16", replacement: apps/v1}
+  - {kind: ReplicaSet,  group: extensions,            version: v1beta1, deprecated_in: "1.9",  removed_in: "1.16", replacement: apps/v1}
+  - {kind: StatefulSet, group: apps,                  version: v1beta1, deprecated_in: "1.9",  removed_in: "1.16", replacement: apps/v1}
+  - {kind: StatefulSet, group: apps,                  version: v1beta2, deprecated_in: "1.9",  removed_in: "1.16", replacement: apps/v1}
+  - {kind: NetworkPolicy, group: extensions,          version: v1beta1, deprecated_in: "1.9",  removed_in: "1.16", replacement: networking.k8s.io/v1}
+  - {kind: PodSecurityPolicy, group: extensions,      version: v1beta1, deprecated_in: "1.11", removed_in: "1.16", replacement: policy/v1beta1}
+
+  # ── removed in 1.22 ──────────────────────────────────────────────────────
+  - {kind: Ingress,      group: extensions,           version: v1beta1, deprecated_in: "1.14", removed_in: "1.22", replacement: networking.k8s.io/v1}
+  - {kind: Ingress,      group: networking.k8s.io,    version: v1beta1, deprecated_in: "1.19", removed_in: "1.22", replacement: networking.k8s.io/v1}
+  - {kind: IngressClass, group: networking.k8s.io,    version: v1beta1, deprecated_in: "1.19", removed_in: "1.22", replacement: networking.k8s.io/v1}
+  - {kind: CustomResourceDefinition, group: apiextensions.k8s.io, version: v1beta1, deprecated_in: "1.16", removed_in: "1.22", replacement: apiextensions.k8s.io/v1}
+  - {kind: APIService,   group: apiregistration.k8s.io, version: v1beta1, deprecated_in: "1.19", removed_in: "1.22", replacement: apiregistration.k8s.io/v1}
+  - {kind: MutatingWebhookConfiguration,   group: admissionregistration.k8s.io, version: v1beta1, deprecated_in: "1.16", removed_in: "1.22", replacement: admissionregistration.k8s.io/v1}
+  - {kind: ValidatingWebhookConfiguration, group: admissionregistration.k8s.io, version: v1beta1, deprecated_in: "1.16", removed_in: "1.22", replacement: admissionregistration.k8s.io/v1}
+  - {kind: CertificateSigningRequest, group: certificates.k8s.io, version: v1beta1, deprecated_in: "1.19", removed_in: "1.22", replacement: certificates.k8s.io/v1}
+  - {kind: Lease,        group: coordination.k8s.io,  version: v1beta1, deprecated_in: "1.19", removed_in: "1.22", replacement: coordination.k8s.io/v1}
+  - {kind: ClusterRole,        group: rbac.authorization.k8s.io, version: v1beta1, deprecated_in: "1.17", removed_in: "1.22", replacement: rbac.authorization.k8s.io/v1}
+  - {kind: ClusterRoleBinding, group: rbac.authorization.k8s.io, version: v1beta1, deprecated_in: "1.17", removed_in: "1.22", replacement: rbac.authorization.k8s.io/v1}
+  - {kind: Role,               group: rbac.authorization.k8s.io, version: v1beta1, deprecated_in: "1.17", removed_in: "1.22", replacement: rbac.authorization.k8s.io/v1}
+  - {kind: RoleBinding,        group: rbac.authorization.k8s.io, version: v1beta1, deprecated_in: "1.17", removed_in: "1.22", replacement: rbac.authorization.k8s.io/v1}
+  - {kind: PriorityClass, group: scheduling.k8s.io,   version: v1beta1, deprecated_in: "1.14", removed_in: "1.22", replacement: scheduling.k8s.io/v1}
+  - {kind: CSIDriver,    group: storage.k8s.io,       version: v1beta1, deprecated_in: "1.19", removed_in: "1.22", replacement: storage.k8s.io/v1}
+  - {kind: CSINode,      group: storage.k8s.io,       version: v1beta1, deprecated_in: "1.17", removed_in: "1.22", replacement: storage.k8s.io/v1}
+  - {kind: StorageClass, group: storage.k8s.io,       version: v1beta1, deprecated_in: "1.19", removed_in: "1.22", replacement: storage.k8s.io/v1}
+  - {kind: VolumeAttachment, group: storage.k8s.io,   version: v1beta1, deprecated_in: "1.19", removed_in: "1.22", replacement: storage.k8s.io/v1}
+
+  # ── removed in 1.25 ──────────────────────────────────────────────────────
+  - {kind: CronJob,      group: batch,                version: v1beta1, deprecated_in: "1.21", removed_in: "1.25", replacement: batch/v1}
+  - {kind: EndpointSlice, group: discovery.k8s.io,    version: v1beta1, deprecated_in: "1.21", removed_in: "1.25", replacement: discovery.k8s.io/v1}
+  - {kind: Event,        group: events.k8s.io,        version: v1beta1, deprecated_in: "1.22", removed_in: "1.25", replacement: events.k8s.io/v1}
+  - {kind: HorizontalPodAutoscaler, group: autoscaling, version: v2beta1, deprecated_in: "1.22", removed_in: "1.25", replacement: autoscaling/v2}
+  - {kind: PodDisruptionBudget, group: policy,        version: v1beta1, deprecated_in: "1.21", removed_in: "1.25", replacement: policy/v1}
+  - {kind: PodSecurityPolicy,   group: policy,        version: v1beta1, deprecated_in: "1.21", removed_in: "1.25", replacement: null}
+  - {kind: RuntimeClass, group: node.k8s.io,          version: v1beta1, deprecated_in: "1.22", removed_in: "1.25", replacement: node.k8s.io/v1}
+
+  # ── removed in 1.26 ──────────────────────────────────────────────────────
+  - {kind: HorizontalPodAutoscaler, group: autoscaling, version: v2beta2, deprecated_in: "1.23", removed_in: "1.26", replacement: autoscaling/v2}
+  - {kind: FlowSchema,              group: flowcontrol.apiserver.k8s.io, version: v1beta1, deprecated_in: "1.23", removed_in: "1.26", replacement: flowcontrol.apiserver.k8s.io/v1beta3}
+  - {kind: PriorityLevelConfiguration, group: flowcontrol.apiserver.k8s.io, version: v1beta1, deprecated_in: "1.23", removed_in: "1.26", replacement: flowcontrol.apiserver.k8s.io/v1beta3}
+
+  # ── removed in 1.27 ──────────────────────────────────────────────────────
+  - {kind: CSIStorageCapacity, group: storage.k8s.io, version: v1beta1, deprecated_in: "1.24", removed_in: "1.27", replacement: storage.k8s.io/v1}
+
+  # ── removed in 1.29 ──────────────────────────────────────────────────────
+  - {kind: FlowSchema,              group: flowcontrol.apiserver.k8s.io, version: v1beta2, deprecated_in: "1.26", removed_in: "1.29", replacement: flowcontrol.apiserver.k8s.io/v1}
+  - {kind: PriorityLevelConfiguration, group: flowcontrol.apiserver.k8s.io, version: v1beta2, deprecated_in: "1.26", removed_in: "1.29", replacement: flowcontrol.apiserver.k8s.io/v1}
+
+  # ── removed in 1.32 ──────────────────────────────────────────────────────
+  - {kind: FlowSchema,              group: flowcontrol.apiserver.k8s.io, version: v1beta3, deprecated_in: "1.29", removed_in: "1.32", replacement: flowcontrol.apiserver.k8s.io/v1}
+  - {kind: PriorityLevelConfiguration, group: flowcontrol.apiserver.k8s.io, version: v1beta3, deprecated_in: "1.29", removed_in: "1.32", replacement: flowcontrol.apiserver.k8s.io/v1}

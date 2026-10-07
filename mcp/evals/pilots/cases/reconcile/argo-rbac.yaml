@@ -1,0 +1,13 @@
+id: argo-rbac
+expect_root_cause: rbac
+obj:
+  kind: Application
+  metadata: {name: web}
+  status:
+    health: {status: Degraded}
+    sync: {status: OutOfSync}
+    resources: []
+    conditions: []
+    operationState:
+      phase: Failed
+      message: 'cannot create resource "secrets" in API group "" is forbidden'

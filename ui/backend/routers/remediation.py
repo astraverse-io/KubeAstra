@@ -58,6 +58,13 @@ class Decision(BaseModel):
     note: str = ""
 
 
+class PlanApproval(BaseModel):
+    # The non-high-risk step ids this one admin decision authorizes. High-risk
+    # steps are excluded and approved individually via /proposals/{id}/decision.
+    step_ids: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
 @router.get("/policy")
 def get_policy(request: Request, cluster_id: str = "") -> dict:
     """What this deployment currently permits, and why.
@@ -184,3 +191,64 @@ def execute(request: Request, proposal_id: str) -> dict:
         # 502: the request was allowed and the cluster refused or failed. An
         # operator needs to tell that apart from "policy said no".
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def _plan_steps(run: dict) -> list[dict]:
+    """The step list from a stored Pilot run's plan, or []."""
+    plan = (run or {}).get("plan") or {}
+    inner = plan.get("plan") if isinstance(plan.get("plan"), dict) else plan
+    return (inner or {}).get("steps") or []
+
+
+@router.post("/plans/{run_id}/approve")
+def approve_plan(request: Request, run_id: str, body: PlanApproval) -> dict:
+    """Option B: one admin decision authorizes a Pilot plan's NON-high-risk steps.
+
+    Admin-gated, like a proposal decision — approving authorises changes to a
+    cluster. The operator sees the concrete steps before approving; high-risk
+    steps are refused here and must be approved one by one through
+    /proposals/{id}/decision, so the spine's "a named person authorised this
+    change" invariant holds without N prompts.
+    """
+    user = auth.require_current_user(request)
+    if user and not auth.is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    approved_by = str((user or {}).get("email") or (user or {}).get("id") or "local")
+
+    run = db.get_pilot_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="pilot run not found")
+
+    steps = _plan_steps(run)
+    by_id = {s.get("id"): s for s in steps}
+    if not body.step_ids:
+        raise HTTPException(status_code=422, detail="step_ids is required")
+
+    unknown = [sid for sid in body.step_ids if sid not in by_id]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"unknown step ids: {unknown}")
+    high_risk = [sid for sid in body.step_ids if by_id[sid].get("risk") == "high"]
+    if high_risk:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"high-risk steps cannot be plan-approved in bulk: {high_risk}. "
+                f"Approve each individually via /proposals/{{id}}/decision."
+            ),
+        )
+
+    approval = db.create_plan_approval(run_id, approved_by, body.step_ids)
+    logger.info(
+        "pilot plan %s approved by %s (%d steps)",
+        log_safety.one_line(run_id), log_safety.one_line(approved_by), len(body.step_ids),
+    )
+    audit.emit(
+        audit.EventType.PLAN_APPROVAL_GRANTED,
+        actor_type="user",
+        actor_id=approved_by,
+        cluster=run.get("cluster_id") or "default",
+        subject=f"pilot plan {run.get('pilot', '')} -> {run.get('target', '')}",
+        severity="warn",
+        payload={"run_id": run_id, "step_ids": body.step_ids, "note": body.note},
+    )
+    return approval

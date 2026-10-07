@@ -1,0 +1,36 @@
+# Managed-provider version policy for the Upgrade Pilot.
+#
+# ADVISORY: supported-version windows shift over time; the deterministic, stable
+# part is the version-skew policy, which the planner uses to decide whether a
+# control-plane bump is safe relative to the node pools.
+#
+# Kubernetes version-skew policy (kubelet vs kube-apiserver):
+#   - k8s >= 1.28: kubelet may be up to 3 minor versions older than the API server.
+#   - k8s <  1.28: up to 2 minor versions older.
+# (We take the conservative n-2 as the default and widen to n-3 at/after 1.28.)
+skew:
+  max_node_minor_behind_default: 2
+  max_node_minor_behind_since_1_28: 3
+
+providers:
+  eks:
+    name: Amazon EKS
+    note: >-
+      ~14 months of standard support per minor, then extended support (billed).
+      Upgrade control plane one minor at a time; node groups must not trail the
+      control plane by more than the skew policy.
+  gke:
+    name: Google GKE
+    note: >-
+      Release channels (Rapid/Regular/Stable) auto-upgrade within a channel.
+      Manual upgrades are one minor at a time; node pools auto-drain on upgrade.
+  aks:
+    name: Azure AKS
+    note: >-
+      N-2 supported minors; upgrade one minor at a time. Node pools must be
+      within one minor of the control plane for an in-place upgrade.
+  unknown:
+    name: Unknown / self-managed
+    note: >-
+      Provider not detected — generic Kubernetes skew policy applies; no
+      provider-specific EOL advice is given.

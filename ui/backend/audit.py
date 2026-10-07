@@ -93,6 +93,9 @@ class EventType:
     APPROVAL_REQUESTED = "approval.requested"
     APPROVAL_GRANTED = "approval.granted"
     APPROVAL_DENIED = "approval.denied"
+    # A single admin decision authorizing the non-high-risk steps of a Pilot plan
+    # (Option B). High-risk steps are still approved individually (APPROVAL_GRANTED).
+    PLAN_APPROVAL_GRANTED = "plan_approval.granted"
     MUTATION_EXECUTED = "mutation.executed"
     ROLLBACK_TRIGGERED = "rollback.triggered"
     # Opening a PR mutates no cluster, so it is deliberately NOT

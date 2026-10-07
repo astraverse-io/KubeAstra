@@ -1,0 +1,22 @@
+id: mixed-helm-and-manifest
+target: "1.25"
+snapshot:
+  cluster_version: "1.21"
+  provider: eks
+  objects:
+    - {gvk: "extensions/v1beta1/Ingress", kind: Ingress, name: web, namespace: apps, source: manifest}
+    - {gvk: "batch/v1beta1/CronJob", kind: CronJob, name: report, namespace: apps, source: helm}
+    - {gvk: "apps/v1/Deployment", kind: Deployment, name: web, namespace: apps, source: manifest}
+  helm_releases:
+    - {name: report, namespace: apps, chart: report, chart_version: "1.0.0"}
+expect:
+  blocking:
+    - "extensions/v1beta1/Ingress"
+    - "batch/v1beta1/CronJob"
+  routes:
+    "extensions/v1beta1/Ingress": manifest_pr
+    "batch/v1beta1/CronJob": helm_bump
+  order:
+    - "batch/v1beta1/CronJob"
+    - "extensions/v1beta1/Ingress"
+    - "control_plane"

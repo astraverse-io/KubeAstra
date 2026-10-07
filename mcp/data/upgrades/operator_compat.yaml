@@ -1,0 +1,50 @@
+# Operator / add-on compatibility hints — ADVISORY ONLY.
+#
+# There is no canonical machine-readable source for operator<->k8s compatibility,
+# so this file is hand-maintained and WILL drift. Every finding derived from it
+# is emitted with `advisory: true` and only ever raises a "verify manually" note
+# — it is NEVER presented as a guarantee and never drives a hard plan ordering.
+# Keep it small and high-signal; prefer the API-deprecation map (guaranteed) for
+# anything that must be correct.
+#
+# `detect.crd_group` identifies the operator from an installed CRD's group.
+# `min_version_by_k8s` maps a target k8s minor -> the minimum operator version
+# known to support it (a hint for a "bump before upgrade" step).
+operators:
+  - name: cert-manager
+    detect:
+      crd_group: cert-manager.io
+    min_version_by_k8s:
+      "1.25": "1.8.0"
+      "1.27": "1.11.0"
+      "1.29": "1.13.0"
+      "1.31": "1.15.0"
+    note: "Older cert-manager ships deprecated CRD apiVersions; bump before upgrading."
+
+  - name: ingress-nginx
+    detect:
+      crd_group: k8s.nginx.org
+    min_version_by_k8s:
+      "1.25": "1.3.0"
+      "1.27": "1.7.0"
+      "1.29": "1.10.0"
+      "1.31": "1.11.0"
+    note: "Controller gates on the Ingress networking.k8s.io/v1 API and admission webhook versions."
+
+  - name: prometheus-operator
+    detect:
+      crd_group: monitoring.coreos.com
+    min_version_by_k8s:
+      "1.25": "0.60.0"
+      "1.29": "0.68.0"
+      "1.31": "0.76.0"
+    note: "CRD schema tracks k8s API; bump the operator (and its CRDs) before the control-plane upgrade."
+
+  - name: argo-cd
+    detect:
+      crd_group: argoproj.io
+    min_version_by_k8s:
+      "1.25": "2.5.0"
+      "1.29": "2.9.0"
+      "1.31": "2.12.0"
+    note: "Argo CD/Argo Rollouts reconcile managed objects; upgrade Argo before migrating the manifests it owns."

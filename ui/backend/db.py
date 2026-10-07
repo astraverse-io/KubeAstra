@@ -480,6 +480,55 @@ def init_db() -> None:
         con.execute("CREATE INDEX IF NOT EXISTS idx_agent_runs_parent ON agent_runs(parent_run_id, started_at)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps(run_id, iteration)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_agent_observations_run ON agent_observations(run_id)")
+
+        # Pilots. A Pilot run and its per-step state, plus the one-shot
+        # plan-level approval (Option B) that authorizes the NON-high-risk
+        # steps in a single audited admin decision. High-risk steps are
+        # approved individually via the remediation proposal path. The lock
+        # table enforces one active apply run per cluster. See PILOTS_PLAN.md §8.
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS pilot_runs (
+                run_id      TEXT PRIMARY KEY,
+                pilot       TEXT NOT NULL,
+                cluster_id  TEXT NOT NULL DEFAULT '',
+                target      TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'planning',
+                auth_state  TEXT NOT NULL DEFAULT 'none',
+                plan_json   TEXT NOT NULL DEFAULT '{}',
+                created_by  TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_pilot_runs_pilot
+                ON pilot_runs(pilot, created_at);
+
+            CREATE TABLE IF NOT EXISTS pilot_run_steps (
+                run_id      TEXT NOT NULL,
+                step_id     TEXT NOT NULL,
+                ord         INTEGER NOT NULL,
+                kind        TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'pending',
+                proposal_id TEXT,
+                pr_url      TEXT,
+                verify_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (run_id, step_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS pilot_plan_approvals (
+                run_id      TEXT PRIMARY KEY,
+                approved_by TEXT NOT NULL,
+                step_ids    TEXT NOT NULL,
+                approved_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pilot_run_locks (
+                cluster_id  TEXT PRIMARY KEY,
+                run_id      TEXT NOT NULL,
+                acquired_at TEXT NOT NULL
+            );
+            """
+        )
     logger.info(f"SQLite DB ready at {DB_PATH}")
 
 
@@ -2577,6 +2626,141 @@ def list_remediation_proposals(
         # the computed status rather than trusting the stored one.
         proposals = [p for p in proposals if p["status"] == "pending"]
     return proposals
+
+
+# ── Pilots ──────────────────────────────────────────────────────────────────────
+
+def create_pilot_run(
+    *,
+    run_id: str,
+    pilot: str,
+    cluster_id: str = "",
+    target: str = "",
+    created_by: str = "",
+    status: str = "planning",
+) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO pilot_runs "
+            "(run_id, pilot, cluster_id, target, status, auth_state, plan_json, "
+            " created_by, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'none', '{}', ?, ?, ?)",
+            (run_id, pilot, cluster_id or "", target or "", status,
+             created_by or "", now, now),
+        )
+    return get_pilot_run(run_id)
+
+
+def _row_to_pilot_run(row) -> dict:
+    run = dict(row)
+    try:
+        run["plan"] = json.loads(run.pop("plan_json", "{}") or "{}")
+    except (TypeError, ValueError):
+        run["plan"] = {}
+    return run
+
+
+def get_pilot_run(run_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM pilot_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    return _row_to_pilot_run(row) if row else None
+
+
+def update_pilot_run(
+    run_id: str,
+    *,
+    status: Optional[str] = None,
+    plan: Optional[dict] = None,
+) -> Optional[dict]:
+    """Update a pilot run's status and/or stored plan (plan_json). Always bumps
+    updated_at. Returns the refreshed run, or None if it does not exist."""
+    sets = ["updated_at = ?"]
+    params: list = [datetime.now(timezone.utc).isoformat()]
+    if status is not None:
+        sets.append("status = ?")
+        params.append(status)
+    if plan is not None:
+        sets.append("plan_json = ?")
+        params.append(json.dumps(plan))
+    params.append(run_id)
+    with _conn() as con:
+        con.execute(f"UPDATE pilot_runs SET {', '.join(sets)} WHERE run_id = ?", params)
+    return get_pilot_run(run_id)
+
+
+def create_plan_approval(run_id: str, approved_by: str, step_ids: list[str]) -> dict:
+    """Record the one-shot, admin-granted plan approval (Option B) that authorizes
+    a Pilot run's listed non-high-risk steps, and flip the run to plan_authorized.
+    A named person authorised these concrete steps — high-risk steps are approved
+    individually through the remediation proposal path, never here."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO pilot_plan_approvals (run_id, approved_by, step_ids, approved_at) "
+            "VALUES (?, ?, ?, ?)",
+            (run_id, approved_by, json.dumps(list(step_ids)), now),
+        )
+        con.execute(
+            "UPDATE pilot_runs SET auth_state = 'plan_authorized', updated_at = ? WHERE run_id = ?",
+            (now, run_id),
+        )
+    return get_plan_approval(run_id)
+
+
+def get_plan_approval(run_id: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM pilot_plan_approvals WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    approval = dict(row)
+    try:
+        approval["step_ids"] = json.loads(approval["step_ids"] or "[]")
+    except (TypeError, ValueError):
+        approval["step_ids"] = []
+    return approval
+
+
+def upsert_pilot_step(
+    run_id: str,
+    step_id: str,
+    *,
+    ord: int,
+    kind: str,
+    status: str,
+    proposal_id: Optional[str] = None,
+    pr_url: Optional[str] = None,
+    verify: Optional[dict] = None,
+) -> None:
+    """Record (or update) one step's execution state for a Pilot run. The runner
+    rebuilds progress from these rows + a live re-verify, so a run is resumable."""
+    with _conn() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO pilot_run_steps "
+            "(run_id, step_id, ord, kind, status, proposal_id, pr_url, verify_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, step_id, ord, kind, status, proposal_id, pr_url, json.dumps(verify or {})),
+        )
+
+
+def get_pilot_steps(run_id: str) -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM pilot_run_steps WHERE run_id = ? ORDER BY ord", (run_id,)
+        ).fetchall()
+    out = []
+    for row in rows:
+        d = dict(row)
+        try:
+            d["verify"] = json.loads(d.pop("verify_json", "{}") or "{}")
+        except (TypeError, ValueError):
+            d["verify"] = {}
+        out.append(d)
+    return out
 
 
 # ── GitOps PR proposals ───────────────────────────────────────────────────────

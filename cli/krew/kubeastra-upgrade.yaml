@@ -1,0 +1,32 @@
+# krew plugin manifest for `kubectl kubeastra-upgrade`.
+#
+# TEMPLATE: fill in the release tag, per-platform archive URIs and sha256 sums
+# when cutting a release (the archives bundle `kubectl-kubeastra_upgrade` from
+# cli/krew/ plus a packaged `kubeastra` CLI). Submit to the krew-index per
+# https://krew.sigs.k8s.io/docs/developer-guide/.
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: kubeastra-upgrade
+spec:
+  version: "v0.1.0"
+  homepage: https://kubeastra.io
+  shortDescription: Plan a safe Kubernetes version / API-deprecation migration.
+  description: |
+    Detect deprecated/removed Kubernetes APIs for a target version and print an
+    ordered, per-item-routed migration plan — keyless (no backend, no API key).
+    Scans a live cluster or rendered manifests.
+
+      kubectl kubeastra-upgrade plan --target 1.31
+      kubectl kubeastra-upgrade plan --target 1.31 --manifests ./rendered -o sarif
+  platforms:
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: amd64
+      uri: https://github.com/astraverse-io/kubeastra/releases/download/vX.Y.Z/kubeastra-upgrade_darwin_amd64.tar.gz
+      sha256: "<fill-on-release>"
+      bin: kubectl-kubeastra_upgrade
+      files:
+        - from: kubectl-kubeastra_upgrade
+          to: "."

@@ -1,0 +1,17 @@
+id: argo-image-pull
+expect_root_cause: image_pull
+obj:
+  kind: Application
+  metadata: {name: shop}
+  status:
+    health: {status: Degraded}
+    sync: {status: Synced}
+    resources:
+      - group: apps
+        kind: Deployment
+        name: api
+        namespace: shop
+        status: Synced
+        health: {status: Degraded, message: "Back-off pulling image: ImagePullBackOff"}
+    conditions: []
+    operationState: {}
