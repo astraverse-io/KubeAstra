@@ -1,0 +1,78 @@
+name: Upgrade Pilot Action
+
+# Users reference the composite action in action/ as
+# astraverse-io/KubeAstra/action@action-v1, but nothing ran it end to end: the
+# CLI tests import the planner core directly, so a broken action.yml (wrong
+# step order, a bad PYTHONPATH, an input that never reaches the CLI) would
+# only fail in a user's pipeline. This runs the real action against fixtures.
+
+on:
+  pull_request:
+    paths:
+      - "action/**"
+      - "cli/**"
+      - "mcp/services/upgrade/**"
+      - "mcp/data/upgrades/**"
+      - ".github/workflows/upgrade-action.yml"
+  push:
+    branches: [main]
+    paths:
+      - "action/**"
+      - "cli/**"
+      - "mcp/services/upgrade/**"
+      - "mcp/data/upgrades/**"
+      - ".github/workflows/upgrade-action.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write fixtures
+        run: |
+          mkdir -p "$RUNNER_TEMP/blocking" "$RUNNER_TEMP/clean"
+          # extensions/v1beta1 Ingress was removed in 1.22.
+          printf 'apiVersion: extensions/v1beta1\nkind: Ingress\nmetadata:\n  name: legacy\n' \
+            > "$RUNNER_TEMP/blocking/ingress.yaml"
+          printf 'apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: current\n' \
+            > "$RUNNER_TEMP/clean/ingress.yaml"
+
+      # Gate + SARIF together: the gate must fail AND the report must still be
+      # written. Before the SARIF step moved ahead of the gate, the failing gate
+      # skipped it.
+      - name: Removed API fails the check
+        id: blocking
+        continue-on-error: true
+        uses: ./action
+        with:
+          target: "1.30"
+          manifests: ${{ runner.temp }}/blocking
+          sarif-file: ${{ runner.temp }}/blocking.sarif
+
+      - name: Assert the gate failed and SARIF has the finding
+        env:
+          OUTCOME: ${{ steps.blocking.outcome }}
+          SARIF: ${{ runner.temp }}/blocking.sarif
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::error::the action passed on a manifest using a removed API (outcome: $OUTCOME)"
+            exit 1
+          fi
+          python3 - "$SARIF" <<'PY'
+          import json, sys
+          results = json.load(open(sys.argv[1]))["runs"][0]["results"]
+          assert results, "SARIF report has no results for a removed API"
+          print(f"SARIF ok: {len(results)} result(s), first rule {results[0]['ruleId']}")
+          PY
+
+      - name: Current APIs pass the check
+        uses: ./action
+        with:
+          target: "1.30"
+          manifests: ${{ runner.temp }}/clean

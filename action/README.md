@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       # Render your manifests first (example: Helm) into ./rendered
       - run: helm template ./chart --output-dir ./rendered
-      - uses: astraverse-io/kubeastra/action@v1
+      - uses: astraverse-io/KubeAstra/action@action-v1
         with:
           target: "1.31"
           manifests: "./rendered"
@@ -31,7 +31,7 @@ Emit a SARIF report and upload it so findings show in the **Security → Code
 scanning** tab:
 
 ```yaml
-      - uses: astraverse-io/kubeastra/action@v1
+      - uses: astraverse-io/KubeAstra/action@action-v1
         with:
           target: "1.31"
           manifests: "./rendered"
