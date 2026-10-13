@@ -57,4 +57,10 @@ scanning** tab:
 - **Static-mode fidelity:** scanning rendered manifests is authoritative for the
   API-deprecation check (what a PR gate wants). Operator-compatibility advice
   needs a live cluster and is skipped in this mode.
-- The same check runs locally: `kubeastra upgrade plan --target 1.31 --manifests ./rendered`.
+- The same check runs locally from a checkout of this repo (the PyPI package
+  does not bundle the planner core yet):
+
+  ```bash
+  pip install ./cli
+  PYTHONPATH=mcp kubeastra upgrade plan --target 1.31 --manifests ./rendered
+  ```
