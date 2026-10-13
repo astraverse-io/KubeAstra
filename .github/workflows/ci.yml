@@ -130,6 +130,17 @@ jobs:
         run: |
           python -m pytest tests/ -v --tb=short
 
+      # The editable install above keeps the code in the repo, so the upgrade
+      # core is always found beside it — which is how a wheel without the core
+      # passed CI while `kubeastra upgrade` failed for every PyPI user. Build
+      # and install a real wheel and run it outside the checkout instead.
+      - name: Wheel install smoke (what PyPI users get)
+        run: |
+          pip install build
+          python cli/scripts/vendor_core.py
+          python -m build cli --outdir "$RUNNER_TEMP/cli-dist"
+          bash cli/scripts/smoke_wheel.sh "$RUNNER_TEMP/cli-dist"
+
   frontend-build:
     name: Frontend type-check + build
     runs-on: ubuntu-latest

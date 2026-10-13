@@ -26,9 +26,21 @@ class UpgradeCoreUnavailable(RuntimeError):
 def load_upgrade_core():
     """Locate and import the pure upgrade core.
 
-    Works when ``services.upgrade`` is already importable, or by finding a sibling
-    ``mcp/`` directory walking up from this file (a repo checkout / the Action).
+    In order: the copy bundled into the installed package (what a PyPI install
+    has; see cli/scripts/vendor_core.py), ``services.upgrade`` when it is
+    already importable, or a sibling ``mcp/`` directory walking up from this
+    file (a repo checkout / the Action).
+
+    The bundled copy comes first so an installed CLI always runs the core it
+    was built with, and it is imported under ``kubeastra._vendor`` so a user's
+    own top-level ``services`` package can never shadow it.
     """
+    try:
+        from ._vendor.services import upgrade as core
+
+        return core
+    except ImportError:
+        pass
     try:
         import services.upgrade as core  # type: ignore
 
@@ -46,8 +58,9 @@ def load_upgrade_core():
             except ImportError:
                 break
     raise UpgradeCoreUnavailable(
-        "the KubeAstra upgrade core (mcp/services/upgrade) was not found — run from "
-        "a repo checkout, or install the kubeastra core package."
+        "the KubeAstra upgrade core (mcp/services/upgrade) was not found — reinstall "
+        "with `pip install --upgrade kubeastra` (0.2.3+ bundles it), or run from a "
+        "repo checkout."
     )
 
 
