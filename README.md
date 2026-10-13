@@ -54,7 +54,7 @@ Four ways to connect — pick what fits your setup:
 
 Switch between clusters without restarting. Each session tracks its own connection.
 
-### 🔍 52 Built-in Kubernetes Tools
+### 🔍 56 Built-in Kubernetes Tools
 
 **Live cluster tools (~30)** — pod/deployment/service inspection, event streams, multi-namespace discovery, rollout status, kubeconfig context switching, log retrieval with previous-container support, resource-graph topology, deployment-level investigation, namespace-wide health analysis, and safe write operations (delete, scale, restart, patch — all gated behind `dry_run` + `confirmation_token`).
 
@@ -140,9 +140,9 @@ The resource graph is an **interactive investigation surface**, not just a topol
 
 | Web UI | IDE / MCP Integration |
 |---|---|
-| Chat-based Next.js interface for team-wide troubleshooting | Direct integration into Cursor, Claude Desktop, or any MCP client |
+| Chat-based Next.js interface for team-wide troubleshooting | The VS Code extension, or MCP in Cursor, Claude Desktop, or any MCP client |
 | Connect any cluster (auto-detect, kubeconfig upload, SSH) | Debug without leaving your editor |
-| Shareable session URLs with persistent chat history (SQLite) | 52 tools available via stdio or HTTP MCP transport |
+| Shareable session URLs with persistent chat history (SQLite) | 56 tools available via stdio or HTTP MCP transport |
 | Visual resource graph with click-to-inspect | Same ReAct agent powers both surfaces |
 
 ### 🚨 Alert-Driven Auto-Investigation
@@ -263,7 +263,7 @@ Match your situation to the feature that solves it:
 
 | If you… | The feature | Enable with |
 |---|---|---|
-| Just want an AI copilot for `kubectl` diagnosis | Agentic ReAct + 52 tools | Defaults — no flags needed |
+| Just want an AI copilot for `kubectl` diagnosis | Agentic ReAct + 56 tools | Defaults — no flags needed |
 | Get paged by Alertmanager at 2 AM | Alert-Driven Auto-Investigation | `ALERTMANAGER_WEBHOOK_ENABLED=true` + set `ALERT_WEBHOOK_TOKEN` |
 | Investigate the same failure modes repeatedly | RAG Runbook Cache (Cached tier) | `RAG_ROUTER_ENABLED=true` + `👍` on great answers |
 | Read 500-line `describe` and 10K-line log outputs | Tool Result Summarization | `ENABLE_LOG_SUMMARIZATION=true` |
@@ -369,9 +369,26 @@ GEMINI_API_KEY=your-key-here          # or LLM_PROVIDER=ollama
 ALLOWED_NAMESPACES=prod,staging,default
 ```
 
-Restart your IDE — all 52 tools appear as MCP tools.
+Restart your IDE — all 56 tools appear as MCP tools.
 
-### Option 6: Use the CLI
+### Option 6: Use the VS Code extension
+
+Mission Control inside the editor: streamed investigations, root-cause
+diagnosis, approval-gated fixes, and **Investigate this manifest** from the
+right-click menu on any YAML file.
+
+```bash
+code --install-extension astraverse-io.kubeastra-vscode
+```
+
+Or search **KubeAstra** in the Extensions view — it is on the
+[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=astraverse-io.kubeastra-vscode)
+and [Open VSX](https://open-vsx.org/extension/astraverse-io/kubeastra-vscode)
+(for Cursor, VSCodium and other forks). It connects to a server-mode backend —
+Option 4 on your machine, or Option 8 for a team — then run
+**KubeAstra: Sign in** from the Command Palette.
+
+### Option 7: Use the CLI
 
 For terminal-first workflows: a thin HTTP + SSE client for the backend, published as a standalone Python package.
 
@@ -391,7 +408,7 @@ kubeastra config set backend-url https://kubeastra.mycompany.com
 
 Full command reference in [`cli/README.md`](cli/README.md).
 
-### Option 7: Deploy to Kubernetes via Helm
+### Option 8: Deploy to Kubernetes via Helm
 
 The chart pulls public images from `ghcr.io/astraverse-io/kubeastra-{backend,frontend}`,
 so there is nothing to build. It defaults to `latest`; pin `0.2.0` for a fixed
@@ -634,7 +651,7 @@ kubeastra/
 │   │   ├── prometheus.py        # Prometheus query client
 │   │   ├── embeddings.py        # sentence-transformers wrapper
 │   │   └── vector_db.py         # Qdrant client
-│   ├── tool_registry.py         # Single source of truth: 52 tools
+│   ├── tool_registry.py         # Single source of truth: 56 tools
 │   └── config/settings.py
 ├── cli/                         # `kubeastra` CLI (PyPI) — ask, investigate,
 │                                #   connect, doctor, config, and `open`

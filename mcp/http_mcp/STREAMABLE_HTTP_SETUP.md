@@ -31,7 +31,7 @@ INFO  Starting KubeAstra MCP HTTP server
 INFO  Health:      http://127.0.0.1:8001/health
 INFO  Debug tools: http://127.0.0.1:8001/debug/tools
 INFO  MCP (HTTP):  http://127.0.0.1:8001/mcp/
-INFO  HTTP MCP server ready — 127.0.0.1:8001/mcp/ — 48 tools registered
+INFO  HTTP MCP server ready — 127.0.0.1:8001/mcp/ — 56 tools registered
 ```
 
 ### 3. Verify
@@ -84,7 +84,7 @@ Edit `~/.cursor/mcp.json`:
 
 **Important:** If you configure both, Cursor will connect to both servers and discover tools from each. When you ask a natural language question like "show me pods in default namespace", Cursor's AI automatically routes it to the appropriate server. You don't need to specify which one to use.
 
-Restart Cursor and you're done! All 48 tools will be available.
+Restart Cursor and you're done! All 56 tools will be available.
 
 ## Test Queries
 

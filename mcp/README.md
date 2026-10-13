@@ -7,7 +7,7 @@ A single, unified MCP (Model Context Protocol) server that merges the best of tw
 | `mcp-k8s-investigation-agent` | Live kubectl tools, multi-cluster support, recovery operations, deployment repo search |
 | `k8s-ansible-mcp` | LLM-powered error analysis, RAG similarity search, fix playbooks, runbook generation |
 
-**Result: 52 tools in one server**, covering the full DevOps loop — investigate → diagnose → fix → document.
+**Result: 56 tools in one server**, covering the full DevOps loop — investigate → diagnose → fix → document.
 
 The same toolset is available through two MCP transports:
 - `stdio` for local IDE integration
@@ -49,7 +49,7 @@ GEMINI_API_KEY=your_key_here
 ALLOWED_NAMESPACES=prod,staging,dev,default
 ```
 
-Restart Cursor — the `kubeastra` MCP server will be active with all 52 tools.
+Restart Cursor — the `kubeastra` MCP server will be active with all 56 tools.
 
 If you want to replace Gemini with a standalone Ollama VM, the Rocky Linux runbook lives in `docs/internal_docs/OLLAMA_ROCKY_LINUX_VM_SETUP.md` (internal — not shipped with the repo; ask a maintainer if you need it).
 
@@ -139,9 +139,9 @@ mcp/
 
 ---
 
-## All 48 Tools
+## All 56 Tools
 
-### Live kubectl Tools (33)
+### Live kubectl Tools (38)
 
 | Tool | What it does |
 |------|-------------|
@@ -159,8 +159,12 @@ mcp/
 | `get_deployment` | Deployment status and replica counts |
 | `get_service` | Service details and port config |
 | `get_endpoints` | Check which pods back a service |
+| `get_ingress` | Ingress host rules, backend service mappings, TLS secret config, load balancer IPs (secret-ish annotations redacted) |
+| `investigate_ingress` | Diagnose 502/504s: verifies each backend Service exists and has ready endpoints, and each TLS Secret exists (name-only check) |
+| `get_persistent_volume_claim` | Inspect one PVC: phase, capacity, storage class, access modes, volume; optional events (aliases `get_pvc`, `describe_pvc`) |
 | `get_resource_graph` | Build a relationship graph across a namespace's resources |
 | `get_rollout_status` | Monitor deployment rollout progress |
+| `get_recent_changes` | What rolled out in a namespace recently: revision, per-container image diff, change-cause — reach for it first when something broke suddenly |
 | `k8sgpt_analyze` | Run k8sgpt CLI analysis (optional) |
 | `add_kubeconfig_context` | Add a cluster via SSH |
 | `list_kubeconfig_contexts` | List available cluster contexts |
@@ -173,6 +177,7 @@ mcp/
 | `investigate_node` | Investigate a node's conditions, capacity, and allocated resources |
 | `investigate_workload` | Investigate a deployment/statefulset/daemonset with pod health + AI analysis |
 | `analyze_namespace` | Holistic health check of an entire namespace |
+| `analyze_k8s_health` | Deterministic, keyless health analyzer (no LLM call): CrashLoopBackOff, image pulls, OOMKilled, scheduling, node pressure, empty Services, stuck rollouts, Pending PVCs — with evidence and read-only next commands |
 | `exec_pod_command` | Run a command inside a pod (requires confirm) |
 | `delete_pod` | Force restart a pod (requires confirm + dry-run + single-use confirmation_token by default) |
 | `rollout_restart` | Rolling restart a deployment (requires confirm + dry-run + single-use confirmation_token by default) |
@@ -217,6 +222,14 @@ Read-only Helm investigation. Runs on the same target as kubectl (local or SSH).
 | `get_helm_release` | Read a release's status/history/values (manifest/hooks/notes/metadata on request, revision=N for a past revision); redacted and capped |
 | `diff_helm_revisions` | Unified diff of two revisions' values or manifest ("what changed in the last upgrade?"); redacted before diffing |
 | `investigate_helm_release` | Composite: status + recent revisions + resources + live pod health and warnings, with a health assessment |
+
+### Alerts & Metrics (3)
+
+| Tool | What it does |
+|------|-------------|
+| `get_recent_alerts` | Recent alerts from the alerts database — what incidents fired lately |
+| `get_investigation_details` | Full JSON of one investigation: RCA, evidence, and every tool execution |
+| `prom_query` | Instant PromQL query against the configured Prometheus; fails soft (`unavailable: true`) when Prometheus isn't configured |
 
 ---
 
