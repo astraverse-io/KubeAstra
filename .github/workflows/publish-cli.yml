@@ -30,12 +30,23 @@ jobs:
         with:
           python-version: "3.11"
 
+      # mcp/services/upgrade + mcp/data/upgrades live outside cli/; without
+      # this the wheel ships with no upgrade core (the 0.2.x bug).
+      - name: Bundle the upgrade core
+        run: python cli/scripts/vendor_core.py
+
       - name: Build
         working-directory: cli
         run: |
           python -m pip install --upgrade pip build twine
           python -m build
           python -m twine check dist/*
+
+      # A PyPI version can never be re-uploaded, so nothing leaves this job
+      # unless the built wheel works the way users install it: fresh venv,
+      # outside the checkout.
+      - name: Smoke-test the built wheel
+        run: bash cli/scripts/smoke_wheel.sh cli/dist
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
