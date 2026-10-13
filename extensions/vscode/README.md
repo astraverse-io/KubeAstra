@@ -25,7 +25,7 @@ ImagePullBackOff, a stuck PVC and an unschedulable pod.
 ### Agentic investigation, streamed live
 
 Every question starts a ReAct investigation on your backend, using
-[52 built-in Kubernetes tools](https://github.com/astraverse-io/KubeAstra#-52-built-in-kubernetes-tools).
+[56 built-in Kubernetes tools](https://github.com/astraverse-io/KubeAstra#-56-built-in-kubernetes-tools).
 You watch it happen: each tool call, thought and observation streams into the
 **investigation trail** as it runs, not as a canned summary at the end.
 
