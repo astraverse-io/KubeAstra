@@ -4,6 +4,10 @@ Fail a PR when its manifests use Kubernetes APIs that are **removed** at a targe
 version, and print the ordered migration plan. **Keyless** — it scans rendered
 manifests (no cluster, no API key) using KubeAstra's pure planner core.
 
+![kubeastra upgrade plan finding three removed Kubernetes APIs in a rendered chart and exiting 1](../docs/media/upgrade-pilot-demo.gif)
+
+*The same check from the CLI (`pip install kubeastra`). In this Action, exit code 1 fails the check.*
+
 ## Usage
 
 ```yaml
