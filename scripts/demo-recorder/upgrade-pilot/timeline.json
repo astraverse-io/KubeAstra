@@ -1,0 +1,26 @@
+{
+ "recorded_with": "kubeastra 0.2.3",
+ "core": "kubeastra._vendor.services.upgrade",
+ "steps": [
+  {
+   "cmd": "kubeastra --version",
+   "out": "kubeastra 0.2.3",
+   "rc": 0
+  },
+  {
+   "cmd": "grep -h '^apiVersion' rendered/payments.yaml",
+   "out": "apiVersion: apps/v1\napiVersion: v1\napiVersion: autoscaling/v2beta2\napiVersion: policy/v1beta1\napiVersion: batch/v1beta1",
+   "rc": 0
+  },
+  {
+   "cmd": "kubeastra upgrade plan --target 1.31 --manifests rendered/",
+   "out": "KubeAstra Upgrade Pilot \u2014 target 1.31 (current unknown, provider unknown)\n\nBlocking (3):\n  - autoscaling/v2beta2/HorizontalPodAutoscaler (payments-api) -> autoscaling/v2\n  - policy/v1beta1/PodDisruptionBudget (payments-api) -> policy/v1\n  - batch/v1beta1/CronJob (payments-reconcile) -> batch/v1\n\nNotes:\n  - Static mode: API-deprecation findings are authoritative; operator-compat advice requires a live cluster and is skipped.\n\nPlan (4 steps):\n  1. [manifest_pr/low] Migrate autoscaling/v2beta2/HorizontalPodAutoscaler (payments-api) \u2192 autoscaling/v2\n  2. [manifest_pr/low] Migrate batch/v1beta1/CronJob (payments-reconcile) \u2192 batch/v1\n  3. [manifest_pr/low] Migrate policy/v1beta1/PodDisruptionBudget (payments-api) \u2192 policy/v1\n  4. [control_plane/high] Upgrade control plane + node pools to 1.31",
+   "rc": 1
+  },
+  {
+   "cmd": "echo \"exit code: $?\"",
+   "out": "exit code: 1",
+   "rc": 0
+  }
+ ]
+}

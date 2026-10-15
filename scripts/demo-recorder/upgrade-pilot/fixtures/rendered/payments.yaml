@@ -1,0 +1,30 @@
+---
+# Source: payments/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments-api
+---
+# Source: payments/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments-api
+---
+# Source: payments/templates/hpa.yaml
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payments-api
+---
+# Source: payments/templates/pdb.yaml
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: payments-api
+---
+# Source: payments/templates/cronjob.yaml
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: payments-reconcile

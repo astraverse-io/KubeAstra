@@ -115,6 +115,10 @@ Off by default; enable with `GITOPS_ENABLED=true` and connect a repo in Settings
 - **Upgrade Pilot** — point it at a target Kubernetes version and it reports what breaks (in-use APIs removed at or before the target, from a curated deprecation map), then produces an **ordered, per-item plan**: plain-YAML fixes routed as GitOps PRs, Helm/operator bumps, control-plane steps last. Applying is gated by **plan approval** (one admin decision authorizes the non-high-risk batch; high-risk steps are approved individually) and the apply runner is **resumable and idempotent** (re-scan + verify, never stored progress). Also runs **without the server** as `kubeastra upgrade` (CLI) and a **GitHub Action** that fails CI on blocking removals and can emit SARIF.
 - **GitOps Reconciliation** — give it an Argo `Application` or Flux `Kustomization`/`HelmRelease` status and it classifies the root cause (drift, image pull, failed hook, CRD-schema mismatch, RBAC, …), names the first failing resource, and routes drift to a GitOps PR vs. operational issues to advisory.
 
+![kubeastra upgrade plan finding three removed Kubernetes APIs in a rendered chart and exiting 1](docs/media/upgrade-pilot-demo.gif)
+
+*The Upgrade Pilot from `pip install kubeastra`: no server, no LLM. The same check runs in CI as the [GitHub Action](action/).*
+
 Enable with `PILOTS_ENABLED=true` plus `UPGRADE_PILOT_ENABLED` / `GITOPS_RECONCILE_ENABLED`. Both cores are covered by an offline eval suite (blocking recall/precision, plan ordering, reconciliation hit rate) that gates every PR.
 
 **Under the hood — native tool-calling (optional):** agent runs can use a structured native tool-calling harness (Claude / OpenAI / Gemini) instead of text-parsed ReAct, removing a class of parsing failures. Opt in with `AGENT_HARNESS_V2=true`; providers without native tools (e.g. Ollama) transparently fall back to ReAct.

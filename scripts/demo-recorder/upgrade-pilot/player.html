@@ -1,0 +1,93 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@500;600;700&display=block" rel="stylesheet">
+<style>
+  :root { --bg: #0E0E0D; --win: #151513; --bar: #1E1E1B; --ink: #E6E4DE; --dim: #8B8A83; --cyan: #22D3EE; --rule: #2A2A27; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1100px; height: 700px; overflow: hidden; background: var(--bg); }
+  body { padding: 22px; font-family: "IBM Plex Mono", monospace; -webkit-font-smoothing: antialiased; }
+  .win { position: relative; width: 100%; height: 100%; background: var(--win); border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; }
+  .bar { height: 38px; background: var(--bar); display: flex; align-items: center; padding: 0 14px; gap: 8px; border-bottom: 1px solid var(--rule); }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .title { position: absolute; left: 0; right: 0; top: 0; height: 38px; line-height: 38px; text-align: center; color: var(--dim); font-size: 13px; }
+  .screen { position: absolute; top: 38px; left: 0; right: 0; bottom: 0; padding: 18px 22px; overflow: hidden; }
+  pre { font-family: inherit; font-size: 15px; line-height: 21px; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+  .p { color: var(--cyan); font-weight: 600; }
+  .cmd { color: #FFFFFF; font-weight: 500; }
+  .cursor { display: inline-block; width: 9px; height: 18px; background: var(--ink); vertical-align: -3px; }
+  /* Closing title card: visibly NOT terminal output. */
+  .card { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(14,14,13,0.97); opacity: 0; }
+  .card-inner { text-align: center; font-family: "IBM Plex Sans", sans-serif; color: #F8F7F4; }
+  .card h2 { font-size: 40px; font-weight: 700; letter-spacing: -0.02em; }
+  .card h2 span { color: var(--cyan); }
+  .card .code { margin-top: 26px; display: inline-block; font-family: "IBM Plex Mono", monospace; font-size: 22px; padding: 12px 20px; border: 1px solid rgba(34,211,238,0.35); border-radius: 8px; background: #0F2629; color: var(--cyan); }
+  .card .sub { margin-top: 22px; font-size: 21px; color: #C9C7C0; }
+  .card .brand { margin-top: 30px; font-size: 18px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="win">
+  <div class="bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span></div>
+  <div class="title">payments-chart</div>
+  <div class="screen" id="screen"><pre id="out"></pre></div>
+  <div class="card" id="card"><div class="card-inner">
+    <h2>Same check in CI: fails the PR <span>before</span> it breaks prod.</h2>
+    <div class="code">uses: astraverse-io/KubeAstra/action@action-v1</div>
+    <div class="sub">or <b>pip install kubeastra</b> &nbsp;·&nbsp; no LLM &nbsp;·&nbsp; no cluster needed</div>
+    <div class="brand">KubeAstra Upgrade Pilot &nbsp;·&nbsp; kubeastra.io</div>
+  </div></div>
+</div>
+<script>
+// TIMELINE is injected by the renderer: [{cmd, out}] captured from real runs.
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const TYPE_MS = 38, AFTER_TYPE = 380, LINE_MS = 45;
+const HOLD = [900, 1300, 3600, 1500];   // pause after each step's output
+const CARD_FADE = 600, CARD_HOLD = 3600, START = 600;
+
+function buildEvents() {
+  const ev = []; let t = START;
+  TIMELINE.forEach((s, i) => {
+    const lines = s.out.split('\n');
+    ev.push({ t, kind: 'prompt', i });
+    for (let c = 1; c <= s.cmd.length; c++) ev.push({ t: t + c * TYPE_MS, kind: 'type', i, c });
+    t += s.cmd.length * TYPE_MS + AFTER_TYPE;
+    lines.forEach((_, l) => ev.push({ t: t + l * LINE_MS, kind: 'line', i, l: l + 1 }));
+    t += lines.length * LINE_MS + HOLD[i];
+  });
+  ev.push({ t, kind: 'finalprompt' });
+  const cardAt = t + 300;
+  return { ev, cardAt, total: cardAt + CARD_FADE + CARD_HOLD };
+}
+
+window.render = (now) => {
+  const { ev, cardAt } = window.PLAN;
+  const typed = {}, shown = {}; let lastPrompt = -1, final = false;
+  for (const e of ev) {
+    if (e.t > now) break;
+    if (e.kind === 'prompt') lastPrompt = e.i;
+    if (e.kind === 'type') typed[e.i] = e.c;
+    if (e.kind === 'line') shown[e.i] = e.l;
+    if (e.kind === 'finalprompt') final = true;
+  }
+  let html = '';
+  for (let i = 0; i <= lastPrompt; i++) {
+    const s = TIMELINE[i], n = typed[i] || 0, done = n >= s.cmd.length;
+    html += `<span class="p">$</span> <span class="cmd">${esc(s.cmd.slice(0, n))}</span>`;
+    const active = i === lastPrompt && !shown[i] && !final;
+    if (active) html += `<span class="cursor"></span>`;
+    html += '\n';
+    if (shown[i]) html += esc(s.out.split('\n').slice(0, shown[i]).join('\n')) + '\n';
+  }
+  if (final) html += `<span class="p">$</span> <span class="cursor"></span>`;
+  document.getElementById('out').innerHTML = html;
+  const sc = document.getElementById('screen'); sc.scrollTop = sc.scrollHeight;
+  const k = Math.max(0, Math.min(1, (now - cardAt) / CARD_FADE));
+  document.getElementById('card').style.opacity = k;
+};
+
+window.init = (timeline) => { window.TIMELINE = timeline; window.PLAN = buildEvents(); return window.PLAN.total; };
+</script>
+</body>
+</html>
