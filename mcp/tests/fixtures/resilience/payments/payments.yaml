@@ -1,0 +1,44 @@
+# Three replicas, no spread constraints, and a PDB that needs all three up:
+# a node drain can never evict one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+  namespace: shop
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: payments}
+  template:
+    metadata:
+      labels: {app: payments}
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/acme/payments:2.8.1
+          ports: [{containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /ready, port: 8080}}
+          livenessProbe: {httpGet: {path: /live, port: 8080}}
+          lifecycle: {preStop: {exec: {command: ["sleep", "5"]}}}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments
+  namespace: shop
+spec:
+  selector: {app: payments}
+  ports: [{port: 80, targetPort: 8080}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payments-pdb
+  namespace: shop
+spec:
+  minAvailable: 3
+  selector:
+    matchLabels: {app: payments}

@@ -26,6 +26,7 @@ names = set(zipfile.ZipFile(sys.argv[1]).namelist())
 need = [
     "kubeastra/_vendor/services/upgrade/__init__.py",
     "kubeastra/_vendor/services/upgrade/maps.py",
+    "kubeastra/_vendor/services/manifests.py",
     "kubeastra/_vendor/data/upgrades/api_deprecations.yaml",
 ]
 missing = [n for n in need if n not in names]
