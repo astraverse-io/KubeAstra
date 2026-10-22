@@ -2,18 +2,22 @@
 // animation (deterministic: the page is told what time it is, nothing runs in
 // real time). Run from scripts/demo-recorder so `playwright` resolves:
 //
-//   node upgrade-pilot/frames.mjs <timeline.json> <frames-dir>
+//   node upgrade-pilot/frames.mjs <timeline.json> <frames-dir> [player.html]
+//
+// The player page defaults to this directory's player.html; the Resilience
+// demo passes its own (same renderer, different title and closing card).
 import { chromium } from 'playwright';
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import { fileURLToPath } from 'url';
+import { resolve } from 'path';
 
-const [, , timelinePath, framesDir] = process.argv;
+const [, , timelinePath, framesDir, playerArg] = process.argv;
 if (!timelinePath || !framesDir) {
-  console.error('usage: node upgrade-pilot/frames.mjs <timeline.json> <frames-dir>');
+  console.error('usage: node upgrade-pilot/frames.mjs <timeline.json> <frames-dir> [player.html]');
   process.exit(1);
 }
 const steps = JSON.parse(readFileSync(timelinePath, 'utf8')).steps.map(({ cmd, out }) => ({ cmd, out }));
-const player = fileURLToPath(new URL('./player.html', import.meta.url));
+const player = playerArg ? resolve(playerArg) : fileURLToPath(new URL('./player.html', import.meta.url));
 rmSync(framesDir, { recursive: true, force: true });
 mkdirSync(framesDir, { recursive: true });
 

@@ -1,0 +1,67 @@
+# A checkout service as `helm template` would render it. Two outages hide in
+# here: the HPA scales on CPU but the container requests none (so it never
+# scales), and at the HPA floor of 2 the PDB's minAvailable: 2 allows no
+# eviction (so every node drain — and every upgrade — stalls on it).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: shop
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: checkout}
+  template:
+    metadata:
+      labels: {app: checkout}
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app: checkout}
+      containers:
+        - name: app
+          image: ghcr.io/acme/checkout:5.0.3
+          ports: [{containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /ready, port: 8080}}
+          livenessProbe: {httpGet: {path: /live, port: 8080}}
+          lifecycle: {preStop: {sleep: {seconds: 5}}}
+          resources:
+            requests: {memory: 256Mi}
+            limits: {memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout
+  namespace: shop
+spec:
+  selector: {app: checkout}
+  ports: [{name: http, port: 80, targetPort: 8080}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: checkout
+  namespace: shop
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: checkout}
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 70}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: checkout
+  namespace: shop
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: {app: checkout}
