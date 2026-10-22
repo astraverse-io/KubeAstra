@@ -7,7 +7,7 @@ _MODULE = Path(__file__).resolve().parents[1] / "src" / "kubeastra" / "resilienc
 
 # Top-level modules the keyless path may import (relative `._vendor` / `services`
 # imports of the pure core are the point of the module and are allowed).
-_ALLOWED = {"__future__", "json", "pathlib", "shutil", "subprocess", "sys", "typing", "yaml", "services"}
+_ALLOWED = {"__future__", "json", "pathlib", "re", "shutil", "subprocess", "sys", "typing", "yaml", "services"}
 
 
 def test_keyless_resilience_path_imports_only_stdlib_yaml_and_the_core():

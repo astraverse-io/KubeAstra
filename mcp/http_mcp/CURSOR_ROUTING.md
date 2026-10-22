@@ -43,17 +43,17 @@ kubeastra (stdio):
   ✓ describe_pod
   ✓ investigate_pod
   ✓ analyze_error
-  ... (56 tools total)
+  ... (57 tools total)
 
 kubeastra-http (HTTP):
   ✓ get_pods
   ✓ describe_pod
   ✓ investigate_pod
   ✓ analyze_error
-  ... (56 tools total)
+  ... (57 tools total)
 ```
 
-**Result:** Cursor now has 56 tools available (or 112 if both servers expose the same tools).
+**Result:** Cursor now has 57 tools available (or 114 if both servers expose the same tools).
 
 ### Step 3: You Ask a Natural Language Question
 

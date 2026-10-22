@@ -235,3 +235,62 @@ def test_json_output_carries_each_fix():
     res001 = next(f for f in json.loads(text)["findings"] if f["rule"] == "RES001")
     assert res001["fix"]["kind"] == "field" and res001["fix"]["new_value"] == 2
     assert res001["fix"]["gitops"]["field_path"] == ["spec", "minAvailable"]
+
+
+# ── live-mode scope (Phase 3) ─────────────────────────────────────────────────
+
+def _fake_cluster(calls):
+    def deployment(ns, name):
+        return {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name, "namespace": ns},
+                "spec": {"replicas": 1, "template": {"metadata": {"labels": {"app": name}},
+                         "spec": {"containers": [{"name": "c", "image": "x:1.0.0"}]}}}}
+
+    def kubectl(args):
+        calls.append(args)
+        if args[:2] == ["get", "nodes"]:
+            return {"items": []}
+        items = [deployment("kube-system", "coredns"), deployment("shop", "web")]
+        if "-n" in args:
+            ns = args[args.index("-n") + 1]
+            items = [i for i in items if i["metadata"]["namespace"] == ns]
+        return {"apiVersion": "v1", "kind": "List", "items": items}
+
+    return kubectl
+
+
+def _workloads(text):
+    return sorted(f"{w['ref']['namespace']}/{w['ref']['name']}" for w in json.loads(text)["workloads"])
+
+
+def test_live_skips_system_namespaces_by_default_and_says_so():
+    calls = []
+    _, text = run_assess(live=True, run_kubectl=_fake_cluster(calls), output="json")
+    assert _workloads(text) == ["shop/web"]
+    assert any("kube-system" in n and "--include-system" in n for n in json.loads(text)["notes"])
+    assert "--all-namespaces" in calls[0]
+
+
+def test_live_include_system_scores_everything():
+    _, text = run_assess(live=True, include_system=True, run_kubectl=_fake_cluster([]), output="json")
+    assert _workloads(text) == ["kube-system/coredns", "shop/web"]
+
+
+def test_live_namespace_is_one_call_and_naming_a_system_namespace_includes_it():
+    calls = []
+    _, text = run_assess(live=True, namespace="kube-system", run_kubectl=_fake_cluster(calls), output="json")
+    assert _workloads(text) == ["kube-system/coredns"]
+    assert calls[0][:4] == ["get", load_resilience_core().LIVE_KINDS, "-n", "kube-system"]
+
+
+@pytest.mark.parametrize(
+    "kw,match",
+    [
+        ({"path": PAYMENTS, "namespace": "shop"}, "--live scans only"),
+        ({"path": PAYMENTS, "include_system": True}, "--live scans only"),
+        ({"live": True, "namespace": "--all"}, "not a valid Kubernetes namespace"),
+    ],
+)
+def test_scope_usage_errors(kw, match):
+    path = kw.pop("path", None)
+    with pytest.raises(ResilienceUsageError, match=match):
+        run_assess(path, run_kubectl=_fake_cluster([]), **kw)

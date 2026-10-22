@@ -62,6 +62,10 @@ if [ "$rc" -ne 1 ] || ! grep -q "extensions/v1beta1" <<<"$out"; then
   echo "smoke: FAIL — removed API should exit 1 and be named (exit $rc)" >&2; exit 1
 fi
 
+# The upgrade plan reports node drains from the bundled resilience core.
+grep -q "Node drains:" <<<"$("$KA" upgrade plan --target 1.30 --manifests clean --no-fail-on-blocking 2>&1)" \
+  || { echo "smoke: FAIL — upgrade plan has no Node drains section (resilience core not reachable?)" >&2; exit 1; }
+
 # Current APIs pass.
 "$KA" upgrade plan --target 1.30 --manifests clean --fail-on-blocking >/dev/null
 

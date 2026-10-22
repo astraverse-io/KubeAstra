@@ -54,7 +54,7 @@ Four ways to connect — pick what fits your setup:
 
 Switch between clusters without restarting. Each session tracks its own connection.
 
-### 🔍 56 Built-in Kubernetes Tools
+### 🔍 57 Built-in Kubernetes Tools
 
 **Live cluster tools (~30)** — pod/deployment/service inspection, event streams, multi-namespace discovery, rollout status, kubeconfig context switching, log retrieval with previous-container support, resource-graph topology, deployment-level investigation, namespace-wide health analysis, and safe write operations (delete, scale, restart, patch — all gated behind `dry_run` + `confirmation_token`).
 
@@ -146,7 +146,7 @@ The resource graph is an **interactive investigation surface**, not just a topol
 |---|---|
 | Chat-based Next.js interface for team-wide troubleshooting | The VS Code extension, or MCP in Cursor, Claude Desktop, or any MCP client |
 | Connect any cluster (auto-detect, kubeconfig upload, SSH) | Debug without leaving your editor |
-| Shareable session URLs with persistent chat history (SQLite) | 56 tools available via stdio or HTTP MCP transport |
+| Shareable session URLs with persistent chat history (SQLite) | 57 tools available via stdio or HTTP MCP transport |
 | Visual resource graph with click-to-inspect | Same ReAct agent powers both surfaces |
 
 ### 🚨 Alert-Driven Auto-Investigation
@@ -267,7 +267,7 @@ Match your situation to the feature that solves it:
 
 | If you… | The feature | Enable with |
 |---|---|---|
-| Just want an AI copilot for `kubectl` diagnosis | Agentic ReAct + 56 tools | Defaults — no flags needed |
+| Just want an AI copilot for `kubectl` diagnosis | Agentic ReAct + 57 tools | Defaults — no flags needed |
 | Get paged by Alertmanager at 2 AM | Alert-Driven Auto-Investigation | `ALERTMANAGER_WEBHOOK_ENABLED=true` + set `ALERT_WEBHOOK_TOKEN` |
 | Investigate the same failure modes repeatedly | RAG Runbook Cache (Cached tier) | `RAG_ROUTER_ENABLED=true` + `👍` on great answers |
 | Read 500-line `describe` and 10K-line log outputs | Tool Result Summarization | `ENABLE_LOG_SUMMARIZATION=true` |
@@ -373,7 +373,7 @@ GEMINI_API_KEY=your-key-here          # or LLM_PROVIDER=ollama
 ALLOWED_NAMESPACES=prod,staging,default
 ```
 
-Restart your IDE — all 56 tools appear as MCP tools.
+Restart your IDE — all 57 tools appear as MCP tools.
 
 ### Option 6: Use the VS Code extension
 
@@ -655,7 +655,7 @@ kubeastra/
 │   │   ├── prometheus.py        # Prometheus query client
 │   │   ├── embeddings.py        # sentence-transformers wrapper
 │   │   └── vector_db.py         # Qdrant client
-│   ├── tool_registry.py         # Single source of truth: 56 tools
+│   ├── tool_registry.py         # Single source of truth: 57 tools
 │   └── config/settings.py
 ├── cli/                         # `kubeastra` CLI (PyPI) — ask, investigate,
 │                                #   connect, doctor, config, and `open`

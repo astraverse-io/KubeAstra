@@ -81,6 +81,31 @@ def test_scope_knowledge_keywords():
         assert d.scope_name == "knowledge", f"expected knowledge for: {prompt!r}, got {d.scope_name}"
 
 
+def test_scope_resilience_keywords():
+    """Resilience questions reach assess_resilience — and pod failures don't move."""
+    for prompt in [
+        "How resilient is the payments namespace?",
+        "Our node drain is stuck on the checkout pods",
+        "Will draining a node break anything in shop?",
+        "Is it safe to drain node-3 before the upgrade?",
+        "Which deployments are single points of failure?",
+        "Check the PodDisruptionBudgets in prod",
+        "are our PDBs blocking evictions",
+        "Is the api highly available?",
+        "Are the web replicas spread across zones?",
+    ]:
+        d = scope_for_prompt(prompt)
+        assert d.scope_name == "resilience", f"expected resilience for: {prompt!r}, got {d.scope_name}"
+        assert "assess_resilience" in d.allowed_tools
+    for prompt, scope in [
+        ("Liveness probe is failing repeatedly", "pod_debug"),
+        ("Why is the backend-app pod crashing in prod-blue?", "pod_debug"),
+        ("what's the rollout status of api-gateway", "rollout"),
+        ("How do we recover from a failed node drain according to our runbook?", "knowledge"),
+    ]:
+        assert scope_for_prompt(prompt).scope_name == scope, prompt
+
+
 def test_scope_broad_fallback():
     """Unmatched prompts fall to broad — no restriction applied."""
     for prompt in [
@@ -125,6 +150,7 @@ def _prompt_for_scope(scope_name: str) -> str:
         "rollout": "Rollout status of the frontend deployment",
         "service": "The frontend service has no endpoints",
         "inventory": "List all namespaces",
+        "resilience": "How resilient is the payments namespace?",
         "knowledge": "What is our standard procedure for an OOM incident?",
     }[scope_name]
 
