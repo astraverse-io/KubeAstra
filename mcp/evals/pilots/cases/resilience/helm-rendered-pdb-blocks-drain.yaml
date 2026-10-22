@@ -1,0 +1,33 @@
+id: helm-rendered-pdb-blocks-drain
+# The same drain-blocking PDB, rendered by Helm: still found, but the fix is
+# advice for the chart's values — never a patch or PR of generated output.
+manifests: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: gateway
+    namespace: edge
+    labels: {app.kubernetes.io/managed-by: Helm, helm.sh/chart: gateway-3.2.0}
+  spec:
+    replicas: 2
+    selector: {matchLabels: {app: gateway}}
+    template:
+      metadata: {labels: {app: gateway}}
+      spec:
+        topologySpreadConstraints:
+          - {maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: gateway}}}
+        containers:
+          - name: gateway
+            image: ghcr.io/acme/gateway:3.2.0
+            resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {memory: 256Mi}}
+  ---
+  apiVersion: policy/v1
+  kind: PodDisruptionBudget
+  metadata:
+    name: gateway
+    namespace: edge
+    labels: {app.kubernetes.io/managed-by: Helm, helm.sh/chart: gateway-3.2.0}
+  spec: {minAvailable: 2, selector: {matchLabels: {app: gateway}}}
+expect:
+  rules: [RES001]
+  fixes: {RES001: advisory}

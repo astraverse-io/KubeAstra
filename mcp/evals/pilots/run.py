@@ -15,14 +15,18 @@ from __future__ import annotations
 
 import sys
 
-from .scoring import score_reconcile, score_upgrade
-from .types import load_reconcile_cases, load_upgrade_cases
+from .scoring import per_rule, score_reconcile, score_resilience, score_upgrade
+from .types import load_reconcile_cases, load_resilience_cases, load_upgrade_cases
 
 
 def main() -> int:
     upgrade_cases = load_upgrade_cases()
     reconcile_cases = load_reconcile_cases()
-    print(f"pilots eval: {len(upgrade_cases)} upgrade + {len(reconcile_cases)} reconcile cases")
+    resilience_cases = load_resilience_cases()
+    print(
+        f"pilots eval: {len(upgrade_cases)} upgrade + {len(reconcile_cases)} reconcile + "
+        f"{len(resilience_cases)} resilience cases"
+    )
 
     failures: list[str] = []
 
@@ -55,6 +59,20 @@ def main() -> int:
             failures.append(f"reconcile/{s.case_id}")
     hit_rate = hits / len(rec_scores) if rec_scores else 1.0
     print(f"  [reconcile] root-cause hit rate = {hit_rate:.3f} ({hits}/{len(rec_scores)})")
+
+    # ── Resilience ───────────────────────────────────────────────────────────
+    res_scores = [score_resilience(c) for c in resilience_cases]
+    for s in res_scores:
+        if not s.perfect:
+            extra = sorted(s.found - s.expected)
+            missed = sorted(s.expected - s.found)
+            print(
+                f"  [resilience] {s.case_id}: missed={missed} extra={extra} score={s.score} "
+                f"score_ok={s.score_ok} fixes={s.fix_mismatches}  FAIL"
+            )
+            failures.append(f"resilience/{s.case_id}")
+    for rule, (precision, recall, support) in per_rule(res_scores).items():
+        print(f"  [resilience] {rule}: precision={precision:.2f} recall={recall:.2f} (n={support})")
 
     if failures:
         print(f"PILOTS EVAL FAILED — {len(failures)} case(s): {', '.join(failures)}")

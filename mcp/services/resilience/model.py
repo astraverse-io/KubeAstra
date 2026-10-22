@@ -7,6 +7,7 @@ treated as "whatever namespace it gets applied to", so it links with anything.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
@@ -17,6 +18,18 @@ REPLICATED = ("Deployment", "StatefulSet")
 WORKLOAD_KINDS = REPLICATED + ("DaemonSet", "Job", "CronJob")
 
 IGNORE_ANNOTATION = "resilience.kubeastra.io/ignore"
+
+# A Service port that only exists for Prometheus to scrape. Matched on the
+# whole port name, so `metricsservice` (KEDA's real gRPC traffic) still counts
+# as serving. Found by the corpus sweep: cert-manager, kyverno, velero and
+# node-exporter expose metrics-only Services, which made their controllers look
+# like they served user traffic.
+_METRICS_PORT = re.compile(r"^(?:https?-|tcp-)?(?:metrics|monitoring|prometheus)(?:-port)?$")
+
+
+def is_metrics_only(svc: "Obj") -> bool:
+    ports = [p for p in (svc.spec.get("ports") or []) if isinstance(p, dict)]
+    return bool(ports) and all(_METRICS_PORT.match(str(p.get("name") or "")) for p in ports)
 
 
 @dataclass
@@ -63,6 +76,11 @@ class Workload:
     @property
     def kind(self) -> str:
         return self.obj.kind
+
+    @property
+    def serving_services(self) -> list["Obj"]:
+        """Services that carry real traffic — metrics-only Services excluded."""
+        return [s for s in self.services if not is_metrics_only(s)]
 
     @property
     def replicated(self) -> bool:

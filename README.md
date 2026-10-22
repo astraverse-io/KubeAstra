@@ -110,16 +110,17 @@ Off by default; enable with `GITOPS_ENABLED=true` and connect a repo in Settings
 
 ### 🧭 Pilots — guided, deterministic workflows (experimental)
 
-**Pilots** are scoped, deterministic workflows layered on the remediation + PR-proposal spine above. Two ship today — both **keyless at the core** (no LLM needed for the decision) and **off by default**:
+**Pilots** are scoped, deterministic workflows layered on the remediation + PR-proposal spine above. Three ship today — all **keyless at the core** (no LLM needed for the decision) and **off by default** in the app:
 
 - **Upgrade Pilot** — point it at a target Kubernetes version and it reports what breaks (in-use APIs removed at or before the target, from a curated deprecation map), then produces an **ordered, per-item plan**: plain-YAML fixes routed as GitOps PRs, Helm/operator bumps, control-plane steps last. Applying is gated by **plan approval** (one admin decision authorizes the non-high-risk batch; high-risk steps are approved individually) and the apply runner is **resumable and idempotent** (re-scan + verify, never stored progress). Also runs **without the server** as `kubeastra upgrade` (CLI) and a **GitHub Action** that fails CI on blocking removals and can emit SARIF.
 - **GitOps Reconciliation** — give it an Argo `Application` or Flux `Kustomization`/`HelmRelease` status and it classifies the root cause (drift, image pull, failed hook, CRD-schema mismatch, RBAC, …), names the first failing resource, and routes drift to a GitOps PR vs. operational issues to advisory.
+- **Resilience Pilot** — scores how well workloads survive a **node drain, a traffic spike or a rollout**, from rendered manifests or the live cluster. It looks for the combinations that cause outages: a PodDisruptionBudget that can never allow an eviction (so `kubectl drain` — and every upgrade — stalls), an HPA scaling on CPU for a container that requests no CPU (so it never scales), replicas nothing spreads across nodes, Services routing to pods with no readiness probe or preStop hook, rollouts that stop every pod. Every finding comes with a fix: value changes ready as GitOps PRs, new PDBs, patches, and plain advice where the right value is yours to choose (Helm-rendered objects only ever get advice). Runs as `kubeastra resilience` (with `--fix DIR`), a [GitHub Action](action/resilience/) with a score gate, SARIF and a badge, the `assess_resilience` agent tool, and — feeding the Upgrade Pilot — a **Node drains** section in every upgrade plan.
 
 ![kubeastra upgrade plan finding three removed Kubernetes APIs in a rendered chart and exiting 1](docs/media/upgrade-pilot-demo.gif)
 
 *The Upgrade Pilot from `pip install kubeastra`: no server, no LLM. The same check runs in CI as the [GitHub Action](action/).*
 
-Enable with `PILOTS_ENABLED=true` plus `UPGRADE_PILOT_ENABLED` / `GITOPS_RECONCILE_ENABLED`. Both cores are covered by an offline eval suite (blocking recall/precision, plan ordering, reconciliation hit rate) that gates every PR.
+Enable with `PILOTS_ENABLED=true` plus `UPGRADE_PILOT_ENABLED` / `GITOPS_RECONCILE_ENABLED` / `RESILIENCE_PILOT_ENABLED`. All three cores are covered by an offline eval suite (blocking recall/precision, plan ordering, reconciliation hit rate, per-rule resilience precision/recall) that gates every PR. The CLI and Actions need none of these flags — they run the cores directly.
 
 **Under the hood — native tool-calling (optional):** agent runs can use a structured native tool-calling harness (Claude / OpenAI / Gemini) instead of text-parsed ReAct, removing a class of parsing failures. Opt in with `AGENT_HARNESS_V2=true`; providers without native tools (e.g. Ollama) transparently fall back to ReAct.
 

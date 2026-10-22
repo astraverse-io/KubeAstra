@@ -1,0 +1,31 @@
+id: single-replica-webhook
+# Seen in the corpus sweep (admission webhooks with default values): one
+# replica behind a real HTTPS Service and no PDB — every drain takes the
+# webhook down, and API calls it guards fail or hang meanwhile.
+manifests: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata: {name: webhook, namespace: policy}
+  spec:
+    replicas: 1
+    selector: {matchLabels: {app: webhook}}
+    template:
+      metadata: {labels: {app: webhook}}
+      spec:
+        containers:
+          - name: webhook
+            image: ghcr.io/acme/webhook:1.0.4
+            ports: [{name: https, containerPort: 10250}]
+            readinessProbe: {httpGet: {path: /readyz, port: 10250, scheme: HTTPS}}
+            livenessProbe: {httpGet: {path: /livez, port: 10250, scheme: HTTPS}}
+            resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {memory: 128Mi}}
+  ---
+  apiVersion: v1
+  kind: Service
+  metadata: {name: webhook, namespace: policy}
+  spec:
+    selector: {app: webhook}
+    ports: [{name: https, port: 443, targetPort: https}, {name: metrics, port: 8080}]
+expect:
+  rules: [RES002, RES008]
+  score: 87

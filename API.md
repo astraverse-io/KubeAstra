@@ -136,6 +136,18 @@ POST   /api/gitops/preview    # { proposal_id, change, ... } → { preview_token
 POST   /api/gitops/open       # { preview_token } → opens the PR, returns pr_url
 GET    /api/gitops/prs        # List PRs opened by KubeAstra
 
+# Pilots — deterministic, keyless workflows. All 404 unless PILOTS_ENABLED=true;
+# each Pilot also needs its own flag (UPGRADE_PILOT_ENABLED, GITOPS_RECONCILE_ENABLED,
+# RESILIENCE_PILOT_ENABLED). inputs.manifests_path scans files on the server and is
+# off unless UPGRADE_PILOT_MANIFESTS_ROOT names an allowed directory.
+GET  /api/v1/pilots                       # Enabled Pilots and their tool scopes
+POST /api/v1/pilots/upgrade/run           # { target, inputs: {manifests_path?} } → report, ordered plan, node drains
+POST /api/v1/pilots/gitops_reconcile/run  # { inputs: {app, kind?, namespace?} | {object} } → root-cause diagnosis
+POST /api/v1/pilots/resilience/run        # { inputs: {manifests_path? | namespace?, include_system?} } → score, findings, fixes
+GET  /api/v1/pilots/runs/{run_id}         # A stored run
+# A resilience field fix carries `fix.gitops` — post it as `change` to /api/gitops/preview.
+# Live scans honour ALLOWED_NAMESPACES and skip kube-* namespaces unless asked.
+
 # Auto-documented
 GET  /docs                # Interactive Swagger UI
 GET  /openapi.json        # OpenAPI 3.0 schema

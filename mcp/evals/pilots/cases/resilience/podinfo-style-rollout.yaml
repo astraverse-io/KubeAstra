@@ -1,0 +1,29 @@
+id: podinfo-style-rollout
+# Seen in the corpus sweep (podinfo 6.15.0 defaults): one replica with
+# maxUnavailable: 1 — a rollout may stop the only pod before the new one is ready.
+manifests: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata: {name: podinfo, namespace: demo}
+  spec:
+    replicas: 1
+    strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 1}}
+    selector: {matchLabels: {app: podinfo}}
+    template:
+      metadata: {labels: {app: podinfo}}
+      spec:
+        containers:
+          - name: podinfo
+            image: ghcr.io/stefanprodan/podinfo:6.15.0
+            ports: [{name: http, containerPort: 9898}]
+            readinessProbe: {exec: {command: [podcli, check, http, localhost:9898/readyz]}}
+            livenessProbe: {exec: {command: [podcli, check, http, localhost:9898/healthz]}}
+            resources: {requests: {cpu: 1m, memory: 16Mi}, limits: {memory: 64Mi}}
+  ---
+  apiVersion: v1
+  kind: Service
+  metadata: {name: podinfo, namespace: demo}
+  spec: {selector: {app: podinfo}, ports: [{name: http, port: 9898, targetPort: http}]}
+expect:
+  rules: [RES002, RES008, RES012]
+  fixes: {RES012: field, RES002: new_object, RES008: block}

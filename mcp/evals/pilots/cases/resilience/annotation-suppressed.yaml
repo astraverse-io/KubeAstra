@@ -1,0 +1,30 @@
+id: annotation-suppressed
+# A deliberate singleton (a leader-elected batch scheduler) opted out of the
+# drain rule by annotation: reported as suppressed, never scored.
+manifests: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: scheduler
+    namespace: ops
+    annotations: {resilience.kubeastra.io/ignore: "RES002,RES008"}
+  spec:
+    replicas: 1
+    selector: {matchLabels: {app: scheduler}}
+    template:
+      metadata: {labels: {app: scheduler}}
+      spec:
+        containers:
+          - name: scheduler
+            image: ghcr.io/acme/scheduler:1.9.0
+            ports: [{containerPort: 8080}]
+            readinessProbe: {httpGet: {path: /ready, port: 8080}}
+            resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {memory: 128Mi}}
+  ---
+  apiVersion: v1
+  kind: Service
+  metadata: {name: scheduler, namespace: ops}
+  spec: {selector: {app: scheduler}, ports: [{name: http, port: 80, targetPort: 8080}]}
+expect:
+  rules: []
+  score: 100

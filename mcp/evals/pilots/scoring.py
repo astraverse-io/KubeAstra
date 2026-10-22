@@ -10,12 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import yaml
+
 from services.reconcile import diagnose
+from services.resilience import ClusterFacts
+from services.resilience import assess as assess_resilience
 from services.upgrade import planner
 from services.upgrade.snapshot import ClusterSnapshot, HelmRelease, ObjectRef
 
 from .metrics import accuracy, kendall_tau, recall_precision
-from .types import ReconcileCase, UpgradeCase
+from .types import ReconcileCase, ResilienceCase, UpgradeCase
 
 
 def snapshot_from_dict(d: dict) -> ClusterSnapshot:
@@ -112,3 +116,59 @@ def score_reconcile(case: ReconcileCase) -> ReconcileScore:
         produced=diag.root_cause,
         expected=case.expect_root_cause,
     )
+
+
+@dataclass
+class ResilienceScore:
+    case_id: str
+    found: frozenset
+    expected: frozenset
+    recall: float
+    precision: float
+    score: object
+    score_ok: bool
+    fix_mismatches: list
+
+    @property
+    def perfect(self) -> bool:
+        return self.recall == 1.0 and self.precision == 1.0 and self.score_ok and not self.fix_mismatches
+
+
+def score_resilience(case: ResilienceCase) -> ResilienceScore:
+    docs = [d for d in yaml.safe_load_all(case.manifests) if d]
+    facts = ClusterFacts(**case.facts) if case.facts else None
+    report = assess_resilience(docs, facts=facts, source_mode=case.source_mode)
+    scored = [f for f in report.findings if f.scored]
+    found = frozenset(f.rule for f in scored)
+    recall, precision = recall_precision(found, case.expect_rules)
+    mismatches = []
+    for rule, kind in case.expect_fixes.items():
+        kinds = {f.fix.kind for f in scored if f.rule == rule and f.fix}
+        if kind not in kinds:
+            mismatches.append(f"{rule}: expected fix {kind}, got {sorted(kinds) or 'none'}")
+    return ResilienceScore(
+        case_id=case.id,
+        found=found,
+        expected=case.expect_rules,
+        recall=recall,
+        precision=precision,
+        score=report.score,
+        score_ok=case.expect_score is None or report.score == case.expect_score,
+        fix_mismatches=mismatches,
+    )
+
+
+def per_rule(scores: list[ResilienceScore]) -> dict[str, tuple[float, float, int]]:
+    """rule -> (precision, recall, support) across every case. A rule that
+    fires where it isn't expected loses precision; one that stays silent where
+    it is expected loses recall."""
+    rules = set().union(*(s.found | s.expected for s in scores)) if scores else set()
+    out = {}
+    for rule in sorted(rules):
+        tp = sum(1 for s in scores if rule in s.found and rule in s.expected)
+        fp = sum(1 for s in scores if rule in s.found and rule not in s.expected)
+        fn = sum(1 for s in scores if rule not in s.found and rule in s.expected)
+        precision = tp / (tp + fp) if tp + fp else 1.0
+        recall = tp / (tp + fn) if tp + fn else 1.0
+        out[rule] = (precision, recall, tp + fn)
+    return out

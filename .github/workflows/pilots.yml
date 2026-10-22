@@ -76,6 +76,7 @@ jobs:
           ui/backend/tests/test_docs_match_reality.py
           ui/backend/tests/test_resilience_pilot.py
           ui/backend/tests/test_tool_scoping.py
+          ui/backend/tests/test_versions_agree.py
 
       - name: cli (keyless upgrade + resilience + import boundaries)
         run: >-
