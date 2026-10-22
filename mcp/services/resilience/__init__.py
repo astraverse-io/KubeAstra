@@ -16,6 +16,7 @@ from pathlib import Path
 from ..manifests import ManifestDoc, iter_manifest_docs
 from .catalogue import apply_config, load_rules
 from .engine import assess
+from .live import LIVE_KINDS, facts_from_nodes
 from .model import IGNORE_ANNOTATION
 from .rules import RULES
 from .types import ClusterFacts, Finding, Fix, Ref, ResilienceReport, WorkloadScore
@@ -31,6 +32,7 @@ __all__ = [
     "Finding",
     "Fix",
     "IGNORE_ANNOTATION",
+    "LIVE_KINDS",
     "ManifestDoc",
     "RULES",
     "Ref",
@@ -38,6 +40,7 @@ __all__ = [
     "WorkloadScore",
     "apply_config",
     "assess",
+    "facts_from_nodes",
     "load_rules",
     "scan_path",
 ]

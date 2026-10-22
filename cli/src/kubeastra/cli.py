@@ -432,5 +432,35 @@ def upgrade_plan(
     raise typer.Exit(code=code)
 
 
+@app.command()
+def resilience(
+    path: Optional[str] = typer.Argument(
+        None, help="Rendered manifests to scan: a file or directory (helm template / kustomize build output)."
+    ),
+    live: bool = typer.Option(False, "--live", help="Scan the live cluster with kubectl instead of a PATH."),
+    kubeconfig: Optional[str] = typer.Option(None, "--kubeconfig", help="kubeconfig for --live (default context otherwise)."),
+    output: str = typer.Option("text", "--output", "-o", help="Output format: text | json | sarif."),
+    fail_under: Optional[int] = typer.Option(None, "--fail-under", help="Exit 1 when the score is below this (0-100)."),
+    fail_on: Optional[str] = typer.Option(None, "--fail-on", help="Exit 1 on any finding at or above: low | medium | high."),
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Repo config (default: .kubeastra/resilience.yaml when present)."
+    ),
+) -> None:
+    """Score how well workloads survive node drains, traffic spikes and rollouts
+    (PDBs, HPAs, spread, probes, shutdown). No backend, no API key."""
+    from .resilience import ResilienceCoreUnavailable, ResilienceUsageError, run_assess
+
+    try:
+        code, text = run_assess(
+            path, live=live, kubeconfig=kubeconfig, output=output,
+            fail_under=fail_under, fail_on=fail_on, config_path=config,
+        )
+    except (ResilienceCoreUnavailable, ResilienceUsageError) as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2)
+    typer.echo(text)
+    raise typer.Exit(code=code)
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()
