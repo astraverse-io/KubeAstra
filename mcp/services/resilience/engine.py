@@ -11,6 +11,17 @@ from .score import score_workloads
 from .types import ClusterFacts, Finding, ResilienceReport
 
 
+# What a node drain runs into: a PDB that never allows an eviction (the drain
+# stalls) and a lone replica with no PDB (the drain is downtime). The Upgrade
+# Pilot shows these next to its plan, because every upgrade drains every node.
+DRAIN_RULES = ("RES001", "RES002")
+
+
+def drain_blockers(report: ResilienceReport) -> list[Finding]:
+    """The scored findings that matter for a node drain (see :data:`DRAIN_RULES`)."""
+    return [f for f in report.findings if f.rule in DRAIN_RULES and f.scored]
+
+
 def assess(
     items: Iterable[Any],
     *,

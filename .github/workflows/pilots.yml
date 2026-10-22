@@ -64,8 +64,9 @@ jobs:
           mcp/tests/test_resilience_rules.py
           mcp/tests/test_resilience_score.py
           mcp/tests/test_resilience_fix.py
+          mcp/tests/test_tool_registry.py
 
-      - name: backend (pilots framework + apply runner + resilience fixes through GitOps)
+      - name: backend (pilots framework + apply runner + resilience run/tool/fixes + chat scoping)
         run: >-
           python -m pytest -q
           ui/backend/tests/test_pilots_framework.py
@@ -73,6 +74,8 @@ jobs:
           ui/backend/tests/test_resilience_gitops.py
           ui/backend/tests/test_gitops_edit.py
           ui/backend/tests/test_docs_match_reality.py
+          ui/backend/tests/test_resilience_pilot.py
+          ui/backend/tests/test_tool_scoping.py
 
       - name: cli (keyless upgrade + resilience + import boundaries)
         run: >-

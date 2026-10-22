@@ -15,10 +15,10 @@ from pathlib import Path
 
 from ..manifests import ManifestDoc, iter_manifest_docs
 from .catalogue import apply_config, load_rules
-from .engine import assess
+from .engine import DRAIN_RULES, assess, drain_blockers
 from .fix import MARKER as FIX_MARKER
 from .fix import render_fixes
-from .live import LIVE_KINDS, facts_from_nodes
+from .live import LIVE_KINDS, collect_live, facts_from_nodes, is_system_namespace
 from .model import IGNORE_ANNOTATION
 from .rules import RULES
 from .types import ClusterFacts, Finding, Fix, Ref, ResilienceReport, WorkloadScore
@@ -31,6 +31,7 @@ def scan_path(path: str | Path) -> list[ManifestDoc]:
 
 __all__ = [
     "ClusterFacts",
+    "DRAIN_RULES",
     "FIX_MARKER",
     "Finding",
     "Fix",
@@ -43,7 +44,10 @@ __all__ = [
     "WorkloadScore",
     "apply_config",
     "assess",
+    "collect_live",
+    "drain_blockers",
     "facts_from_nodes",
+    "is_system_namespace",
     "load_rules",
     "render_fixes",
     "scan_path",

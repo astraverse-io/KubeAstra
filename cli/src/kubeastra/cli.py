@@ -453,6 +453,12 @@ def resilience(
     fix: Optional[str] = typer.Option(
         None, "--fix", help="Write fixes (patches, new objects, a README) to this new or empty directory."
     ),
+    namespace: Optional[str] = typer.Option(
+        None, "--namespace", "-n", help="With --live: scan only this namespace."
+    ),
+    include_system: bool = typer.Option(
+        False, "--include-system", help="With --live: also score kube-system and other cluster add-on namespaces."
+    ),
 ) -> None:
     """Score how well workloads survive node drains, traffic spikes and rollouts
     (PDBs, HPAs, spread, probes, shutdown). No backend, no API key."""
@@ -462,6 +468,7 @@ def resilience(
         code, text = run_assess(
             path, live=live, kubeconfig=kubeconfig, output=output,
             fail_under=fail_under, fail_on=fail_on, config_path=config, fix_dir=fix,
+            namespace=namespace, include_system=include_system,
         )
     except (ResilienceCoreUnavailable, ResilienceUsageError) as exc:
         err_console.print(f"[red]{exc}[/red]")

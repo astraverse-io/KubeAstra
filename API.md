@@ -297,7 +297,7 @@ GET  /docs                      # Swagger UI for MCP server
 GET  /openapi.json              # OpenAPI schema
 
 # Debug/testing
-GET  /debug/tools               # List all 56 tools with schemas
+GET  /debug/tools               # List all 57 tools with schemas
 POST /debug/call                # Direct tool invocation
 GET  /health                    # MCP server status
 GET  /                          # Server info + quick start
@@ -305,7 +305,7 @@ GET  /                          # Server info + quick start
 
 #### MCP Tool Categories
 
-Your 56 tools are organized into **9 categories**. Per-category counts change as
+Your 57 tools are organized into **9 categories**. Per-category counts change as
 tools are added, so read them live from `GET /tools/categories` rather than from
 this page:
 
@@ -361,7 +361,7 @@ curl http://localhost:8001/tools/catalog?format=json
 ```
 
 **Returns:**
-- All 56 tools organized by category
+- All 57 tools organized by category
 - Tool names, descriptions, input schemas
 - Write operation warnings
 - Last updated timestamp
@@ -583,7 +583,7 @@ Edit `~/.cursor/mcp.json`:
 }
 ```
 
-All 56 tools appear in Cursor's chat context immediately.
+All 57 tools appear in Cursor's chat context immediately.
 
 ### Custom Agent Integration
 
@@ -789,7 +789,7 @@ MCP_HTTP_AUTH_TOKEN=...               # Bearer token (optional)
 | `/api/chat/stream` | POST | 8000 | Streaming chat (Server-Sent Events) | Optional |
 | `/api/feedback` | POST | 8000 | Promote/quarantine captured chats (Phase 1.3) | Optional |
 | `/api/*` | GET/POST | 8000 | Other REST endpoints | Optional |
-| `/mcp/` | POST | 8001 | MCP transport (56 tools) | Optional |
+| `/mcp/` | POST | 8001 | MCP transport (57 tools) | Optional |
 | `/tools/catalog` | GET | 8001 | Tool browser (categorized incl. Plans) | Optional |
 | `/tools/categories` | GET | 8001 | Category metadata | Optional |
 | `/debug/tools` | GET | 8001 | Raw tool list | Optional |

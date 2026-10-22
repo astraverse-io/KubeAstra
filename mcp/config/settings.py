@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     require_destructive_confirmation: bool = True
     confirmation_token_ttl_seconds: int = 60
 
-    # ── Pilots (Upgrade + GitOps Reconciliation) ──────────────────────────────
+    # ── Pilots (Upgrade + GitOps Reconciliation + Resilience) ─────────────────
     # Feature-gated off by default (repo convention, like GITOPS_ENABLED). The
     # CLI / GitHub Action do NOT read these — they call the pure core directly
     # and are keyless. `upgrade_pilot_explain` toggles OPTIONAL LLM narration;
@@ -67,9 +67,11 @@ class Settings(BaseSettings):
     pilots_enabled: bool = False
     upgrade_pilot_enabled: bool = False
     gitops_reconcile_enabled: bool = False
+    resilience_pilot_enabled: bool = False
     upgrade_pilot_allowed_targets: str = ""
     upgrade_pilot_explain: bool = False
-    # Allowed root for STATIC manifests scanning via the server (inputs.manifests_path).
+    # Allowed root for STATIC manifests scanning via the server (inputs.manifests_path),
+    # shared by the Upgrade and Resilience Pilots.
     # Empty (default) = disabled: the server never reads a request-supplied path, so an
     # authenticated user cannot traverse the filesystem. Set to a directory to opt in;
     # paths are confined to it. The CLI/Action path is unaffected (it runs locally).

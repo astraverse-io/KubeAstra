@@ -573,7 +573,7 @@ KubeAstra/
 │       ├── app/api/[...path]/route.ts   ← Server-side proxy → backend
 │       └── components/                  ← IntentBar (Stop button), ResultView, etc.
 ├── mcp/
-│   ├── tool_registry.py                 ← Single source of truth for all 56 tools
+│   ├── tool_registry.py                 ← Single source of truth for all 57 tools
 │   ├── http_server.py                   ← HTTP MCP server (port :8001)
 │   ├── k8s/
 │   │   ├── wrappers.py                  ← 41 high-level kubectl workflows

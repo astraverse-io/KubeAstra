@@ -862,6 +862,22 @@ class AnalyzeK8sHealthInput(BaseModel):
     )
 
 
+class AssessResilienceInput(BaseModel):
+    """Input schema for assess_resilience tool."""
+
+    namespace: Optional[str] = Field(
+        default=None,
+        description=(
+            "Namespace to assess. Omit to assess every allowed namespace "
+            "(system namespaces such as kube-system are skipped unless include_system)."
+        ),
+    )
+    include_system: bool = Field(
+        default=False,
+        description="Also score kube-system and other cluster add-on namespaces when no namespace is given.",
+    )
+
+
 class GetIngressInput(BaseModel):
     """Input schema for get_ingress tool."""
 

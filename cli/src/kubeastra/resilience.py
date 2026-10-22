@@ -16,6 +16,7 @@ Two modes:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,7 @@ GROUP_ORDER = ("drain", "scaling", "rollout", "spread", "probes", "shutdown", "w
 _SARIF_LEVEL = {"high": "error", "medium": "warning", "low": "note"}
 
 RunKubectl = Callable[[list[str]], Any]
+_K8S_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 
 
 class ResilienceCoreUnavailable(RuntimeError):
@@ -116,15 +118,22 @@ def _kubectl(kubeconfig: Optional[str]) -> RunKubectl:
 
 
 def collect(core, path: Optional[str], *, live: bool, kubeconfig: Optional[str] = None,
-            run_kubectl: Optional[RunKubectl] = None) -> tuple[list, Any, str]:
-    """``(items, facts, source_mode)`` for :func:`core.assess`."""
+            run_kubectl: Optional[RunKubectl] = None, namespace: Optional[str] = None,
+            include_system: bool = False) -> tuple[list, Any, str, list[str]]:
+    """``(items, facts, source_mode, notes)`` for :func:`core.assess`."""
     if live == bool(path):
         raise ResilienceUsageError("give either a PATH of rendered manifests or --live, not both/neither")
+    if not live and (namespace or include_system):
+        raise ResilienceUsageError("--namespace and --include-system apply to --live scans only")
     if live:
+        if namespace and not _K8S_NAME.match(namespace):
+            raise ResilienceUsageError(f"--namespace {namespace!r} is not a valid Kubernetes namespace name")
         run = run_kubectl or _kubectl(kubeconfig)
-        objects = run(["get", core.LIVE_KINDS, "--all-namespaces", "-o", "json"])
-        nodes = run(["get", "nodes", "-o", "json"])
-        return [objects], core.facts_from_nodes(nodes), "live"
+        # Naming a namespace is asking for it, system or not.
+        items, facts, notes = core.collect_live(
+            run, namespaces=[namespace] if namespace else None, include_system=include_system or bool(namespace)
+        )
+        return items, facts, "live", notes
     if not Path(path).exists():
         raise ResilienceUsageError(f"path not found: {path}")
     docs = core.scan_path(path)
@@ -133,7 +142,7 @@ def collect(core, path: Optional[str], *, live: bool, kubeconfig: Optional[str] 
             f"no Kubernetes manifests found under {path} (render a chart first: "
             "`helm template … > out/`)"
         )
-    return docs, None, "static"
+    return docs, None, "static", []
 
 
 # ── --fix ─────────────────────────────────────────────────────────────────────
@@ -202,6 +211,8 @@ def run_assess(
     fail_on: Optional[str] = None,
     config_path: Optional[str] = None,
     fix_dir: Optional[str] = None,
+    namespace: Optional[str] = None,
+    include_system: bool = False,
     core: Any = None,
     run_kubectl: Optional[RunKubectl] = None,
     cwd: Optional[Path] = None,
@@ -217,14 +228,19 @@ def run_assess(
         raise ResilienceUsageError("--fail-under must be between 0 and 100")
     core = core or load_resilience_core()
     config = load_config(config_path, cwd)
-    items, facts, mode = collect(core, path, live=live, kubeconfig=kubeconfig, run_kubectl=run_kubectl)
+    items, facts, mode, scope_notes = collect(
+        core, path, live=live, kubeconfig=kubeconfig, run_kubectl=run_kubectl,
+        namespace=namespace, include_system=include_system,
+    )
     try:
         report = core.assess(items, facts=facts, source_mode=mode, config=config)
     except ValueError as exc:  # a config naming an unknown rule / severity
         raise ResilienceUsageError(f"resilience config: {exc}") from exc
+    report.notes.extend(scope_notes)
     reasons = gate(report, fail_under=fail_under, fail_on=fail_on)
     gated = fail_under is not None or fail_on is not None
-    text = render(output, report, core, reasons=reasons, gated=gated, source=path or "live cluster", cwd=cwd)
+    source = path or (f"namespace {namespace}" if namespace else "live cluster")
+    text = render(output, report, core, reasons=reasons, gated=gated, source=source, cwd=cwd)
     if output == "text":
         counts = fix_summary(report)
         made = counts["patch"] + counts["new_object"]

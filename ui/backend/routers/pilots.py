@@ -167,6 +167,69 @@ def _fetch_gitops_object(body: PilotRunRequest) -> dict:
     )
 
 
+def _resilience_inputs(body: PilotRunRequest):
+    """``(items, facts, source_mode, notes)`` for the resilience core.
+
+    STATIC when ``inputs.manifests_path`` is given (confined like the upgrade
+    scan). Otherwise LIVE, honouring the namespace allowlist the same way every
+    cluster-wide tool does: a named ``inputs.namespace`` must be allowed; with
+    none, one ``--all-namespaces`` read only when ALLOWED_NAMESPACES is ``*``,
+    else one read per allowed namespace. System namespaces are skipped unless
+    named or ``inputs.include_system`` is set. kubectl failures raise.
+    """
+    from services.resilience import collect_live, scan_path
+
+    inputs = body.inputs or {}
+    manifests_path = inputs.get("manifests_path")
+    if manifests_path:
+        return scan_path(_safe_manifests_path(str(manifests_path))), None, "static", []
+
+    from k8s.kubectl_runner import get_runner
+    from k8s.validators import ValidationError, get_allowed_namespaces, validate_namespace
+
+    namespace = inputs.get("namespace")
+    if namespace:
+        try:
+            namespaces = [validate_namespace(str(namespace))]
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        include_system = True
+    else:
+        allowed = get_allowed_namespaces()
+        namespaces = None if "*" in allowed else allowed
+        include_system = bool(inputs.get("include_system", False))
+    runner = get_runner()
+    items, facts, notes = collect_live(
+        lambda args: runner.run_json(args), namespaces=namespaces, include_system=include_system
+    )
+    return items, facts, "live", notes
+
+
+def _drains_for(body: PilotRunRequest) -> dict:
+    """Node-drain blockers for the upgrade run (Resilience core, RES001/RES002).
+    Informational; if the check can't run it says so instead of reporting none."""
+    try:
+        from services.resilience import assess, drain_blockers
+
+        items, facts, mode, _notes = _resilience_inputs(body)
+        report = assess(items, facts=facts, source_mode=mode)
+    except Exception as exc:  # never fail the upgrade plan over this check
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        return {"checked": False, "note": f"node-drain check skipped: {detail}", "findings": []}
+    return {
+        "checked": True,
+        "note": "",
+        "findings": [
+            {
+                "rule": f.rule,
+                "message": f.message,
+                "objects": [f"{r.kind} {r.namespace + '/' if r.namespace else ''}{r.name}" for r in f.objects],
+            }
+            for f in drain_blockers(report)
+        ],
+    }
+
+
 @router.post("/{name}/run", status_code=201)
 def start_run(request: Request, name: str, body: PilotRunRequest) -> dict:
     _require_enabled()
@@ -224,7 +287,7 @@ def start_run(request: Request, name: str, body: PilotRunRequest) -> dict:
             maps = load_maps()
             report = assess(_build_snapshot(body), body.target, maps)
             migration = plan(report, maps)
-            result = {"report": report.to_dict(), "plan": migration.to_dict()}
+            result = {"report": report.to_dict(), "plan": migration.to_dict(), "drains": _drains_for(body)}
             db.update_pilot_run(run_id, status="planned", plan=result)
         except Exception as exc:  # surface a failed run rather than a silent 500
             logger.exception("pilot run %s failed", run_id)
@@ -232,6 +295,27 @@ def start_run(request: Request, name: str, body: PilotRunRequest) -> dict:
             raise HTTPException(status_code=500, detail=f"pilot run failed: {exc}")
         logger.info("pilot run %s planned (%d steps)", run_id, len(migration.steps))
         return {"run_id": run_id, "pilot": name, "status": "planned", **result}
+
+    if name == "resilience":
+        # Deterministic, keyless: collect -> assess (score, findings, fixes).
+        # Field fixes carry a ChangeBody for POST /api/gitops/preview.
+        try:
+            from services.resilience import assess
+
+            items, facts, mode, notes = _resilience_inputs(body)
+            rreport = assess(items, facts=facts, source_mode=mode)
+            rreport.notes.extend(notes)
+            result = {"report": rreport.to_dict()}
+            db.update_pilot_run(run_id, status="assessed", plan=result)
+        except HTTPException as exc:  # bad input (path, namespace): keep its status code
+            db.update_pilot_run(run_id, status="failed", plan={"error": str(exc.detail)})
+            raise
+        except Exception as exc:
+            logger.exception("pilot run %s failed", run_id)
+            db.update_pilot_run(run_id, status="failed", plan={"error": str(exc)})
+            raise HTTPException(status_code=500, detail=f"pilot run failed: {exc}")
+        logger.info("pilot run %s assessed (score %s)", run_id, rreport.score)
+        return {"run_id": run_id, "pilot": name, "status": "assessed", **result}
 
     # A registered + enabled pilot with no run implementation yet (e.g. a backlog
     # pilot). Record it, but never mis-route into another pilot's pipeline.
