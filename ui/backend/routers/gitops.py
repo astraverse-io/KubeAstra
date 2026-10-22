@@ -56,6 +56,7 @@ class ChangeBody(BaseModel):
     field_path: list
     new_value: object
     reason: str = ""
+    api_version: str | None = None
 
 
 class PreviewBody(BaseModel):
@@ -149,7 +150,8 @@ def preview(body: PreviewBody, request: Request):
 
     change = FieldChange(kind=body.change.kind, name=body.change.name,
                          namespace=body.change.namespace, field_path=field_path,
-                         new_value=body.change.new_value, reason=body.change.reason)
+                         new_value=body.change.new_value, reason=body.change.reason,
+                         api_version=body.change.api_version)
 
     changed_files: dict[str, str] = {}
     if not matches:

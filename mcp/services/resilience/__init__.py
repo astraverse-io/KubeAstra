@@ -16,6 +16,8 @@ from pathlib import Path
 from ..manifests import ManifestDoc, iter_manifest_docs
 from .catalogue import apply_config, load_rules
 from .engine import assess
+from .fix import MARKER as FIX_MARKER
+from .fix import render_fixes
 from .live import LIVE_KINDS, facts_from_nodes
 from .model import IGNORE_ANNOTATION
 from .rules import RULES
@@ -29,6 +31,7 @@ def scan_path(path: str | Path) -> list[ManifestDoc]:
 
 __all__ = [
     "ClusterFacts",
+    "FIX_MARKER",
     "Finding",
     "Fix",
     "IGNORE_ANNOTATION",
@@ -42,5 +45,6 @@ __all__ = [
     "assess",
     "facts_from_nodes",
     "load_rules",
+    "render_fixes",
     "scan_path",
 ]

@@ -191,3 +191,47 @@ def test_cli_exit_codes(healthy):
 
 def test_cli_help_lists_resilience():
     assert "resilience" in runner.invoke(app, ["--help"]).output
+
+
+# ── --fix ─────────────────────────────────────────────────────────────────────
+
+def test_fix_writes_patches_new_objects_and_readme(tmp_path):
+    out = tmp_path / "fixes"
+    code, text = run_assess(PAYMENTS, fix_dir=str(out), fail_on="high")
+    assert code == 1  # --fix never changes the gate
+    assert "Fixes written to" in text and "2 patches, 2 new objects, 4 that need you" in text
+    written = sorted(str(p.relative_to(out)) for p in out.rglob("*") if p.is_file())
+    assert written == [
+        ".kubeastra-fixes", "README.md", "kustomization.yaml",
+        "new/poddisruptionbudget-shop-ledger-pdb.yaml", "new/poddisruptionbudget-shop-redis-pdb.yaml",
+        "patches/deployment-shop-payments.yaml", "patches/poddisruptionbudget-shop-payments-pdb.yaml",
+    ]
+
+
+def test_fix_refuses_a_directory_it_did_not_write(tmp_path):
+    (tmp_path / "README.md").write_text("my project\n")
+    with pytest.raises(ResilienceUsageError, match="not empty"):
+        run_assess(PAYMENTS, fix_dir=str(tmp_path))
+    assert (tmp_path / "README.md").read_text() == "my project\n"
+
+
+def test_fix_rerun_refreshes_its_own_files_and_keeps_yours(tmp_path):
+    out = tmp_path / "fixes"
+    run_assess(PAYMENTS, fix_dir=str(out))
+    (out / "patches" / "stale.yaml").write_text("old\n")
+    (out / "notes.txt").write_text("mine\n")
+    run_assess(PAYMENTS, fix_dir=str(out))
+    assert not (out / "patches" / "stale.yaml").exists()
+    assert (out / "notes.txt").read_text() == "mine\n"
+
+
+def test_without_fix_the_report_says_how_many_fixes_exist():
+    _, text = run_assess(PAYMENTS)
+    assert text.endswith("Fixes: 4 can be generated, 4 need you — rerun with --fix DIR to write them")
+
+
+def test_json_output_carries_each_fix():
+    _, text = run_assess(PAYMENTS, output="json")
+    res001 = next(f for f in json.loads(text)["findings"] if f["rule"] == "RES001")
+    assert res001["fix"]["kind"] == "field" and res001["fix"]["new_value"] == 2
+    assert res001["fix"]["gitops"]["field_path"] == ["spec", "minAvailable"]

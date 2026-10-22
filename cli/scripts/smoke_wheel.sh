@@ -120,6 +120,10 @@ if [ "$rc" -ne 1 ] || ! grep -q "RES001" <<<"$out"; then
 fi
 "$KA" resilience res/healthy --fail-on high --fail-under 90 >/dev/null
 "$KA" resilience res/blocked -o sarif > res.sarif
+# --fix from the bundled core: the PDB patch must come out with the unblocking value.
+"$KA" resilience res/blocked --fix res/fixes >/dev/null
+grep -q "minAvailable: 1" res/fixes/patches/poddisruptionbudget-shop-web.yaml \
+  || { echo "smoke: FAIL — --fix did not write the PDB patch" >&2; exit 1; }
 "$PYTHON" -c "import json,sys; r=json.load(open('res.sarif'))['runs'][0]['results']; sys.exit(0 if any(x['ruleId']=='RES001' for x in r) else 'smoke: resilience SARIF has no RES001')"
 
 echo "smoke: OK — installed wheel runs \`kubeastra upgrade\` and \`kubeastra resilience\` outside a checkout"

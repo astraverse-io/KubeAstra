@@ -1,6 +1,6 @@
 """KubeAstra CLI entry point.
 
-Seven commands total in this shim release:
+Backend commands:
   - ``kubeastra --version``          version info
   - ``kubeastra ask "..."``          natural-language investigation, streams
   - ``kubeastra investigate --pod``  scoped investigation shortcut
@@ -9,9 +9,14 @@ Seven commands total in this shim release:
   - ``kubeastra doctor``             health-check the CLI + backend
   - ``kubeastra open``              run the product locally as an app
 
-Every command shares a friendly-error contract: connectivity failures
+Keyless checks (no backend, no API key; cores bundled in the package):
+  - ``kubeastra upgrade plan``       removed APIs at a target version + plan
+  - ``kubeastra resilience``         drain/scale/rollout resilience score + fixes
+
+The backend commands share a friendly-error contract: connectivity failures
 suggest the docker-compose spinup; auth failures suggest the config
-command; backend errors show status + detail.
+command; backend errors show status + detail. The keyless checks exit 0 pass,
+1 gate failed, 2 bad input.
 """
 
 from __future__ import annotations
@@ -445,6 +450,9 @@ def resilience(
     config: Optional[str] = typer.Option(
         None, "--config", help="Repo config (default: .kubeastra/resilience.yaml when present)."
     ),
+    fix: Optional[str] = typer.Option(
+        None, "--fix", help="Write fixes (patches, new objects, a README) to this new or empty directory."
+    ),
 ) -> None:
     """Score how well workloads survive node drains, traffic spikes and rollouts
     (PDBs, HPAs, spread, probes, shutdown). No backend, no API key."""
@@ -453,7 +461,7 @@ def resilience(
     try:
         code, text = run_assess(
             path, live=live, kubeconfig=kubeconfig, output=output,
-            fail_under=fail_under, fail_on=fail_on, config_path=config,
+            fail_under=fail_under, fail_on=fail_on, config_path=config, fix_dir=fix,
         )
     except (ResilienceCoreUnavailable, ResilienceUsageError) as exc:
         err_console.print(f"[red]{exc}[/red]")

@@ -37,14 +37,24 @@ class ClusterFacts:
 
 @dataclass
 class Fix:
-    """How to fix a finding. Filled in by the fix stage (Phase 2); rules leave it ``None``."""
+    """How to fix a finding (built by ``fix.py``).
+
+    - ``field``: change one existing value. ``yaml`` is a strategic-merge patch;
+      ``gitops`` is the change for ``POST /api/gitops/preview`` when a PR can make it.
+    - ``new_object``: ``yaml`` is a whole new object (e.g. a PodDisruptionBudget).
+    - ``block``: add a block that isn't there yet. ``yaml`` is a strategic-merge patch.
+    - ``advisory``: needs a human — a value only you know, or a change that isn't
+      safe to make blind. ``yaml`` may hold a suggested starting point; it is
+      never applied by ``--fix``.
+    """
 
     kind: FixKind
-    target: dict[str, Any] = field(default_factory=dict)
+    target: dict[str, Any] = field(default_factory=dict)  # kind, name, namespace, apiVersion, file, line
     field_path: tuple = ()
     new_value: Any = None
     yaml: str = ""
     note: str = ""
+    gitops: Optional[dict[str, Any]] = None
 
 
 @dataclass

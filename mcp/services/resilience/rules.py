@@ -38,6 +38,7 @@ class Hit:
     message: str
     objs: list[Obj]
     advisory: bool = False
+    data: dict = field(default_factory=dict)  # what the rule measured — the fix builders (fix.py) read it
 
 
 def _int_or_pct(v: Any) -> Optional[tuple[str, float]]:
@@ -77,18 +78,21 @@ def res001_pdb_blocks_eviction(ctx: Ctx) -> list[Hit]:
             continue
         spec = pdb.spec
         why = None
+        key = None
+        v = None
         if "minAvailable" in spec:
-            v = _int_or_pct(spec.get("minAvailable"))
+            key, v = "minAvailable", _int_or_pct(spec.get("minAvailable"))
             if v is not None:
                 need = v[1] if v[0] == "int" else math.ceil(total * v[1] / 100)
                 if need >= total:
                     why = f"minAvailable={spec['minAvailable']} but {_who(targets)}"
         elif "maxUnavailable" in spec:
-            v = _int_or_pct(spec.get("maxUnavailable"))
+            key, v = "maxUnavailable", _int_or_pct(spec.get("maxUnavailable"))
             if v is not None and v[1] <= 0:
                 why = f"maxUnavailable={spec['maxUnavailable']}"
         if why:
-            hits.append(Hit("RES001", f"{why} — no pod can ever be evicted, so `kubectl drain` stalls on this node", [t.obj for t in targets] + [pdb]))
+            hits.append(Hit("RES001", f"{why} — no pod can ever be evicted, so `kubectl drain` stalls on this node",
+                            [t.obj for t in targets] + [pdb], data={"total": total, "field": key, "form": v[0]}))
     return hits
 
 
@@ -153,6 +157,7 @@ def res003_hpa_without_requests(ctx: Ctx) -> list[Hit]:
                     "HPA targets resource utilization but " + "; ".join(dict.fromkeys(missing))
                     + " — the HPA can't compute utilization and never scales",
                     [w.obj, hpa],
+                    data={"missing": list(dict.fromkeys(missing))},
                 )
             )
     return hits
@@ -192,6 +197,7 @@ def res005_no_spread(ctx: Ctx) -> list[Hit]:
                 f"{n} replicas with no podAntiAffinity or topologySpreadConstraints — only the scheduler's "
                 f"soft default spreading keeps them off a single node; nothing requires spreading across {where}",
                 [w.obj],
+                data={"zones": len(ctx.facts.zones or [])},
             )
         )
     return hits
@@ -293,6 +299,7 @@ def res009_grace_shorter_than_prestop(ctx: Ctx) -> list[Hit]:
                         f"terminationGracePeriodSeconds={grace} but '{c.get('name', '?')}' sleeps {sleep}s in preStop "
                         "— the pod is SIGKILLed before the app ever gets SIGTERM",
                         [w.obj],
+                        data={"container": c.get("name", "?"), "sleep": sleep, "grace": grace},
                     )
                 )
     return hits
@@ -357,7 +364,8 @@ def res012_rollout_takes_all(ctx: Ctx) -> list[Hit]:
             continue
         down = v[1] if v[0] == "int" else math.floor(n * v[1] / 100)
         if down >= n:
-            hits.append(Hit("RES012", f"maxUnavailable={raw} with {_who([w])} — a rollout can stop every pod at once", [w.obj]))
+            hits.append(Hit("RES012", f"maxUnavailable={raw} with {_who([w])} — a rollout can stop every pod at once", [w.obj],
+                            data={"replicas": n, "form": v[0]}))
     return hits
 
 

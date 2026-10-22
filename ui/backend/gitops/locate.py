@@ -24,6 +24,10 @@ class FieldChange:
     field_path: tuple  # str keys; a str element indexes a named list item
     new_value: str | int
     reason: str
+    # The object's apiVersion, for the Kustomize-patch fallback. Optional so
+    # existing callers keep working; without it the patch assumes apps/v1,
+    # which only matches Deployments/StatefulSets/DaemonSets.
+    api_version: str | None = None
 
 
 @dataclass(frozen=True)

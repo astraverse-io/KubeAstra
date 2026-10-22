@@ -37,6 +37,16 @@ class Obj:
         a = (self.doc.get("metadata") or {}).get("annotations")
         return a if isinstance(a, dict) else {}
 
+    @property
+    def labels(self) -> dict:
+        lab = (self.doc.get("metadata") or {}).get("labels")
+        return lab if isinstance(lab, dict) else {}
+
+    @property
+    def helm_owned(self) -> bool:
+        """Rendered by Helm — the same test the Upgrade Pilot's scan uses."""
+        return self.labels.get("app.kubernetes.io/managed-by") == "Helm" or "helm.sh/chart" in self.labels
+
     def ignores(self, rule: str) -> bool:
         raw = str(self.annotations.get(IGNORE_ANNOTATION, ""))
         ids = {p.strip().upper() for p in raw.split(",") if p.strip()}

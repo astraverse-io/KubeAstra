@@ -140,6 +140,41 @@ kubeastra doctor
 ### `kubeastra --version`
 Print the CLI version.
 
+### Keyless checks — no backend, no API key
+
+These two run entirely on your machine (or in CI) against rendered manifests,
+or against a live cluster with `--live` / without `--manifests`. They need no
+KubeAstra backend and no LLM key. The same checks ship as GitHub Actions — see
+[`action/`](../action/README.md) and [`action/resilience/`](../action/resilience/README.md).
+
+#### `kubeastra upgrade plan`
+Find APIs that are removed at a target Kubernetes version and print the ordered
+migration plan.
+
+```bash
+kubeastra upgrade plan --target 1.31 --manifests ./rendered       # exit 1 if a removed API is in use
+kubeastra upgrade plan --target 1.31 --manifests ./rendered -o sarif > upgrade.sarif
+```
+
+#### `kubeastra resilience`
+Score how well workloads survive a node drain, a traffic spike or a rollout —
+PodDisruptionBudgets that block every eviction, HPAs that can't scale, replicas
+with nothing spreading them, missing readiness probes and preStop hooks — and
+write the fixes.
+
+```bash
+kubeastra resilience ./rendered                    # report: score, findings by area, per-workload scores
+kubeastra resilience ./rendered --fail-on high     # CI gate: exit 1 on any high-severity finding
+kubeastra resilience ./rendered --fail-under 70 -o sarif > resilience.sarif
+kubeastra resilience ./rendered --fix fixes/       # patches + new PDBs + a README of what needs you
+kubeastra resilience --live                        # read the objects from your current kubectl context
+```
+
+Opt an object out with the annotation `resilience.kubeastra.io/ignore: "RES005"`
+(or `"*"`); tune the whole repo with `.kubeastra/resilience.yaml`
+(`disable: [RES011]`, `severity: {RES004: medium}`). The rules are listed in
+[`action/resilience/README.md`](../action/resilience/README.md#rules).
+
 ## Exit codes
 
 | Code | Meaning |
@@ -151,10 +186,14 @@ Print the CLI version.
 | `4` | Backend returned a non-2xx status |
 | `5` | Backend answered but the investigation itself errored |
 
+The keyless checks use their own, CI-shaped codes: `0` pass, `1` the gate
+failed (`--fail-on-blocking`, `--fail-on`, `--fail-under`), `2` bad input
+(a missing path, no manifests found, a bad config, `kubectl` failing in live mode).
+
 ## Design notes
 
-- **The CLI is a client, not an engine.** The ReAct loop, tool dispatch, and RAG live in the backend. This is by design — one implementation of the agent, three surfaces (web UI, MCP server, this CLI).
-- **No offline mode.** Air-gapped deployments should run the backend Helm chart on-cluster and point the CLI at the internal service.
+- **The CLI is a client, not an engine.** The ReAct loop, tool dispatch, and RAG live in the backend. This is by design — one implementation of the agent, three surfaces (web UI, MCP server, this CLI). The exception is the keyless checks (`upgrade plan`, `resilience`): their deterministic cores ship inside the CLI package, so they run with no backend at all.
+- **No offline mode for investigations.** Air-gapped deployments should run the backend Helm chart on-cluster and point the CLI at the internal service. The keyless checks work offline.
 - **No secrets in the config file** beyond what you put there. The `api_token` field is intentionally the only persisted credential.
 - **No telemetry.** The CLI does not phone home. Only the backend URL you configure is contacted.
 
