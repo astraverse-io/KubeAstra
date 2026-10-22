@@ -258,7 +258,7 @@ def _res008(hit: Hit, ctx: Ctx) -> Optional[Fix]:
     grace = w.pod_spec.get("terminationGracePeriodSeconds", 30)
     if isinstance(grace, int) and grace <= 5:
         return _advisory(w.obj, f"terminationGracePeriodSeconds is {grace}; raise it above the preStop sleep before adding one.")
-    serving = [c for c in w.containers if c.get("ports")] or w.containers
+    serving = [c for c in w.containers if c.get("ports")] or w.containers  # containers, not Services
     body = {"spec": {"template": {"spec": {"containers": [
         {"name": c.get("name"), "lifecycle": {"preStop": {"exec": {"command": ["sleep", "5"]}}}} for c in serving
     ]}}}}

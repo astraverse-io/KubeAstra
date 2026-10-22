@@ -1,0 +1,34 @@
+id: hpa-without-cpu-request
+# The HPA targets CPU utilization; the container requests only memory, so
+# utilization is undefined and the HPA never scales. The value is yours to set.
+manifests: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata: {name: checkout, namespace: shop}
+  spec:
+    replicas: 2
+    selector: {matchLabels: {app: checkout}}
+    template:
+      metadata: {labels: {app: checkout}}
+      spec:
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm: {topologyKey: kubernetes.io/hostname, labelSelector: {matchLabels: {app: checkout}}}
+        containers:
+          - name: app
+            image: ghcr.io/acme/checkout:5.0.3
+            resources: {requests: {memory: 256Mi}, limits: {memory: 512Mi}}
+  ---
+  apiVersion: autoscaling/v2
+  kind: HorizontalPodAutoscaler
+  metadata: {name: checkout, namespace: shop}
+  spec:
+    scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: checkout}
+    minReplicas: 2
+    maxReplicas: 10
+    metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}}]
+expect:
+  rules: [RES003, RES010]
+  fixes: {RES003: advisory, RES010: advisory}

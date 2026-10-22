@@ -1,0 +1,45 @@
+id: pdb-blocks-drain-at-hpa-floor
+# replicas: 5 looks safe next to minAvailable: 2 — but the HPA can scale to 2
+# at night, and then the PDB allows no eviction: the drain (and the upgrade) stalls.
+manifests: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata: {name: api, namespace: prod}
+  spec:
+    replicas: 5
+    selector: {matchLabels: {app: api}}
+    template:
+      metadata: {labels: {app: api}}
+      spec:
+        topologySpreadConstraints:
+          - {maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: api}}}
+        containers:
+          - name: api
+            image: ghcr.io/acme/api:7.3.1
+            ports: [{containerPort: 8080}]
+            readinessProbe: {httpGet: {path: /ready, port: 8080}}
+            lifecycle: {preStop: {exec: {command: [sleep, "5"]}}}
+            resources: {requests: {cpu: 500m, memory: 512Mi}, limits: {memory: 1Gi}}
+  ---
+  apiVersion: v1
+  kind: Service
+  metadata: {name: api, namespace: prod}
+  spec: {selector: {app: api}, ports: [{port: 80, targetPort: 8080}]}
+  ---
+  apiVersion: policy/v1
+  kind: PodDisruptionBudget
+  metadata: {name: api, namespace: prod}
+  spec: {minAvailable: 2, selector: {matchLabels: {app: api}}}
+  ---
+  apiVersion: autoscaling/v2
+  kind: HorizontalPodAutoscaler
+  metadata: {name: api, namespace: prod}
+  spec:
+    scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: api}
+    minReplicas: 2
+    maxReplicas: 20
+    metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: 60}}}]
+expect:
+  rules: [RES001]
+  fixes: {RES001: field}
+  score: 75

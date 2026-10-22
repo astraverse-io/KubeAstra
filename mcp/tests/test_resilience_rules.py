@@ -235,3 +235,20 @@ def test_facts_from_nodes_counts_schedulable_nodes_and_zones():
     assert f.nodes == 3 and f.zones == ["a", "b"]
     assert facts_from_nodes({"items": [node(), node()]}).zones is None  # kind / bare metal: no zone labels
     assert facts_from_nodes({}).nodes is None  # kubectl output we can't read: unknown, not zero
+
+
+def test_metrics_only_services_do_not_make_a_workload_serving():
+    """Found by the corpus sweep: a Service whose ports are all metrics ports is
+    a Prometheus scrape target, not user traffic. RES002/RES006/RES008 must not
+    fire because of it — but a Service with any real port still counts."""
+    single = deploy(replicas=1, pod_extra={"topologySpreadConstraints": []},
+                    container=with_container(readinessProbe=None, lifecycle=None))
+    metrics = svc(ports=[{"name": "http-metrics", "port": 9402}])
+    serving_rules = {"RES002", "RES006", "RES008"}
+    assert not serving_rules & _rules([single, metrics])
+    for name in ("metrics", "metrics-port", "http-monitoring", "tcp-prometheus"):
+        assert not serving_rules & _rules([single, svc(ports=[{"name": name, "port": 9000}])]), name
+    mixed = svc(ports=[{"name": "https", "port": 443}, {"name": "metrics", "port": 9402}])
+    assert serving_rules <= _rules([single, mixed])
+    keda_style = svc(ports=[{"name": "metricsservice", "port": 9666}])  # real gRPC traffic
+    assert serving_rules <= _rules([single, keda_style])

@@ -1,0 +1,23 @@
+# release	chart	repo (https index or oci://)
+# Popular public charts, from each project's own repo. Rendered with DEFAULT
+# values only — what someone gets from `helm install <chart>` with no -f.
+podinfo	podinfo	https://stefanprodan.github.io/podinfo
+ingress-nginx	ingress-nginx	https://kubernetes.github.io/ingress-nginx
+cert-manager	cert-manager	https://charts.jetstack.io
+kube-prometheus-stack	kube-prometheus-stack	https://prometheus-community.github.io/helm-charts
+prometheus	prometheus	https://prometheus-community.github.io/helm-charts
+grafana	grafana	https://grafana.github.io/helm-charts
+loki	loki	https://grafana.github.io/helm-charts
+argo-cd	argo-cd	https://argoproj.github.io/argo-helm
+external-dns	external-dns	https://kubernetes-sigs.github.io/external-dns/
+metrics-server	metrics-server	https://kubernetes-sigs.github.io/metrics-server/
+cluster-autoscaler	cluster-autoscaler	https://kubernetes.github.io/autoscaler
+traefik	traefik	https://traefik.github.io/charts
+vault	vault	https://helm.releases.hashicorp.com
+kyverno	kyverno	https://kyverno.github.io/kyverno/
+jenkins	jenkins	https://charts.jenkins.io
+sealed-secrets	sealed-secrets	https://bitnami-labs.github.io/sealed-secrets
+external-secrets	external-secrets	https://charts.external-secrets.io
+keda	keda	https://kedacore.github.io/charts
+velero	velero	https://vmware-tanzu.github.io/helm-charts
+istiod	istiod	https://istio-release.storage.googleapis.com/charts

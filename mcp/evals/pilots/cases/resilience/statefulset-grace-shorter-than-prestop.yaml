@@ -1,0 +1,38 @@
+id: statefulset-grace-shorter-than-prestop
+# preStop sleeps 20s but the grace period is 15s: the kubelet SIGKILLs the pod
+# before the database ever gets SIGTERM — every rollout is an unclean shutdown.
+manifests: |
+  apiVersion: apps/v1
+  kind: StatefulSet
+  metadata: {name: db, namespace: data}
+  spec:
+    replicas: 3
+    serviceName: db
+    selector: {matchLabels: {app: db}}
+    template:
+      metadata: {labels: {app: db}}
+      spec:
+        terminationGracePeriodSeconds: 15
+        topologySpreadConstraints:
+          - {maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: DoNotSchedule, labelSelector: {matchLabels: {app: db}}}
+        containers:
+          - name: db
+            image: postgres:16.4
+            ports: [{containerPort: 5432}]
+            readinessProbe: {exec: {command: [pg_isready]}}
+            lifecycle: {preStop: {exec: {command: [/bin/sh, -c, "sleep 20"]}}}
+            resources: {requests: {cpu: "1", memory: 2Gi}, limits: {memory: 2Gi}}
+  ---
+  apiVersion: v1
+  kind: Service
+  metadata: {name: db, namespace: data}
+  spec: {clusterIP: None, selector: {app: db}, ports: [{name: postgres, port: 5432}]}
+  ---
+  apiVersion: policy/v1
+  kind: PodDisruptionBudget
+  metadata: {name: db, namespace: data}
+  spec: {maxUnavailable: 1, selector: {matchLabels: {app: db}}}
+expect:
+  rules: [RES009]
+  fixes: {RES009: field}
+  score: 90

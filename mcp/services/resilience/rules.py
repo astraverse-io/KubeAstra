@@ -99,7 +99,7 @@ def res001_pdb_blocks_eviction(ctx: Ctx) -> list[Hit]:
 def res002_single_replica_no_pdb(ctx: Ctx) -> list[Hit]:
     hits = []
     for w in ctx.inv.workloads:
-        if w.replicated and w.expected_replicas == 1 and not w.pdbs and w.services:
+        if w.replicated and w.expected_replicas == 1 and not w.pdbs and w.serving_services:
             hits.append(
                 Hit("RES002", "1 replica behind a Service and no PodDisruptionBudget — every node drain or eviction is downtime", [w.obj])
             )
@@ -213,7 +213,7 @@ def _serving_containers(w: Workload) -> list[dict]:
 def res006_no_readiness_probe(ctx: Ctx) -> list[Hit]:
     hits = []
     for w in ctx.inv.workloads:
-        if not w.services:
+        if not w.serving_services:
             continue
         names = [c.get("name", "?") for c in _serving_containers(w) if not c.get("readinessProbe")]
         if names:
@@ -270,7 +270,7 @@ def _prestop_sleep(c: dict) -> Optional[int]:
 def res008_no_prestop(ctx: Ctx) -> list[Hit]:
     hits = []
     for w in ctx.inv.workloads:
-        if not w.services:
+        if not w.serving_services:
             continue
         if not any(((c.get("lifecycle") or {}).get("preStop")) for c in w.containers):
             hits.append(

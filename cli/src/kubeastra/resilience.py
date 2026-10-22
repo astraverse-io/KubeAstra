@@ -72,7 +72,7 @@ def load_resilience_core():
                 break
     raise ResilienceCoreUnavailable(
         "the KubeAstra resilience core (mcp/services/resilience) was not found — reinstall "
-        "with `pip install --upgrade kubeastra`, or run from a repo checkout."
+        "with `pip install --upgrade kubeastra` (0.3.0+ bundles it), or run from a repo checkout."
     )
 
 
