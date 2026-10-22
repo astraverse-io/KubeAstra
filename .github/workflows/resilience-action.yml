@@ -1,0 +1,113 @@
+name: Resilience Pilot Action
+
+# Runs the real composite action in action/resilience/ end to end, the way
+# upgrade-action.yml does for the Upgrade Pilot: the CLI tests import the core
+# directly, so a broken action.yml (paths, step order, an input that never
+# reaches the CLI, outputs that never get set) would otherwise only fail in a
+# user's pipeline.
+
+on:
+  pull_request:
+    paths:
+      - "action/**"
+      - "cli/**"
+      - "mcp/services/resilience/**"
+      - "mcp/services/manifests.py"
+      - "mcp/data/resilience/**"
+      - "mcp/tests/fixtures/resilience/**"
+      - ".github/workflows/resilience-action.yml"
+  push:
+    branches: [main, feat/resilience-pilot]
+    paths:
+      - "action/**"
+      - "cli/**"
+      - "mcp/services/resilience/**"
+      - "mcp/services/manifests.py"
+      - "mcp/data/resilience/**"
+      - "mcp/tests/fixtures/resilience/**"
+      - ".github/workflows/resilience-action.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write a healthy fixture
+        run: |
+          mkdir -p "$RUNNER_TEMP/healthy"
+          cat > "$RUNNER_TEMP/healthy/app.yaml" <<'YAML'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata: {name: web, namespace: shop}
+          spec:
+            replicas: 1
+            selector: {matchLabels: {app: web}}
+            template:
+              metadata: {labels: {app: web}}
+              spec:
+                containers:
+                  - name: app
+                    image: "nginx:1.27.2"
+                    resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {memory: 128Mi}}
+          YAML
+
+      # The golden fixture app has a drain-blocking PDB (RES001, high) and an
+      # HPA that can never scale (RES003, high). Gate + every report together:
+      # the gate must fail AND outputs, SARIF and badge must still be written.
+      - name: High-severity findings fail the check
+        id: blocked
+        continue-on-error: true
+        uses: ./action/resilience
+        with:
+          manifests: mcp/tests/fixtures/resilience/payments
+          fail-on: high
+          sarif-file: ${{ runner.temp }}/resilience.sarif
+          badge-file: ${{ runner.temp }}/badge.json
+
+      - name: Assert gate, outputs, SARIF and badge
+        env:
+          OUTCOME: ${{ steps.blocked.outcome }}
+          SCORE: ${{ steps.blocked.outputs.score }}
+          GRADE: ${{ steps.blocked.outputs.grade }}
+          SARIF: ${{ runner.temp }}/resilience.sarif
+          BADGE: ${{ runner.temp }}/badge.json
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::error::the action passed with high-severity findings (outcome: $OUTCOME)"; exit 1
+          fi
+          if [ "$SCORE" != "77" ] || [ "$GRADE" != "C" ]; then
+            echo "::error::expected score 77 / grade C for the golden fixture, got '$SCORE' / '$GRADE'"; exit 1
+          fi
+          python3 - "$SARIF" "$BADGE" <<'PY'
+          import json, sys
+          results = json.load(open(sys.argv[1]))["runs"][0]["results"]
+          res001 = [r for r in results if r["ruleId"] == "RES001"]
+          assert res001, "SARIF has no RES001"
+          loc = res001[0]["locations"][0]["physicalLocation"]
+          assert loc["artifactLocation"]["uri"] == "mcp/tests/fixtures/resilience/payments/payments.yaml", loc
+          assert loc["region"]["startLine"] == 3, loc
+          badge = json.load(open(sys.argv[2]))
+          assert badge == {"schemaVersion": 1, "label": "resilience", "message": "C (77)", "color": "yellow"}, badge
+          print(f"SARIF ok ({len(results)} results), badge ok")
+          PY
+
+      - name: A healthy app passes both gates
+        id: healthy
+        uses: ./action/resilience
+        with:
+          manifests: ${{ runner.temp }}/healthy
+          fail-on: medium
+          fail-under: "90"
+
+      - name: Assert healthy outputs
+        env:
+          SCORE: ${{ steps.healthy.outputs.score }}
+          GRADE: ${{ steps.healthy.outputs.grade }}
+        run: |
+          [ "$SCORE" = "100" ] && [ "$GRADE" = "A" ] || { echo "::error::expected 100/A, got '$SCORE'/'$GRADE'"; exit 1; }

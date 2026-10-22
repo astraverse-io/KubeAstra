@@ -222,3 +222,16 @@ def test_jobs_get_hygiene_findings_only():
            "spec": {"schedule": "0 3 * * *", "jobTemplate": {"spec": {"template": {"metadata": {"labels": {"app": "nightly"}},
                     "spec": {"containers": [{"name": "run", "image": "busybox"}]}}}}}}
     assert _rules([job]) == {"RES010", "RES011"}
+
+
+def test_facts_from_nodes_counts_schedulable_nodes_and_zones():
+    from services.resilience import facts_from_nodes
+
+    def node(zone=None, cordoned=False):
+        labels = {"topology.kubernetes.io/zone": zone} if zone else {}
+        return {"metadata": {"labels": labels}, "spec": {"unschedulable": True} if cordoned else {}}
+
+    f = facts_from_nodes({"items": [node("a"), node("b"), node("b"), node("c", cordoned=True)]})
+    assert f.nodes == 3 and f.zones == ["a", "b"]
+    assert facts_from_nodes({"items": [node(), node()]}).zones is None  # kind / bare metal: no zone labels
+    assert facts_from_nodes({}).nodes is None  # kubectl output we can't read: unknown, not zero

@@ -27,13 +27,16 @@ need = [
     "kubeastra/_vendor/services/upgrade/__init__.py",
     "kubeastra/_vendor/services/upgrade/maps.py",
     "kubeastra/_vendor/services/manifests.py",
+    "kubeastra/_vendor/services/resilience/__init__.py",
+    "kubeastra/_vendor/services/resilience/rules.py",
+    "kubeastra/_vendor/data/resilience/rules.yaml",
     "kubeastra/_vendor/data/upgrades/api_deprecations.yaml",
 ]
 missing = [n for n in need if n not in names]
 if missing:
-    sys.exit("smoke: wheel is missing the bundled upgrade core:\n  " + "\n  ".join(missing)
+    sys.exit("smoke: wheel is missing a bundled Pilot core:\n  " + "\n  ".join(missing)
              + "\n(did the build skip cli/scripts/vendor_core.py?)")
-print(f"smoke: wheel bundles the upgrade core ({len(names)} files)")
+print(f"smoke: wheel bundles the upgrade + resilience cores ({len(names)} files)")
 PY
 
 WORK="$(mktemp -d)"
@@ -66,4 +69,57 @@ fi
 "$KA" upgrade plan --target 1.30 --manifests blocking -o sarif --no-fail-on-blocking > report.sarif
 "$PYTHON" -c "import json,sys; r=json.load(open('report.sarif'))['runs'][0]['results']; sys.exit(0 if r else 'smoke: SARIF has no results')"
 
-echo "smoke: OK — installed wheel runs \`kubeastra upgrade\` outside a checkout"
+# ── kubeastra resilience ─────────────────────────────────────────────────────
+# The core must load from the bundled copy, not from anything on a path.
+origin="$("$WORK/venv/bin/python" -c 'from kubeastra.resilience import load_resilience_core as l; print(l().__name__)')"
+if [ "$origin" != "kubeastra._vendor.services.resilience" ]; then
+  echo "smoke: FAIL — resilience core loaded from $origin, not the bundled copy" >&2; exit 1
+fi
+
+mkdir -p res/blocked res/healthy
+# A PDB that needs both replicas up: no pod can ever be evicted (RES001, high).
+cat > res/blocked/app.yaml <<'YAML'
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      containers: [{name: app, image: "nginx:1.27.2"}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: web, namespace: shop}
+spec: {minAvailable: 2, selector: {matchLabels: {app: web}}}
+YAML
+cat > res/healthy/app.yaml <<'YAML'
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      containers:
+        - name: app
+          image: "nginx:1.27.2"
+          resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {memory: 128Mi}}
+YAML
+
+set +e
+out="$("$KA" resilience res/blocked --fail-on high 2>&1)"; rc=$?
+set -e
+echo "$out" | head -n 4
+if [ "$rc" -ne 1 ] || ! grep -q "RES001" <<<"$out"; then
+  echo "smoke: FAIL — a drain-blocking PDB should exit 1 and be named RES001 (exit $rc)" >&2; exit 1
+fi
+"$KA" resilience res/healthy --fail-on high --fail-under 90 >/dev/null
+"$KA" resilience res/blocked -o sarif > res.sarif
+"$PYTHON" -c "import json,sys; r=json.load(open('res.sarif'))['runs'][0]['results']; sys.exit(0 if any(x['ruleId']=='RES001' for x in r) else 'smoke: resilience SARIF has no RES001')"
+
+echo "smoke: OK — installed wheel runs \`kubeastra upgrade\` and \`kubeastra resilience\` outside a checkout"

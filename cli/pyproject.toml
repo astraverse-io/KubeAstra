@@ -57,13 +57,13 @@ kubeastra = "kubeastra.cli:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# The upgrade planner core + its deprecation maps are copied into
+# The pure Pilot cores (upgrade, resilience) + their data are copied into
 # kubeastra/_vendor by cli/scripts/vendor_core.py before every build (they live
 # in mcp/, outside this project). The .py files are found as packages; the YAML
-# maps need declaring. MANIFEST.in carries both into the sdist, which is what
+# data files need declaring. MANIFEST.in carries both into the sdist, which is what
 # `python -m build` turns into the wheel.
 [tool.setuptools.package-data]
-kubeastra = ["_vendor/data/upgrades/*.yaml"]
+kubeastra = ["_vendor/data/upgrades/*.yaml", "_vendor/data/resilience/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
