@@ -117,5 +117,13 @@ across workloads.
 ```bash
 pip install kubeastra            # 0.3.0 or newer
 kubeastra resilience ./rendered --fail-on high
+kubeastra resilience ./rendered --fix fixes/   # write patches, new PDBs and a README of what needs you
 kubeastra resilience --live      # read the objects from your current kubectl context instead
 ```
+
+`--fix` writes one strategic-merge patch per object (use it from a Kustomize
+overlay, or `kubectl patch`), any new objects (PodDisruptionBudgets), and a
+README listing what it couldn't decide for you — CPU requests, probe paths,
+image tags, raising a singleton's replicas. It only ever writes a new or empty
+directory, or one it wrote before. Objects rendered by Helm get the change as
+advice for the chart's values, never a patch of the rendered output.

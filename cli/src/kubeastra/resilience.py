@@ -16,6 +16,7 @@ Two modes:
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -135,6 +136,47 @@ def collect(core, path: Optional[str], *, live: bool, kubeconfig: Optional[str] 
     return docs, None, "static"
 
 
+# ── --fix ─────────────────────────────────────────────────────────────────────
+
+_GENERATED = ("patches", "new", "kustomization.yaml", "README.md")
+
+
+def write_fixes(files: dict[str, str], fix_dir: str, marker: str) -> Path:
+    """Write :func:`render_fixes` output under ``fix_dir``.
+
+    Refuses a non-empty directory it didn't create (``--fix .`` must never
+    overwrite a repo's README). A directory from an earlier ``--fix`` run is
+    refreshed: only the files this command generates are replaced."""
+    d = Path(fix_dir)
+    if d.exists() and not d.is_dir():
+        raise ResilienceUsageError(f"--fix {fix_dir}: not a directory")
+    if d.exists() and any(d.iterdir()):
+        if not (d / marker).is_file():
+            raise ResilienceUsageError(
+                f"--fix {fix_dir}: directory is not empty and wasn't written by --fix; use a new or empty directory"
+            )
+        for name in _GENERATED:
+            p = d / name
+            if p.is_dir():
+                shutil.rmtree(p)
+            elif p.exists():
+                p.unlink()
+    for rel, content in files.items():
+        out = d / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(content)
+    return d
+
+
+def fix_summary(report) -> dict[str, int]:
+    counts = {"patch": 0, "new_object": 0, "advisory": 0}
+    for f in report.findings:
+        if f.fix is None or f.suppressed:
+            continue
+        counts["patch" if f.fix.kind in ("field", "block") else f.fix.kind] += 1
+    return counts
+
+
 # ── the command ───────────────────────────────────────────────────────────────
 
 def gate(report, *, fail_under: Optional[int], fail_on: Optional[str]) -> list[str]:
@@ -159,12 +201,14 @@ def run_assess(
     fail_under: Optional[int] = None,
     fail_on: Optional[str] = None,
     config_path: Optional[str] = None,
+    fix_dir: Optional[str] = None,
     core: Any = None,
     run_kubectl: Optional[RunKubectl] = None,
     cwd: Optional[Path] = None,
 ) -> tuple[int, str]:
     """Assess and render. Returns ``(exit_code, text)``: 1 when a gate is set
-    and fails, else 0. Raises :class:`ResilienceUsageError` for bad input."""
+    and fails, else 0. Raises :class:`ResilienceUsageError` for bad input.
+    ``fix_dir`` also writes the fixes there; it never changes the exit code."""
     if output not in OUTPUTS:
         raise ResilienceUsageError(f"--output must be one of {', '.join(OUTPUTS)}")
     if fail_on is not None and fail_on not in SEVERITIES:
@@ -181,6 +225,19 @@ def run_assess(
     reasons = gate(report, fail_under=fail_under, fail_on=fail_on)
     gated = fail_under is not None or fail_on is not None
     text = render(output, report, core, reasons=reasons, gated=gated, source=path or "live cluster", cwd=cwd)
+    if output == "text":
+        counts = fix_summary(report)
+        made = counts["patch"] + counts["new_object"]
+        if fix_dir:
+            write_fixes(core.render_fixes(report), fix_dir, core.FIX_MARKER)
+            text += (f"\n\nFixes written to {fix_dir}: {counts['patch']} patch{'' if counts['patch'] == 1 else 'es'}, "
+                     f"{_n(counts['new_object'], 'new object')}, {counts['advisory']} that need you "
+                     f"(see {Path(fix_dir) / 'README.md'})")
+        elif made or counts["advisory"]:
+            text += (f"\n\nFixes: {made} can be generated, {counts['advisory']} need you — "
+                     "rerun with --fix DIR to write them")
+    elif fix_dir:
+        write_fixes(core.render_fixes(report), fix_dir, core.FIX_MARKER)
     return (1 if reasons else 0), text
 
 

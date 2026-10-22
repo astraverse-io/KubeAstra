@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Optional
 
 from .catalogue import apply_config, load_rules
+from .fix import build_fix
 from .model import build_inventory, objects_from_docs
 from .rules import RULES, Ctx
 from .score import score_workloads
@@ -47,6 +48,7 @@ def assess(
                     objects=[o.ref for o in hit.objs],
                     advisory=hit.advisory,
                     suppressed=any(o.ignores(rid) for o in hit.objs),
+                    fix=build_fix(hit, ctx),
                 )
             )
 

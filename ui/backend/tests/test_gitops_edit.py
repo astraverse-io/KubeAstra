@@ -71,3 +71,19 @@ def test_kustomize_patch_targets_and_references():
                (entry if isinstance(entry, str) else entry.get("path", "")
                 for entry in kust.get("patches", []))) \
         or "patchesStrategicMerge" in kust
+
+
+def test_kustomize_patch_uses_the_objects_api_version():
+    """A PDB/HPA patch with apiVersion apps/v1 matches nothing in Kustomize.
+    Callers that know the apiVersion pass it; old callers still get apps/v1."""
+    pdb = FieldChange(kind="PodDisruptionBudget", name="web", namespace="shop",
+                      field_path=("spec", "minAvailable"), new_value=1, reason="drain",
+                      api_version="policy/v1")
+    files = make_kustomize_patch(pdb, "overlays/prod")
+    patch = yaml.safe_load(next(v for k, v in files.items() if not k.endswith("kustomization.yaml")))
+    assert patch["apiVersion"] == "policy/v1" and patch["spec"]["minAvailable"] == 1
+    legacy = FieldChange(kind="Deployment", name="api", namespace=None,
+                         field_path=("spec", "replicas"), new_value=2, reason="r")
+    files = make_kustomize_patch(legacy, "overlays/prod")
+    patch = yaml.safe_load(next(v for k, v in files.items() if not k.endswith("kustomization.yaml")))
+    assert patch["apiVersion"] == "apps/v1"
