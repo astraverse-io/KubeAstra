@@ -1,7 +1,7 @@
 name: Pilots
 
-# Runs the KubeAstra Pilots test suites (Upgrade + GitOps Reconciliation) on the
-# long-lived integration branch and on PRs that touch the backend/CLI. The repo's
+# Runs the KubeAstra Pilots test suites (Upgrade, GitOps Reconciliation and
+# Resilience) on the long-lived integration branches and on PRs that touch the backend/CLI. The repo's
 # other workflow (vscode-extension.yml) is scoped to extensions/vscode, so until
 # this file existed the Pilots work had no CI gate.
 #
@@ -12,7 +12,7 @@ name: Pilots
 
 on:
   push:
-    branches: [feat/pilots, "feat/pilots-*"]
+    branches: [feat/pilots, "feat/pilots-*", feat/resilience-pilot, "feat/resilience-*"]
   pull_request:
     paths:
       - "mcp/**"
@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   pilots-tests:
-    name: Pilots tests (upgrade + gitops-reconcile)
+    name: Pilots tests (upgrade + gitops-reconcile + resilience)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +52,15 @@ jobs:
           mcp/tests/test_upgrade_migrate.py
           mcp/tests/test_gitops_reconcile.py
           mcp/tests/test_eval_pilots.py
+
+      - name: mcp resilience core (rules / selectors / score / shared manifest reader)
+        run: >-
+          python -m pytest -q
+          mcp/tests/test_manifests.py
+          mcp/tests/test_resilience_core_purity.py
+          mcp/tests/test_resilience_selectors.py
+          mcp/tests/test_resilience_rules.py
+          mcp/tests/test_resilience_score.py
 
       - name: backend (pilots framework + apply runner)
         run: >-

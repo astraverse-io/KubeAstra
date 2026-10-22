@@ -1,0 +1,130 @@
+{
+  "score": 77,
+  "grade": "C",
+  "workloads": [
+    {
+      "kind": "Deployment",
+      "name": "checkout",
+      "score": 72,
+      "grade": "C",
+      "rules": [
+        "RES003",
+        "RES010"
+      ]
+    },
+    {
+      "kind": "Deployment",
+      "name": "ledger",
+      "score": 90,
+      "grade": "A",
+      "rules": [
+        "RES002"
+      ]
+    },
+    {
+      "kind": "Deployment",
+      "name": "payments",
+      "score": 65,
+      "grade": "D",
+      "rules": [
+        "RES001",
+        "RES005"
+      ]
+    },
+    {
+      "kind": "StatefulSet",
+      "name": "redis",
+      "score": 80,
+      "grade": "B",
+      "rules": [
+        "RES002",
+        "RES006"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "rule": "RES001",
+      "severity": "high",
+      "advisory": false,
+      "suppressed": false,
+      "objects": [
+        "payments.yaml:3 Deployment/payments",
+        "payments.yaml:36 PodDisruptionBudget/payments-pdb"
+      ]
+    },
+    {
+      "rule": "RES002",
+      "severity": "medium",
+      "advisory": false,
+      "suppressed": false,
+      "objects": [
+        "ledger.yaml:3 Deployment/ledger"
+      ]
+    },
+    {
+      "rule": "RES002",
+      "severity": "medium",
+      "advisory": false,
+      "suppressed": false,
+      "objects": [
+        "redis.yaml:3 StatefulSet/redis"
+      ]
+    },
+    {
+      "rule": "RES003",
+      "severity": "high",
+      "advisory": false,
+      "suppressed": false,
+      "objects": [
+        "checkout.yaml:3 Deployment/checkout",
+        "checkout.yaml:33 HorizontalPodAutoscaler/checkout"
+      ]
+    },
+    {
+      "rule": "RES005",
+      "severity": "medium",
+      "advisory": false,
+      "suppressed": false,
+      "objects": [
+        "payments.yaml:3 Deployment/payments"
+      ]
+    },
+    {
+      "rule": "RES006",
+      "severity": "medium",
+      "advisory": false,
+      "suppressed": false,
+      "objects": [
+        "redis.yaml:3 StatefulSet/redis"
+      ]
+    },
+    {
+      "rule": "RES010",
+      "severity": "low",
+      "advisory": false,
+      "suppressed": false,
+      "objects": [
+        "checkout.yaml:3 Deployment/checkout"
+      ]
+    },
+    {
+      "rule": "RES011",
+      "severity": "low",
+      "advisory": false,
+      "suppressed": true,
+      "objects": [
+        "ledger.yaml:3 Deployment/ledger"
+      ]
+    },
+    {
+      "rule": "RES014",
+      "severity": "low",
+      "advisory": true,
+      "suppressed": false,
+      "objects": [
+        "redis.yaml:36 PodDisruptionBudget/redis-old"
+      ]
+    }
+  ]
+}

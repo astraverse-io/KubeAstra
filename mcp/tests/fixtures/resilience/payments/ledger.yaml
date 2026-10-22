@@ -1,0 +1,35 @@
+# One replica behind a Service and no PDB. The unpinned image is opted out
+# by annotation (the team pins it at deploy time).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger
+  namespace: shop
+  annotations:
+    resilience.kubeastra.io/ignore: "RES011"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ledger}
+  template:
+    metadata:
+      labels: {app: ledger}
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/acme/ledger:latest
+          ports: [{containerPort: 9000}]
+          readinessProbe: {tcpSocket: {port: 9000}}
+          lifecycle: {preStop: {sleep: {seconds: 10}}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger
+  namespace: shop
+spec:
+  selector: {app: ledger}
+  ports: [{port: 9000}]
