@@ -10,6 +10,10 @@ stalls), an HPA scaling on CPU for a container that requests no CPU (so it
 never scales), replicas with nothing spreading them across nodes, Services
 sending traffic to containers with no readiness probe.
 
+![kubeastra resilience finding a PDB that stalls node drains and an HPA that can never scale, failing the gate, then writing the PDB fix](../../docs/media/resilience-pilot-demo.gif)
+
+*The same check from the CLI (`pip install kubeastra`). In this Action, exit code 1 fails the check.*
+
 ## Usage
 
 ```yaml

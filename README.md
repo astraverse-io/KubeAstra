@@ -120,6 +120,10 @@ Off by default; enable with `GITOPS_ENABLED=true` and connect a repo in Settings
 
 *The Upgrade Pilot from `pip install kubeastra`: no server, no LLM. The same check runs in CI as the [GitHub Action](action/).*
 
+![kubeastra resilience finding a PDB that stalls node drains and an HPA that can never scale, failing the gate, then writing the PDB fix](docs/media/resilience-pilot-demo.gif)
+
+*The Resilience Pilot from `pip install kubeastra` 0.3.0, recorded verbatim: two outages found in a rendered chart, the gate fails, `--fix` writes the patch. In CI it's the [Resilience Action](action/resilience/).*
+
 Enable with `PILOTS_ENABLED=true` plus `UPGRADE_PILOT_ENABLED` / `GITOPS_RECONCILE_ENABLED` / `RESILIENCE_PILOT_ENABLED`. All three cores are covered by an offline eval suite (blocking recall/precision, plan ordering, reconciliation hit rate, per-rule resilience precision/recall) that gates every PR. The CLI and Actions need none of these flags — they run the cores directly.
 
 **Under the hood — native tool-calling (optional):** agent runs can use a structured native tool-calling harness (Claude / OpenAI / Gemini) instead of text-parsed ReAct, removing a class of parsing failures. Opt in with `AGENT_HARNESS_V2=true`; providers without native tools (e.g. Ollama) transparently fall back to ReAct.

@@ -1,0 +1,31 @@
+{
+ "recorded_with": "kubeastra 0.3.0",
+ "core": "kubeastra._vendor.services.resilience",
+ "steps": [
+  {
+   "cmd": "kubeastra --version",
+   "out": "kubeastra 0.3.0",
+   "rc": 0
+  },
+  {
+   "cmd": "kubeastra resilience rendered/ --fail-on high",
+   "out": "KubeAstra Resilience Pilot \u2014 static scan of rendered/\nResilience score: 47/100 (F)   1 workload, 3 findings\n\nDrain (1)\n  RES001 high   Deployment shop/checkout + PodDisruptionBudget shop/checkout  (checkout.yaml:5)\n         minAvailable=2 but HPA minReplicas=2 \u2014 no pod can ever be evicted, so `kubectl drain` stalls on this node\n\nScaling (1)\n  RES003 high   Deployment shop/checkout + HorizontalPodAutoscaler shop/checkout  (checkout.yaml:5)\n         HPA targets resource utilization but container 'app' has no cpu request \u2014 the HPA can't compute utilization and never scales\n\nHygiene (1)\n  RES010 low    Deployment shop/checkout  (checkout.yaml:5)\n         'app': no cpu request\n\nWorkloads\n   47 F  Deployment shop/checkout                      RES001 RES003 RES010\n\nNotes:\n  - Static mode: Service/PDB wiring checks are advisory (the app may span other directories), and node/zone counts are unknown. Run with --live for the cluster's view.\n\nGate: FAIL \u2014 2 finding(s) at or above --fail-on high\n\nFixes: 1 can be generated, 2 need you \u2014 rerun with --fix DIR to write them",
+   "rc": 1
+  },
+  {
+   "cmd": "echo \"exit code: $?\"",
+   "out": "exit code: 1",
+   "rc": 0
+  },
+  {
+   "cmd": "kubeastra resilience rendered/ --fix fixes/ | tail -n 1",
+   "out": "Fixes written to fixes/: 1 patch, 0 new objects, 2 that need you (see fixes/README.md)",
+   "rc": 0
+  },
+  {
+   "cmd": "cat fixes/patches/poddisruptionbudget-shop-checkout.yaml",
+   "out": "# kubeastra resilience: RES001\napiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata:\n  name: checkout\n  namespace: shop\nspec:\n  minAvailable: 1",
+   "rc": 0
+  }
+ ]
+}
