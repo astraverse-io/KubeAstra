@@ -9,5 +9,5 @@ Not a replacement for the web UI or MCP server — an additional entry
 point. See ``cli/README.md`` for install + quickstart.
 """
 
-__version__ = "0.2.3"
+__version__ = "0.3.0"
 __all__ = ["__version__"]

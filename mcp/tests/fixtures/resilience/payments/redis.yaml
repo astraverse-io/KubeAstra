@@ -1,0 +1,44 @@
+# Service-backed StatefulSet with no readiness probe, and a leftover PDB
+# whose selector no longer matches anything.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: shop
+spec:
+  replicas: 1
+  serviceName: redis
+  selector:
+    matchLabels: {app: redis}
+  template:
+    metadata:
+      labels: {app: redis}
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4.1
+          ports: [{containerPort: 6379}]
+          lifecycle: {preStop: {exec: {command: ["redis-cli", "shutdown"]}}}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: shop
+spec:
+  clusterIP: None
+  selector: {app: redis}
+  ports: [{port: 6379}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-old
+  namespace: shop
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app: redis-v1}

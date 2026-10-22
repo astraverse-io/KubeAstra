@@ -136,6 +136,18 @@ POST   /api/gitops/preview    # { proposal_id, change, ... } → { preview_token
 POST   /api/gitops/open       # { preview_token } → opens the PR, returns pr_url
 GET    /api/gitops/prs        # List PRs opened by KubeAstra
 
+# Pilots — deterministic, keyless workflows. All 404 unless PILOTS_ENABLED=true;
+# each Pilot also needs its own flag (UPGRADE_PILOT_ENABLED, GITOPS_RECONCILE_ENABLED,
+# RESILIENCE_PILOT_ENABLED). inputs.manifests_path scans files on the server and is
+# off unless UPGRADE_PILOT_MANIFESTS_ROOT names an allowed directory.
+GET  /api/v1/pilots                       # Enabled Pilots and their tool scopes
+POST /api/v1/pilots/upgrade/run           # { target, inputs: {manifests_path?} } → report, ordered plan, node drains
+POST /api/v1/pilots/gitops_reconcile/run  # { inputs: {app, kind?, namespace?} | {object} } → root-cause diagnosis
+POST /api/v1/pilots/resilience/run        # { inputs: {manifests_path? | namespace?, include_system?} } → score, findings, fixes
+GET  /api/v1/pilots/runs/{run_id}         # A stored run
+# A resilience field fix carries `fix.gitops` — post it as `change` to /api/gitops/preview.
+# Live scans honour ALLOWED_NAMESPACES and skip kube-* namespaces unless asked.
+
 # Auto-documented
 GET  /docs                # Interactive Swagger UI
 GET  /openapi.json        # OpenAPI 3.0 schema
@@ -297,7 +309,7 @@ GET  /docs                      # Swagger UI for MCP server
 GET  /openapi.json              # OpenAPI schema
 
 # Debug/testing
-GET  /debug/tools               # List all 56 tools with schemas
+GET  /debug/tools               # List all 57 tools with schemas
 POST /debug/call                # Direct tool invocation
 GET  /health                    # MCP server status
 GET  /                          # Server info + quick start
@@ -305,7 +317,7 @@ GET  /                          # Server info + quick start
 
 #### MCP Tool Categories
 
-Your 56 tools are organized into **9 categories**. Per-category counts change as
+Your 57 tools are organized into **9 categories**. Per-category counts change as
 tools are added, so read them live from `GET /tools/categories` rather than from
 this page:
 
@@ -361,7 +373,7 @@ curl http://localhost:8001/tools/catalog?format=json
 ```
 
 **Returns:**
-- All 56 tools organized by category
+- All 57 tools organized by category
 - Tool names, descriptions, input schemas
 - Write operation warnings
 - Last updated timestamp
@@ -583,7 +595,7 @@ Edit `~/.cursor/mcp.json`:
 }
 ```
 
-All 56 tools appear in Cursor's chat context immediately.
+All 57 tools appear in Cursor's chat context immediately.
 
 ### Custom Agent Integration
 
@@ -789,7 +801,7 @@ MCP_HTTP_AUTH_TOKEN=...               # Bearer token (optional)
 | `/api/chat/stream` | POST | 8000 | Streaming chat (Server-Sent Events) | Optional |
 | `/api/feedback` | POST | 8000 | Promote/quarantine captured chats (Phase 1.3) | Optional |
 | `/api/*` | GET/POST | 8000 | Other REST endpoints | Optional |
-| `/mcp/` | POST | 8001 | MCP transport (56 tools) | Optional |
+| `/mcp/` | POST | 8001 | MCP transport (57 tools) | Optional |
 | `/tools/catalog` | GET | 8001 | Tool browser (categorized incl. Plans) | Optional |
 | `/tools/categories` | GET | 8001 | Category metadata | Optional |
 | `/debug/tools` | GET | 8001 | Raw tool list | Optional |

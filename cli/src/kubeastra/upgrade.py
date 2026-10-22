@@ -87,6 +87,41 @@ def build_snapshot(core, *, manifests: Optional[str], kubeconfig: Optional[str])
     return core.scan_cluster(_live_run_json(kubeconfig), core.load_maps()["deprecations"])
 
 
+def drain_check(*, manifests: Optional[str], kubeconfig: Optional[str], run_json: Any = None) -> dict:
+    """What a node drain will run into, from the Resilience Pilot core.
+
+    Every upgrade drains every node, so a PDB that never allows an eviction
+    stalls the upgrade, and a lone replica behind a Service goes down with its
+    node. Informational: it never changes the upgrade gate's exit code. When the
+    check can't run (no resilience core, kubectl failing) it says so instead of
+    reporting "no blockers".
+    """
+    try:
+        from .resilience import _kubectl, load_config, load_resilience_core
+
+        core = load_resilience_core()
+        if manifests:
+            items, facts, mode, notes = core.scan_path(manifests), None, "static", []
+        else:
+            items, facts, notes = core.collect_live(run_json or _kubectl(kubeconfig))
+            mode = "live"
+        report = core.assess(items, facts=facts, source_mode=mode, config=load_config(None))
+    except Exception as exc:  # the upgrade plan must not fail because this check couldn't run
+        return {"checked": False, "note": f"node-drain check skipped: {exc}", "findings": []}
+    return {
+        "checked": True,
+        "note": "",
+        "findings": [
+            {
+                "rule": f.rule,
+                "message": f.message,
+                "objects": [f"{r.kind} {r.namespace + '/' if r.namespace else ''}{r.name}" for r in f.objects],
+            }
+            for f in core.drain_blockers(report)
+        ],
+    }
+
+
 def run_plan(
     target: str,
     *,
@@ -95,6 +130,7 @@ def run_plan(
     output: str = "text",
     fail_on_blocking: bool = True,
     core: Any = None,
+    drains: Optional[dict] = None,
 ) -> tuple[int, str]:
     """Produce the readiness report + plan and render it.
 
@@ -105,24 +141,29 @@ def run_plan(
     maps = core.load_maps()
     report = core.assess(build_snapshot(core, manifests=manifests, kubeconfig=kubeconfig), target, maps)
     migration = core.plan(report, maps)
-    text = render(output, report, migration)
+    if drains is None and output != "sarif":
+        drains = drain_check(manifests=manifests, kubeconfig=kubeconfig)
+    text = render(output, report, migration, drains)
     exit_code = 1 if (fail_on_blocking and report.blocking) else 0
     return exit_code, text
 
 
-def render(output: str, report, plan) -> str:
+def render(output: str, report, plan, drains: Optional[dict] = None) -> str:
     if output == "json":
-        return json.dumps({"report": report.to_dict(), "plan": plan.to_dict()}, indent=2)
+        data = {"report": report.to_dict(), "plan": plan.to_dict()}
+        if drains is not None:
+            data["drains"] = drains
+        return json.dumps(data, indent=2)
     if output == "sarif":
         return json.dumps(_sarif(report), indent=2)
-    return _text(report, plan)
+    return _text(report, plan, drains)
 
 
 def _where(b) -> str:
     return f"{b.namespace}/{b.name}" if b.namespace else (b.name or b.gvk)
 
 
-def _text(report, plan) -> str:
+def _text(report, plan, drains: Optional[dict] = None) -> str:
     lines = [
         f"KubeAstra Upgrade Pilot — target {report.target} "
         f"(current {report.current or 'unknown'}, provider {report.provider})"
@@ -144,7 +185,22 @@ def _text(report, plan) -> str:
     lines.append(f"\nPlan ({len(plan.steps)} steps):")
     for s in plan.steps:
         lines.append(f"  {s.order}. [{s.kind}/{s.risk}] {s.title}")
+    if drains is not None:
+        lines.extend(_drain_lines(drains))
     return "\n".join(lines)
+
+
+def _drain_lines(drains: dict) -> list[str]:
+    if not drains.get("checked"):
+        return [f"\nNode drains: {drains.get('note')}"]
+    found = drains.get("findings") or []
+    if not found:
+        return ["\nNode drains: no PDB blocks an eviction, and no lone replica sits behind a Service. OK"]
+    lines = [f"\nNode drains ({len(found)}) — every upgrade drains every node:"]
+    for f in found:
+        lines.append(f"  - {f['rule']} {' + '.join(f['objects'])}: {f['message']}")
+    lines.append("  Fix these before the upgrade: kubeastra resilience <manifests> --fix fixes/")
+    return lines
 
 
 def _sarif(report) -> dict:

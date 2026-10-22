@@ -1,7 +1,7 @@
 name: Pilots
 
-# Runs the KubeAstra Pilots test suites (Upgrade + GitOps Reconciliation) on the
-# long-lived integration branch and on PRs that touch the backend/CLI. The repo's
+# Runs the KubeAstra Pilots test suites (Upgrade, GitOps Reconciliation and
+# Resilience) on the long-lived integration branches and on PRs that touch the backend/CLI. The repo's
 # other workflow (vscode-extension.yml) is scoped to extensions/vscode, so until
 # this file existed the Pilots work had no CI gate.
 #
@@ -12,7 +12,7 @@ name: Pilots
 
 on:
   push:
-    branches: [feat/pilots, "feat/pilots-*"]
+    branches: [feat/pilots, "feat/pilots-*", feat/resilience-pilot, "feat/resilience-*"]
   pull_request:
     paths:
       - "mcp/**"
@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   pilots-tests:
-    name: Pilots tests (upgrade + gitops-reconcile)
+    name: Pilots tests (upgrade + gitops-reconcile + resilience)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +40,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r mcp/requirements-core.txt -r ui/backend/requirements.txt pytest
+          # The CLI package itself (typer) — the resilience CLI tests drive the real command.
+          pip install -e ./cli
 
       - name: mcp core (detect / plan / migrate guard / reconcile)
         run: >-
@@ -53,14 +55,33 @@ jobs:
           mcp/tests/test_gitops_reconcile.py
           mcp/tests/test_eval_pilots.py
 
-      - name: backend (pilots framework + apply runner)
+      - name: mcp resilience core (rules / selectors / score / shared manifest reader)
+        run: >-
+          python -m pytest -q
+          mcp/tests/test_manifests.py
+          mcp/tests/test_resilience_core_purity.py
+          mcp/tests/test_resilience_selectors.py
+          mcp/tests/test_resilience_rules.py
+          mcp/tests/test_resilience_score.py
+          mcp/tests/test_resilience_fix.py
+          mcp/tests/test_tool_registry.py
+
+      - name: backend (pilots framework + apply runner + resilience run/tool/fixes + chat scoping)
         run: >-
           python -m pytest -q
           ui/backend/tests/test_pilots_framework.py
           ui/backend/tests/test_upgrade_runner.py
+          ui/backend/tests/test_resilience_gitops.py
+          ui/backend/tests/test_gitops_edit.py
+          ui/backend/tests/test_docs_match_reality.py
+          ui/backend/tests/test_resilience_pilot.py
+          ui/backend/tests/test_tool_scoping.py
+          ui/backend/tests/test_versions_agree.py
 
-      - name: cli (keyless upgrade + import boundary)
+      - name: cli (keyless upgrade + resilience + import boundaries)
         run: >-
           python -m pytest -q
           cli/tests/test_upgrade_cli.py
           cli/tests/test_upgrade_import_boundary.py
+          cli/tests/test_resilience_cli.py
+          cli/tests/test_resilience_import_boundary.py

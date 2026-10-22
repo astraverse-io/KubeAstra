@@ -63,3 +63,52 @@ def test_fail_on_blocking_toggle(tmp_path):
 def test_load_upgrade_core_resolves_the_pure_core():
     core = load_upgrade_core()
     assert hasattr(core, "assess") and hasattr(core, "plan") and hasattr(core, "scan_manifests")
+
+
+# ── Resilience cross-link: node drains (Resilience Pilot Phase 3) ─────────────
+
+PDB_BLOCKS = """apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  replicas: 2
+  template:
+    metadata: {labels: {app: web}}
+    spec: {containers: [{name: app, image: "nginx:1.27.2"}]}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: web, namespace: shop}
+spec: {minAvailable: 2, selector: {matchLabels: {app: web}}}
+"""
+
+
+def test_plan_lists_drain_blockers_without_changing_the_gate(tmp_path):
+    code, text = run_plan("1.31", manifests=_manifests(tmp_path, PDB_BLOCKS), output="text")
+    assert code == 0  # no removed APIs: the upgrade gate passes; drains are informational
+    assert "Node drains (1) — every upgrade drains every node:" in text
+    assert "RES001 Deployment shop/web + PodDisruptionBudget shop/web" in text
+
+
+def test_plan_says_drains_are_ok_when_they_are(tmp_path):
+    _, text = run_plan("1.31", manifests=_manifests(tmp_path, POD), output="text")
+    assert "Node drains: no PDB blocks an eviction" in text
+
+
+def test_drains_in_json_and_never_in_sarif(tmp_path):
+    _, text = run_plan("1.31", manifests=_manifests(tmp_path, PDB_BLOCKS), output="json")
+    drains = json.loads(text)["drains"]
+    assert drains["checked"] and [f["rule"] for f in drains["findings"]] == ["RES001"]
+    _, sarif = run_plan("1.31", manifests=_manifests(tmp_path, PDB_BLOCKS), output="sarif")
+    assert all(r["ruleId"] == "deprecated-api-removed" for r in json.loads(sarif)["runs"][0]["results"])
+
+
+def test_a_drain_check_that_cannot_run_says_so(tmp_path, monkeypatch):
+    import kubeastra.resilience as res
+
+    def broken():
+        raise res.ResilienceCoreUnavailable("not installed")
+
+    monkeypatch.setattr(res, "load_resilience_core", broken)
+    code, text = run_plan("1.31", manifests=_manifests(tmp_path, PDB_BLOCKS), output="text")
+    assert code == 0 and "Node drains: node-drain check skipped: not installed" in text

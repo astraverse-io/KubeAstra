@@ -1,6 +1,7 @@
 """Case types + loaders for the Pilots eval suite.
 
-Cases are labeled YAML fixtures under ``cases/upgrade/`` and ``cases/reconcile/``.
+Cases are labeled YAML fixtures under ``cases/upgrade/``, ``cases/reconcile/``
+and ``cases/resilience/``.
 """
 
 from __future__ import annotations
@@ -29,6 +30,42 @@ class ReconcileCase:
     id: str
     obj: dict
     expect_root_cause: str
+
+
+@dataclass(frozen=True)
+class ResilienceCase:
+    """Manifests (as rendered YAML) + the scored rules they must trigger.
+
+    ``expect_rules`` is the exact set of rule ids among scored findings — a
+    missing one is a recall miss, an extra one a false positive. ``expect_score``
+    and ``expect_fixes`` (rule -> fix kind) are checked when given.
+    """
+
+    id: str
+    manifests: str
+    source_mode: str
+    facts: dict
+    expect_rules: frozenset[str]
+    expect_score: Optional[int]
+    expect_fixes: dict
+
+
+def _resilience_from_dict(d: dict) -> ResilienceCase:
+    for k in ("id", "manifests", "expect"):
+        if k not in d:
+            raise ValueError(f"resilience case missing key: {k}")
+    exp = d["expect"]
+    if "rules" not in exp:
+        raise ValueError(f"resilience case {d['id']!r}: expect.rules is required (use [] for a clean case)")
+    return ResilienceCase(
+        id=str(d["id"]),
+        manifests=str(d["manifests"]),
+        source_mode=str(d.get("source_mode", "static")),
+        facts=dict(d.get("facts") or {}),
+        expect_rules=frozenset(exp.get("rules") or ()),
+        expect_score=exp.get("score"),
+        expect_fixes=dict(exp.get("fixes") or {}),
+    )
 
 
 def _upgrade_from_dict(d: dict) -> UpgradeCase:
@@ -75,3 +112,7 @@ def load_upgrade_cases() -> list[UpgradeCase]:
 
 def load_reconcile_cases() -> list[ReconcileCase]:
     return _load_dir("reconcile", _reconcile_from_dict)
+
+
+def load_resilience_cases() -> list[ResilienceCase]:
+    return _load_dir("resilience", _resilience_from_dict)

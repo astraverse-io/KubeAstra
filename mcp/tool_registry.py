@@ -214,6 +214,14 @@ def _handle_analyze_k8s_health(params: dict, ctx: DispatchContext) -> dict:
     return result.to_dict()
 
 
+def _handle_assess_resilience(params: dict, ctx: DispatchContext) -> dict:
+    from k8s.wrappers import assess_resilience
+    return assess_resilience(
+        namespace=params.get("namespace") or None,
+        include_system=bool(params.get("include_system", False)),
+    )
+
+
 def _handle_get_persistent_volume_claim(params: dict, ctx: DispatchContext) -> dict:
     from k8s.wrappers import get_persistent_volume_claim
     return get_persistent_volume_claim(
@@ -802,7 +810,7 @@ from mcp_server.schemas import (
     SearchDeploymentRepoInput, GetDeploymentRepoFileInput,
     ListDeploymentRepoPathInput,
     InvestigatePodInput, InvestigateWorkloadInput, AnalyzeNamespaceInput,
-    AnalyzeK8sHealthInput,
+    AnalyzeK8sHealthInput, AssessResilienceInput,
     PromQueryInput,
     ExecPodCommandInput, DeletePodInput, RolloutRestartInput,
     ScaleDeploymentInput, ApplyPatchInput,
@@ -882,6 +890,22 @@ _reg(ToolDef(
         "First-party deterministic health analyzer: inspects pods, nodes, services, "
         "rollouts, and events without LLM calls. Returns structured findings, evidence, "
         "and recommended diagnostic steps."
+    ),
+    category="investigation",
+    surfaces=_ALL,
+))
+
+_reg(ToolDef(
+    name="assess_resilience",
+    handler=_handle_assess_resilience,
+    schema=AssessResilienceInput,
+    description=(
+        "Deterministic resilience score (no LLM): finds what makes workloads fail a node "
+        "drain, a traffic spike or a rollout — PodDisruptionBudgets that block every "
+        "eviction, HPAs that can't scale (no resource requests), replicas not spread "
+        "across nodes, missing readiness probes or preStop hooks, rollouts that stop "
+        "every pod. Returns a 0-100 score, per-workload grades and findings with fixes. "
+        "Use for 'will a drain/upgrade break us', 'how resilient is X', 'why is the drain stuck'."
     ),
     category="investigation",
     surfaces=_ALL,

@@ -19,6 +19,7 @@ EXPECTED_TOOLS = {
     "add_kubeconfig_context",
     "analyze_error",
     "analyze_k8s_health",
+    "assess_resilience",
     "analyze_namespace",
     "apply_patch",
     "cluster_report",
@@ -77,6 +78,7 @@ EXPECTED_TOOLS = {
 EXPECTED_CHAT_TOOLS = {
     "analyze_error",
     "analyze_k8s_health",
+    "assess_resilience",
     "analyze_namespace",
     "cluster_report",
     "diff_helm_revisions",

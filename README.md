@@ -54,7 +54,7 @@ Four ways to connect — pick what fits your setup:
 
 Switch between clusters without restarting. Each session tracks its own connection.
 
-### 🔍 56 Built-in Kubernetes Tools
+### 🔍 57 Built-in Kubernetes Tools
 
 **Live cluster tools (~30)** — pod/deployment/service inspection, event streams, multi-namespace discovery, rollout status, kubeconfig context switching, log retrieval with previous-container support, resource-graph topology, deployment-level investigation, namespace-wide health analysis, and safe write operations (delete, scale, restart, patch — all gated behind `dry_run` + `confirmation_token`).
 
@@ -110,16 +110,17 @@ Off by default; enable with `GITOPS_ENABLED=true` and connect a repo in Settings
 
 ### 🧭 Pilots — guided, deterministic workflows (experimental)
 
-**Pilots** are scoped, deterministic workflows layered on the remediation + PR-proposal spine above. Two ship today — both **keyless at the core** (no LLM needed for the decision) and **off by default**:
+**Pilots** are scoped, deterministic workflows layered on the remediation + PR-proposal spine above. Three ship today — all **keyless at the core** (no LLM needed for the decision) and **off by default** in the app:
 
 - **Upgrade Pilot** — point it at a target Kubernetes version and it reports what breaks (in-use APIs removed at or before the target, from a curated deprecation map), then produces an **ordered, per-item plan**: plain-YAML fixes routed as GitOps PRs, Helm/operator bumps, control-plane steps last. Applying is gated by **plan approval** (one admin decision authorizes the non-high-risk batch; high-risk steps are approved individually) and the apply runner is **resumable and idempotent** (re-scan + verify, never stored progress). Also runs **without the server** as `kubeastra upgrade` (CLI) and a **GitHub Action** that fails CI on blocking removals and can emit SARIF.
 - **GitOps Reconciliation** — give it an Argo `Application` or Flux `Kustomization`/`HelmRelease` status and it classifies the root cause (drift, image pull, failed hook, CRD-schema mismatch, RBAC, …), names the first failing resource, and routes drift to a GitOps PR vs. operational issues to advisory.
+- **Resilience Pilot** — scores how well workloads survive a **node drain, a traffic spike or a rollout**, from rendered manifests or the live cluster. It looks for the combinations that cause outages: a PodDisruptionBudget that can never allow an eviction (so `kubectl drain` — and every upgrade — stalls), an HPA scaling on CPU for a container that requests no CPU (so it never scales), replicas nothing spreads across nodes, Services routing to pods with no readiness probe or preStop hook, rollouts that stop every pod. Every finding comes with a fix: value changes ready as GitOps PRs, new PDBs, patches, and plain advice where the right value is yours to choose (Helm-rendered objects only ever get advice). Runs as `kubeastra resilience` (with `--fix DIR`), a [GitHub Action](action/resilience/) with a score gate, SARIF and a badge, the `assess_resilience` agent tool, and — feeding the Upgrade Pilot — a **Node drains** section in every upgrade plan.
 
 ![kubeastra upgrade plan finding three removed Kubernetes APIs in a rendered chart and exiting 1](docs/media/upgrade-pilot-demo.gif)
 
 *The Upgrade Pilot from `pip install kubeastra`: no server, no LLM. The same check runs in CI as the [GitHub Action](action/).*
 
-Enable with `PILOTS_ENABLED=true` plus `UPGRADE_PILOT_ENABLED` / `GITOPS_RECONCILE_ENABLED`. Both cores are covered by an offline eval suite (blocking recall/precision, plan ordering, reconciliation hit rate) that gates every PR.
+Enable with `PILOTS_ENABLED=true` plus `UPGRADE_PILOT_ENABLED` / `GITOPS_RECONCILE_ENABLED` / `RESILIENCE_PILOT_ENABLED`. All three cores are covered by an offline eval suite (blocking recall/precision, plan ordering, reconciliation hit rate, per-rule resilience precision/recall) that gates every PR. The CLI and Actions need none of these flags — they run the cores directly.
 
 **Under the hood — native tool-calling (optional):** agent runs can use a structured native tool-calling harness (Claude / OpenAI / Gemini) instead of text-parsed ReAct, removing a class of parsing failures. Opt in with `AGENT_HARNESS_V2=true`; providers without native tools (e.g. Ollama) transparently fall back to ReAct.
 
@@ -146,7 +147,7 @@ The resource graph is an **interactive investigation surface**, not just a topol
 |---|---|
 | Chat-based Next.js interface for team-wide troubleshooting | The VS Code extension, or MCP in Cursor, Claude Desktop, or any MCP client |
 | Connect any cluster (auto-detect, kubeconfig upload, SSH) | Debug without leaving your editor |
-| Shareable session URLs with persistent chat history (SQLite) | 56 tools available via stdio or HTTP MCP transport |
+| Shareable session URLs with persistent chat history (SQLite) | 57 tools available via stdio or HTTP MCP transport |
 | Visual resource graph with click-to-inspect | Same ReAct agent powers both surfaces |
 
 ### 🚨 Alert-Driven Auto-Investigation
@@ -267,7 +268,7 @@ Match your situation to the feature that solves it:
 
 | If you… | The feature | Enable with |
 |---|---|---|
-| Just want an AI copilot for `kubectl` diagnosis | Agentic ReAct + 56 tools | Defaults — no flags needed |
+| Just want an AI copilot for `kubectl` diagnosis | Agentic ReAct + 57 tools | Defaults — no flags needed |
 | Get paged by Alertmanager at 2 AM | Alert-Driven Auto-Investigation | `ALERTMANAGER_WEBHOOK_ENABLED=true` + set `ALERT_WEBHOOK_TOKEN` |
 | Investigate the same failure modes repeatedly | RAG Runbook Cache (Cached tier) | `RAG_ROUTER_ENABLED=true` + `👍` on great answers |
 | Read 500-line `describe` and 10K-line log outputs | Tool Result Summarization | `ENABLE_LOG_SUMMARIZATION=true` |
@@ -373,7 +374,7 @@ GEMINI_API_KEY=your-key-here          # or LLM_PROVIDER=ollama
 ALLOWED_NAMESPACES=prod,staging,default
 ```
 
-Restart your IDE — all 56 tools appear as MCP tools.
+Restart your IDE — all 57 tools appear as MCP tools.
 
 ### Option 6: Use the VS Code extension
 
@@ -655,7 +656,7 @@ kubeastra/
 │   │   ├── prometheus.py        # Prometheus query client
 │   │   ├── embeddings.py        # sentence-transformers wrapper
 │   │   └── vector_db.py         # Qdrant client
-│   ├── tool_registry.py         # Single source of truth: 56 tools
+│   ├── tool_registry.py         # Single source of truth: 57 tools
 │   └── config/settings.py
 ├── cli/                         # `kubeastra` CLI (PyPI) — ask, investigate,
 │                                #   connect, doctor, config, and `open`

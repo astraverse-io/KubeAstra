@@ -112,3 +112,24 @@ register(
         ),
     )
 )
+
+register(
+    Pilot(
+        name="resilience",
+        flag="resilience_pilot_enabled",
+        narration_prompt="resilience",
+        tool_scope=frozenset(
+            {
+                "assess_resilience",
+                "get_nodes",
+                "get_pods",
+                "describe_workload",
+                "list_namespace_resources",
+            }
+        ),
+        description=(
+            "Score how well workloads survive node drains, traffic spikes and rollouts, "
+            "and propose the fixes."
+        ),
+    )
+)

@@ -2431,6 +2431,63 @@ def get_endpoints(namespace: str, service_name: str, include_slices: bool = True
     return endpoints
 
 
+def assess_resilience(namespace: Optional[str] = None, include_system: bool = False) -> Dict[str, Any]:
+    """Resilience Pilot over the live cluster, within the namespace allowlist.
+
+    A named namespace must be allowed (and is assessed even if it's a system
+    namespace). With none: one --all-namespaces read when ALLOWED_NAMESPACES is
+    ``*``, else one read per allowed namespace — the same rule as find_workload.
+    The result is compact for the agent: worst workloads first, capped lists.
+    The full report (patches, PR-ready changes) comes from the Resilience
+    Pilot run or ``kubeastra resilience``.
+    """
+    from services.resilience import assess, collect_live
+
+    if namespace:
+        namespaces = [validate_namespace(namespace)]
+        include_system = True
+    else:
+        allowed = get_allowed_namespaces()
+        namespaces = None if "*" in allowed else allowed
+    runner = get_runner()
+    items, facts, notes = collect_live(
+        lambda args: runner.run_json(args), namespaces=namespaces, include_system=include_system
+    )
+    report = assess(items, facts=facts, source_mode="live")
+
+    def obj(r) -> str:
+        return f"{r.kind} {r.namespace + '/' if r.namespace else ''}{r.name}"
+
+    order = {"high": 0, "medium": 1, "low": 2}
+    scored = sorted((f for f in report.findings if f.scored), key=lambda f: order[f.severity])
+    workloads = sorted(report.workloads, key=lambda w: w.score)
+    return {
+        "score": report.score,
+        "grade": report.grade,
+        "scope": f"namespace {namespace}" if namespace else (
+            "all namespaces" if namespaces is None else "allowed namespaces: " + ", ".join(namespaces)),
+        "nodes": facts.nodes,
+        "zones": facts.zones,
+        "workloads": [
+            {"workload": obj(w.ref), "score": w.score, "grade": w.grade, "rules": w.rules}
+            for w in workloads[:15]
+        ],
+        "findings": [
+            {
+                "rule": f.rule,
+                "severity": f.severity,
+                "objects": [obj(r) for r in f.objects],
+                "message": f.message,
+                "fix": f.fix.kind if f.fix else None,
+                "fix_note": f.fix.note if f.fix else "",
+            }
+            for f in scored[:20]
+        ],
+        "truncated": len(scored) > 20 or len(workloads) > 15,
+        "notes": report.notes + notes,
+    }
+
+
 def get_persistent_volume_claim(
     namespace: str,
     claim_name: str,

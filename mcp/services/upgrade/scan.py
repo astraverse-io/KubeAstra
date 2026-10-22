@@ -17,11 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable
 
-import yaml
-
+from ..manifests import iter_manifest_docs
 from .snapshot import ClusterSnapshot, HelmRelease, ObjectRef, OperatorInfo
-
-_MANIFEST_SUFFIXES = (".yaml", ".yml", ".json")
 
 
 def split_api_version(api_version: str) -> tuple[str, str]:
@@ -77,23 +74,11 @@ def scan_manifests(
     :class:`ObjectRef`. Unparseable documents are skipped (a bad file must not
     sink the whole scan). ``source_mode`` is "static".
     """
-    root = Path(path)
-    files: list[Path]
-    if root.is_file():
-        files = [root]
-    else:
-        files = sorted(p for p in root.rglob("*") if p.suffix.lower() in _MANIFEST_SUFFIXES)
-
     objects: list[ObjectRef] = []
-    for f in files:
-        try:
-            docs = list(yaml.safe_load_all(f.read_text()))
-        except Exception:
-            continue  # a malformed file is skipped, not fatal
-        for doc in docs:
-            ref = _object_ref_from_doc(doc)
-            if ref is not None:
-                objects.append(ref)
+    for md in iter_manifest_docs(path):  # a malformed file is skipped, not fatal
+        ref = _object_ref_from_doc(md.doc)
+        if ref is not None:
+            objects.append(ref)
 
     return ClusterSnapshot(
         cluster_version=cluster_version,

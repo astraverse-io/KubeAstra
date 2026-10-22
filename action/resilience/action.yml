@@ -1,0 +1,120 @@
+name: "KubeAstra Resilience Pilot"
+description: >-
+  Score how well Kubernetes workloads survive node drains, traffic spikes and
+  rollouts (PDBs, HPAs, spread, probes, shutdown) and gate the check on it —
+  keyless, no cluster needed.
+author: "astraverse-io"
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  manifests:
+    description: "Rendered manifests to scan: a file or directory (helm template / kustomize build output)."
+    required: false
+    default: "."
+  output:
+    description: "Format written to the step log: text | json | sarif."
+    required: false
+    default: "text"
+  fail-under:
+    description: "Fail the check when the resilience score (0-100) is below this. Empty = no score gate."
+    required: false
+    default: ""
+  fail-on:
+    description: "Fail the check on any finding at or above this severity: low | medium | high. Empty = no severity gate."
+    required: false
+    default: ""
+  config:
+    description: "Repo config (disable rules / change severities). Default: .kubeastra/resilience.yaml when present."
+    required: false
+    default: ""
+  sarif-file:
+    description: "Also write a SARIF report here (feed it to github/codeql-action/upload-sarif)."
+    required: false
+    default: ""
+  badge-file:
+    description: "Also write a shields.io endpoint JSON here (commit it, then use img.shields.io/endpoint?url=…)."
+    required: false
+    default: ""
+
+outputs:
+  score:
+    description: "Resilience score 0-100 (empty when the manifests contain no workloads)."
+    value: ${{ steps.assess.outputs.score }}
+  grade:
+    description: "Letter grade A-F ('-' when there are no workloads)."
+    value: ${{ steps.assess.outputs.grade }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    # Every ${{ … }} value is passed via `env:` and referenced as "$VAR" — never
+    # interpolated into `run:` — so a crafted input cannot inject shell.
+    # github.action_path is action/resilience/, so the CLI and the pure core
+    # are two levels up (../../cli, ../../mcp). See action/action.yml for the
+    # history of getting this wrong once.
+    - name: Install KubeAstra CLI
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        pip install --quiet "pyyaml>=6"
+        pip install --quiet "$ACTION_PATH/../../cli"
+
+    # Reports (outputs, badge, SARIF) come first and never gate: composite
+    # steps after a failing one are skipped, and the reports matter most
+    # exactly when the gate fails.
+    - name: Assess
+      id: assess
+      shell: bash
+      env:
+        PYTHONPATH: "${{ github.action_path }}/../../mcp"
+        MANIFESTS: ${{ inputs.manifests }}
+        CONFIG: ${{ inputs.config }}
+        SARIF_FILE: ${{ inputs.sarif-file }}
+        BADGE_FILE: ${{ inputs.badge-file }}
+      run: |
+        CFG=()
+        [ -n "$CONFIG" ] && CFG=(--config "$CONFIG")
+        REPORT="$RUNNER_TEMP/kubeastra-resilience.json"
+        kubeastra resilience "$MANIFESTS" "${CFG[@]}" -o json > "$REPORT"
+        if [ -n "$SARIF_FILE" ]; then
+          kubeastra resilience "$MANIFESTS" "${CFG[@]}" -o sarif > "$SARIF_FILE"
+        fi
+        python3 - "$REPORT" <<'PY'
+        import json, os, sys
+        r = json.load(open(sys.argv[1]))
+        score = "" if r["score"] is None else str(r["score"])
+        with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+            out.write(f"score={score}\ngrade={r['grade']}\n")
+        badge = os.environ.get("BADGE_FILE")
+        if badge:
+            colors = {"A": "brightgreen", "B": "green", "C": "yellow", "D": "orange", "F": "red"}
+            message = f"{r['grade']} ({score})" if score else "no workloads"
+            with open(badge, "w") as f:
+                json.dump({"schemaVersion": 1, "label": "resilience", "message": message,
+                           "color": colors.get(r["grade"], "lightgrey")}, f)
+        print(f"resilience score: {score or 'n/a'} ({r['grade']})")
+        PY
+
+    - name: Run Resilience Pilot
+      shell: bash
+      env:
+        PYTHONPATH: "${{ github.action_path }}/../../mcp"
+        MANIFESTS: ${{ inputs.manifests }}
+        OUTPUT: ${{ inputs.output }}
+        FAIL_UNDER: ${{ inputs.fail-under }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        ARGS=(-o "$OUTPUT")
+        [ -n "$FAIL_UNDER" ] && ARGS+=(--fail-under "$FAIL_UNDER")
+        [ -n "$FAIL_ON" ] && ARGS+=(--fail-on "$FAIL_ON")
+        [ -n "$CONFIG" ] && ARGS+=(--config "$CONFIG")
+        kubeastra resilience "$MANIFESTS" "${ARGS[@]}"

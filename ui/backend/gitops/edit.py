@@ -55,7 +55,7 @@ def _nest(field_path: tuple, value) -> dict:
 def make_kustomize_patch(change: FieldChange, overlay_path: str) -> dict[str, str]:
     body = _nest(change.field_path, change.new_value)
     patch = {
-        "apiVersion": "apps/v1",
+        "apiVersion": change.api_version or "apps/v1",
         "kind": change.kind,
         "metadata": {"name": change.name},
     }

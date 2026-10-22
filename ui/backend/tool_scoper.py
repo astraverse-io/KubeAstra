@@ -68,6 +68,12 @@ SCOPE_TOOLS: dict[str, frozenset[str]] = {
     "knowledge": frozenset({
         "kb_search", "generate_runbook", "get_fix_commands",
     }),
+    # Resilience: drains, PDBs, spread, HA. `assess_resilience` answers these
+    # directly; the rest let the agent look at the workloads it names.
+    "resilience": frozenset({
+        "assess_resilience", "get_deployment", "get_pods", "get_nodes",
+        "list_namespace_resources", "get_events", "find_workload",
+    }),
 }
 
 
@@ -88,6 +94,20 @@ _SCOPE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"|what\s+(?:does|is)\s+(?:our|the)\s+(?:team|policy|runbook|process)"
         r"|standard\s+procedure|escalation\s+path"
         r"|ansible\s+(?:playbook|task|role)"
+        r")\b",
+        re.IGNORECASE,
+    )),
+    # Resilience — before pod_debug, which owns "probe"/"pod" words. Only
+    # resilience vocabulary here, so pod failures keep routing to pod_debug.
+    ("resilience", re.compile(
+        r"\b("
+        r"resilien(?:ce|t|cy)"
+        r"|pod\s*disruption\s*budgets?|pdbs?"
+        r"|(?:node\s+)?drain(?:s|ing|ed)?\b[^.?!]{0,40}\b(?:stuck|stall(?:s|ed|ing)?|hang(?:s|ing)?|block(?:s|ed|ing)?|safe(?:ly)?|break)"
+        r"|(?:safe(?:ly)?|survive|break)\b[^.?!]{0,30}\b(?:node\s+)?drain"
+        r"|single\s+points?\s+of\s+failure"
+        r"|high(?:ly)?[\s-]+availab(?:le|ility)"
+        r"|spread\s+(?:across|over)\s+(?:nodes|zones)"
         r")\b",
         re.IGNORECASE,
     )),

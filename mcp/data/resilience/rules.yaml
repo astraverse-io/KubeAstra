@@ -1,0 +1,80 @@
+# Resilience Pilot rule catalogue — DATA only (the logic is in
+# mcp/services/resilience/rules.py, one function per id).
+#
+# severity drives the score through `weights`; a repo can override severity or
+# disable a rule with .kubeastra/resilience.yaml, and an object can opt out with
+# the annotation `resilience.kubeastra.io/ignore: "RES005,RES008"` (or "*").
+# Changing a weight or severity here changes every score — the golden test in
+# mcp/tests/test_resilience_score.py is there to make that deliberate.
+version: 1
+
+weights:
+  high: 25
+  medium: 10
+  low: 3
+
+# First threshold the score reaches wins.
+grades:
+  - [90, A]
+  - [80, B]
+  - [70, C]
+  - [60, D]
+  - [0, F]
+
+rules:
+  RES001:
+    title: PodDisruptionBudget can never allow an eviction
+    group: drain
+    severity: high
+  RES002:
+    title: Single replica with no PodDisruptionBudget
+    group: drain
+    severity: medium
+  RES003:
+    title: HPA scales on a resource the containers don't request
+    group: scaling
+    severity: high
+  RES004:
+    title: HPA minReplicas is 1
+    group: scaling
+    severity: low
+  RES005:
+    title: Replicas are not spread across nodes or zones
+    group: spread
+    severity: medium
+  RES006:
+    title: Service-backed container has no readinessProbe
+    group: probes
+    severity: medium
+  RES007:
+    title: livenessProbe is identical to readinessProbe
+    group: probes
+    severity: low
+  RES008:
+    title: Service-backed workload has no preStop hook
+    group: shutdown
+    severity: low
+  RES009:
+    title: terminationGracePeriodSeconds does not outlast the preStop sleep
+    group: shutdown
+    severity: medium
+  RES010:
+    title: Container is missing resource requests or a memory limit
+    group: hygiene
+    severity: low
+  RES011:
+    title: Image is untagged or uses :latest
+    group: hygiene
+    severity: low
+  RES012:
+    title: Rollout can take every replica down at once
+    group: rollout
+    severity: high
+  RES013:
+    title: Service selector matches no workload
+    group: wiring
+    severity: medium
+  RES014:
+    title: PodDisruptionBudget selector matches no workload
+    group: wiring
+    severity: low

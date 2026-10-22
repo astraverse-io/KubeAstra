@@ -1,0 +1,26 @@
+id: metrics-only-controller
+# Seen in the corpus sweep (cert-manager cainjector/controller, kyverno
+# controllers): a leader-elected controller whose only Service is a Prometheus
+# scrape target. Not user traffic — RES002/RES006/RES008 must stay quiet.
+manifests: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata: {name: cainjector, namespace: cert-manager}
+  spec:
+    replicas: 1
+    selector: {matchLabels: {app: cainjector}}
+    template:
+      metadata: {labels: {app: cainjector}}
+      spec:
+        containers:
+          - name: cainjector
+            image: quay.io/jetstack/cert-manager-cainjector:v1.21.2
+            ports: [{name: http-metrics, containerPort: 9402}]
+            resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {memory: 128Mi}}
+  ---
+  apiVersion: v1
+  kind: Service
+  metadata: {name: cainjector, namespace: cert-manager}
+  spec: {selector: {app: cainjector}, ports: [{name: http-metrics, port: 9402}]}
+expect:
+  rules: []

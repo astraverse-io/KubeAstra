@@ -1,0 +1,21 @@
+id: live-single-node-no-spread
+# Three replicas with no spread constraint on a one-node cluster (a dev box):
+# there is nowhere to spread to, so RES005 must not fire in live mode.
+source_mode: live
+facts: {nodes: 1}
+manifests: |
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata: {name: web, namespace: dev}
+  spec:
+    replicas: 3
+    selector: {matchLabels: {app: web}}
+    template:
+      metadata: {labels: {app: web}}
+      spec:
+        containers:
+          - name: app
+            image: ghcr.io/acme/web:2.1.0
+            resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {memory: 256Mi}}
+expect:
+  rules: []

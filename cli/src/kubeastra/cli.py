@@ -1,6 +1,6 @@
 """KubeAstra CLI entry point.
 
-Seven commands total in this shim release:
+Backend commands:
   - ``kubeastra --version``          version info
   - ``kubeastra ask "..."``          natural-language investigation, streams
   - ``kubeastra investigate --pod``  scoped investigation shortcut
@@ -9,9 +9,14 @@ Seven commands total in this shim release:
   - ``kubeastra doctor``             health-check the CLI + backend
   - ``kubeastra open``              run the product locally as an app
 
-Every command shares a friendly-error contract: connectivity failures
+Keyless checks (no backend, no API key; cores bundled in the package):
+  - ``kubeastra upgrade plan``       removed APIs at a target version + plan
+  - ``kubeastra resilience``         drain/scale/rollout resilience score + fixes
+
+The backend commands share a friendly-error contract: connectivity failures
 suggest the docker-compose spinup; auth failures suggest the config
-command; backend errors show status + detail.
+command; backend errors show status + detail. The keyless checks exit 0 pass,
+1 gate failed, 2 bad input.
 """
 
 from __future__ import annotations
@@ -426,6 +431,46 @@ def upgrade_plan(
             fail_on_blocking=fail_on_blocking,
         )
     except UpgradeCoreUnavailable as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2)
+    typer.echo(text)
+    raise typer.Exit(code=code)
+
+
+@app.command()
+def resilience(
+    path: Optional[str] = typer.Argument(
+        None, help="Rendered manifests to scan: a file or directory (helm template / kustomize build output)."
+    ),
+    live: bool = typer.Option(False, "--live", help="Scan the live cluster with kubectl instead of a PATH."),
+    kubeconfig: Optional[str] = typer.Option(None, "--kubeconfig", help="kubeconfig for --live (default context otherwise)."),
+    output: str = typer.Option("text", "--output", "-o", help="Output format: text | json | sarif."),
+    fail_under: Optional[int] = typer.Option(None, "--fail-under", help="Exit 1 when the score is below this (0-100)."),
+    fail_on: Optional[str] = typer.Option(None, "--fail-on", help="Exit 1 on any finding at or above: low | medium | high."),
+    config: Optional[str] = typer.Option(
+        None, "--config", help="Repo config (default: .kubeastra/resilience.yaml when present)."
+    ),
+    fix: Optional[str] = typer.Option(
+        None, "--fix", help="Write fixes (patches, new objects, a README) to this new or empty directory."
+    ),
+    namespace: Optional[str] = typer.Option(
+        None, "--namespace", "-n", help="With --live: scan only this namespace."
+    ),
+    include_system: bool = typer.Option(
+        False, "--include-system", help="With --live: also score kube-system and other cluster add-on namespaces."
+    ),
+) -> None:
+    """Score how well workloads survive node drains, traffic spikes and rollouts
+    (PDBs, HPAs, spread, probes, shutdown). No backend, no API key."""
+    from .resilience import ResilienceCoreUnavailable, ResilienceUsageError, run_assess
+
+    try:
+        code, text = run_assess(
+            path, live=live, kubeconfig=kubeconfig, output=output,
+            fail_under=fail_under, fail_on=fail_on, config_path=config, fix_dir=fix,
+            namespace=namespace, include_system=include_system,
+        )
+    except (ResilienceCoreUnavailable, ResilienceUsageError) as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=2)
     typer.echo(text)
