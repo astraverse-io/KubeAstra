@@ -27,6 +27,9 @@ jobs:
           - platform: 'macos-latest'
             target: 'aarch64-apple-darwin'
             args: '--target aarch64-apple-darwin'
+          # Built, installed and tested on every run, and released nowhere:
+          # the MSI has no Authenticode signature yet. See "Build Tauri App
+          # (Windows, not released)".
           - platform: 'windows-latest'
             target: 'x86_64-pc-windows-msvc'
             args: '--target x86_64-pc-windows-msvc'
@@ -213,8 +216,14 @@ jobs:
       # signing variables have to live on a step that only runs when a
       # certificate actually exists. This needs no edit when the certs land —
       # add the secrets and the signed path takes over on its own.
-      - name: Build Tauri App (unsigned)
-        if: env.HAS_APPLE_CERT != 'true' || !startsWith(matrix.platform, 'macos')
+      #
+      # macOS only. Windows used to take this step too — see "Build Tauri App
+      # (Windows, not released)" for why it no longer does. What is left here
+      # is the no-certificate fallback, and it stays a prerelease with a
+      # warning body on purpose: GitHub never makes a prerelease Latest, so an
+      # unsigned build cannot become what the updater serves.
+      - name: Build Tauri App (macOS, unsigned)
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT != 'true'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -280,7 +289,21 @@ jobs:
           # of the decision; only the version was.
           tagName: ${{ github.ref_type == 'tag' && 'desktop-v__VERSION__' || '' }}
           releaseName: 'KubeAstra Desktop v__VERSION__'
-          releaseBody: 'See release notes for desktop updates.'
+          # Written to be correct if the draft is published untouched; add
+          # what changed before publishing. tauri-action also copies it into
+          # latest.json as `notes`, which the updater never displays. It says
+          # macOS only because macOS is the only platform released.
+          releaseBody: |
+            KubeAstra Desktop __VERSION__ for macOS on Apple silicon, signed and notarized by Apple.
+
+            ## Install
+
+            ```bash
+            brew tap astraverse-io/tap
+            brew install --cask kubeastra
+            ```
+
+            Or download the DMG below. Requires macOS 11 or later.
           releaseDraft: true
           prerelease: false
           workdir: desktop
@@ -315,9 +338,64 @@ jobs:
           # of the decision; only the version was.
           tagName: ${{ github.ref_type == 'tag' && 'desktop-v__VERSION__' || '' }}
           releaseName: 'KubeAstra Desktop v__VERSION__'
-          releaseBody: 'See release notes for desktop updates.'
+          # Written to be correct if the draft is published untouched; add
+          # what changed before publishing. tauri-action also copies it into
+          # latest.json as `notes`, which the updater never displays. It says
+          # macOS only because macOS is the only platform released.
+          releaseBody: |
+            KubeAstra Desktop __VERSION__ for macOS on Apple silicon, signed and notarized by Apple.
+
+            ## Install
+
+            ```bash
+            brew tap astraverse-io/tap
+            brew install --cask kubeastra
+            ```
+
+            Or download the DMG below. Requires macOS 11 or later.
           releaseDraft: true
           prerelease: false
+          workdir: desktop
+          args: ${{ matrix.args }}
+
+      # Built, verified and installed on every run, and published nowhere.
+      # tagName is empty even on a tag push, and with no tag tauri-action
+      # creates no release, uploads nothing and leaves latest.json alone — it
+      # logs "No releaseId or tagName provided, skipping all uploads...". The
+      # MSI leaves this job only as a workflow artifact, further down.
+      #
+      # Until desktop-v0.3.0 this lane shared the unsigned step above, and
+      # with it the tag. Whichever job reaches the upload first CREATES the
+      # draft, and Windows usually does — macOS notarizes before it uploads.
+      # So the draft came out with the unsigned step's `prerelease: true` and
+      # its "macOS will warn" body, and the signed macOS job then uploaded
+      # into a release it had not described. A prerelease is never Latest,
+      # and the updater reads
+      # /releases/latest/download/latest.json, so publishing it as built would
+      # have left every install on 0.2.3. It also carried an MSI with no
+      # Authenticode signature, plus windows-x86_64 entries in latest.json
+      # pointing at it. All of that was corrected by hand before publishing.
+      #
+      # GITHUB_TOKEN is deliberately absent, as a second lock. tauri-action
+      # uses it for release calls and nothing else, so a tagName added here
+      # by mistake fails the step with "GITHUB_TOKEN is required" instead of
+      # publishing.
+      #
+      # The updater key is still passed: with one configured,
+      # createUpdaterArtifacts makes the build require it. That keeps this
+      # build identical to what a signed Windows release would produce. The
+      # day Authenticode lands, this step needs the macOS steps' release
+      # inputs, GITHUB_TOKEN and the signing secrets, and the release body
+      # has to stop saying macOS only — nothing about the build itself.
+      - name: Build Tauri App (Windows, not released)
+        id: windows-build
+        if: startsWith(matrix.platform, 'windows')
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ''
           workdir: desktop
           args: ${{ matrix.args }}
 
@@ -442,6 +520,19 @@ jobs:
           if (Test-Path $shell.FullName) { throw "uninstall left $($shell.FullName) behind" }
           if (Test-Path $root) { throw "uninstall left $root behind" }
           Write-Host "installed, verified, and uninstalled cleanly"
+
+      # The only place the MSI goes until Windows is signed: this run's
+      # summary page, for anyone testing on Windows. Not the release, not
+      # latest.json, not any installed copy. After the install check on
+      # purpose, so every artifact here is one that installed, served
+      # /health and uninstalled cleanly.
+      - name: Keep the unsigned MSI as a workflow artifact
+        if: startsWith(matrix.platform, 'windows')
+        uses: actions/upload-artifact@v4
+        with:
+          name: KubeAstra_${{ steps.windows-build.outputs.appVersion }}_x64_unsigned_msi
+          path: desktop/src-tauri/target/*/release/bundle/msi/*.msi
+          if-no-files-found: error
 
       # The check that matters. Every earlier gate passed on a .app whose
       # sidecar could not start — bundling had flattened the onedir tree, so
